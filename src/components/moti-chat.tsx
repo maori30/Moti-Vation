@@ -397,6 +397,42 @@ function PanelContent({
         )}
       </div>
       <div className="flex-1 overflow-y-auto p-4 text-sm">
+        <div className="mb-6 rounded-md border border-[#25d366]/30 bg-[#25d366]/5 p-3">
+          <label className="mb-1 block text-xs font-semibold text-[#075e54]">
+            מספר וואטסאפ לתזכורות
+          </label>
+          <input
+            type="tel"
+            dir="ltr"
+            placeholder="+972501234567"
+            value={state.phone ?? ""}
+            onChange={(e) => setState({ ...state, phone: e.target.value })}
+            className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-[#25d366]"
+          />
+          <div className="mt-1 text-[11px] leading-tight text-gray-500">
+            אפשר גם 05... – ייהפך אוטומטית ל־972. חייבים לפתוח שיחה קודם מולי בוואטסאפ כדי שההודעות יעברו.
+          </div>
+          {state.phone && state.phone.trim().length >= 6 && (
+            <button
+              onClick={async () => {
+                const res = await fetch("/api/send-reminder", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    phone: state.phone!.trim(),
+                    text: "בדיקת חיבור למוטי",
+                  }),
+                });
+                const data = await res.json().catch(() => ({}));
+                alert(res.ok ? "יצא. תבדוק וואטסאפ." : `נפל: ${JSON.stringify(data).slice(0, 300)}`);
+              }}
+              className="mt-2 w-full rounded-md bg-[#25d366] py-1.5 text-xs font-semibold text-white hover:bg-[#1ebe57]"
+            >
+              שלח הודעת בדיקה
+            </button>
+          )}
+        </div>
+
         <div className="mb-3 flex items-center gap-2 text-[#075e54]">
           <Target size={16} /> <span className="font-semibold">מטרות פתוחות</span>
         </div>
