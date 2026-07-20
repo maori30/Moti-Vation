@@ -155,6 +155,14 @@ export function MotiChat() {
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       new Notification("מוטי – תזכורת", { body: text });
     }
+    // Send a sarcastic WhatsApp nudge if the user configured a phone
+    if (state.phone && state.phone.trim().length >= 6) {
+      fetch("/api/send-reminder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: state.phone.trim(), text }),
+      }).catch((e) => console.error("send-reminder failed", e));
+    }
     // Trigger the bot to nag about it
     sendMessage(
       {
