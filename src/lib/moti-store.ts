@@ -16,6 +16,7 @@ export type MotiState = {
   goals: Goal[];
   reminders: Reminder[];
   messages: UIMessage[];
+  phone?: string; // WhatsApp destination E.164-ish
 };
 
 const KEY = "moti-state-v1";
