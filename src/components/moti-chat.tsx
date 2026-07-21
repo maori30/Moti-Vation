@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useMotiState, applyToolCall } from "@/lib/moti-store";
+import { saveReminder, deleteReminderByText } from "@/lib/reminders.functions";
 import { Send, Target, Bell, Trash2, Check, MoreVertical } from "lucide-react";
 
 const DAY_LABELS: Record<string, string> = {
@@ -78,6 +79,37 @@ export function MotiChat() {
           appliedToolIds.current.add(anyPart.toolCallId);
           newState = applyToolCall(newState, toolName, anyPart.input);
           changed = true;
+          // Persist reminders to backend so cron can fire them.
+          const phone = state.phone?.trim();
+          if (toolName === "add_reminder" && phone) {
+            const inp = anyPart.input as Record<string, unknown>;
+            const added = newState.reminders[newState.reminders.length - 1];
+            if (added) {
+              saveReminder({
+                data: {
+                  clientId: added.id,
+                  phone,
+                  text: added.text,
+                  kind: added.kind,
+                  at: added.at,
+                  time: added.time,
+                  days: added.days,
+                  nag_every_min: added.nag_every_min,
+                  nag_until: added.nag_until,
+                },
+              }).catch((e) => console.error("saveReminder", e));
+            }
+            void inp;
+          }
+          if (toolName === "remove_reminder" && phone) {
+            const inp = anyPart.input as Record<string, unknown>;
+            const text = typeof inp.text === "string" ? inp.text : "";
+            if (text) {
+              deleteReminderByText({ data: { phone, text } }).catch((e) =>
+                console.error("deleteReminder", e),
+              );
+            }
+          }
         }
       }
     }
