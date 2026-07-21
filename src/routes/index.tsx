@@ -33,6 +33,21 @@ function Index() {
             <li>תתכונן שיציק לך עד שתסגור.</li>
           </ol>
         </div>
+
+        <a
+          href="https://wa.me/972555030605?text=היי%20מוטי"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center justify-center gap-2 rounded-full bg-[#25d366] px-8 py-4 text-lg font-bold text-[#0b141a] shadow-lg transition-transform hover:scale-105 active:scale-95"
+        >
+          <span>💬</span>
+          דברו עם מוטי בוואטסאפ
+        </a>
+
+        <p className="text-sm text-gray-400">
+          +972 55-503-0605
+        </p>
+
         <p className="text-xs text-gray-500">
           חייבים לפתוח שיחה קודם בוואטסאפ כדי שהוא יוכל לשלוח הודעות בחזרה.
         </p>
