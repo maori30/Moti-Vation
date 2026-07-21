@@ -82,11 +82,13 @@ export const Route = createFileRoute("/api/public/hooks/tick-reminders")({
           if (!isDue(r, now)) continue;
           try {
             const res = await sendWhatsAppReminder(r.phone, r.text, { nag: r.kind === "nag" });
-            const updates: Record<string, unknown> = { last_sent_at: now.toISOString() };
-            if (r.kind === "once") updates.active = false;
-            if (r.kind === "nag" && r.nag_until && new Date(r.nag_until).getTime() < now.getTime()) {
-              updates.active = false;
-            }
+            const deactivate =
+              r.kind === "once" ||
+              (r.kind === "nag" && !!r.nag_until && new Date(r.nag_until).getTime() < now.getTime());
+            const updates = {
+              last_sent_at: now.toISOString(),
+              ...(deactivate ? { active: false } : {}),
+            };
             await supabaseAdmin.from("reminders").update(updates).eq("id", r.id);
             results.push({ id: r.id, ok: res.ok, line: res.line });
           } catch (e) {
