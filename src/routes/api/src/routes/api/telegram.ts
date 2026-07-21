@@ -1,5 +1,5 @@
 const TG_TOKEN = "8874634451:AAHCobKuZMX6GPG_1Nv7lyMuURiRGixm40U";
-const TG_SECRET = "maorliavkfir";
+const TG_SECRET = "maorliavkfirmaorliavkfir";
 
 export async function POST(request: Request) {
   const update = await request.json();
