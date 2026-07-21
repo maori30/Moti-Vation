@@ -94,13 +94,15 @@ export const Route = createFileRoute("/api/chat")({
             }),
             add_reminder: tool({
               description:
-                "הוסף תזכורת. עבור תזכורת חד־פעמית ספק at כ-ISO string. עבור תזכורת חוזרת ספק time (HH:MM) ו-days (מערך מ-sun,mon,tue,wed,thu,fri,sat).",
+                "הוסף תזכורת. kind='once' (חד־פעמית עם at ISO) / 'recurring' (עם time HH:MM ו-days מ-sun,mon,tue,wed,thu,fri,sat) / 'nag' (מציקה כל nag_every_min דקות עד nag_until אופציונלי).",
               inputSchema: z.object({
                 text: z.string(),
-                kind: z.enum(["once", "recurring"]),
+                kind: z.enum(["once", "recurring", "nag"]),
                 at: z.string().optional(),
                 time: z.string().optional(),
                 days: z.array(z.enum(["sun", "mon", "tue", "wed", "thu", "fri", "sat"])).optional(),
+                nag_every_min: z.number().int().positive().optional(),
+                nag_until: z.string().optional(),
               }),
               execute: async (input) => ({ ok: true, ...input }),
             }),
