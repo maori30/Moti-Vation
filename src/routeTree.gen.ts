@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiWhatsappRouteImport } from './routes/api/whatsapp'
 import { Route as ApiSendReminderRouteImport } from './routes/api/send-reminder'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
+import { Route as ApiPublicHooksTickRemindersRouteImport } from './routes/api/public/hooks/tick-reminders'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,18 +35,26 @@ const ApiChatRoute = ApiChatRouteImport.update({
   path: '/api/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicHooksTickRemindersRoute =
+  ApiPublicHooksTickRemindersRouteImport.update({
+    id: '/api/public/hooks/tick-reminders',
+    path: '/api/public/hooks/tick-reminders',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/chat': typeof ApiChatRoute
   '/api/send-reminder': typeof ApiSendReminderRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
+  '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/chat': typeof ApiChatRoute
   '/api/send-reminder': typeof ApiSendReminderRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
+  '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +62,30 @@ export interface FileRoutesById {
   '/api/chat': typeof ApiChatRoute
   '/api/send-reminder': typeof ApiSendReminderRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
+  '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/chat' | '/api/send-reminder' | '/api/whatsapp'
+  fullPaths:
+    | '/'
+    | '/api/chat'
+    | '/api/send-reminder'
+    | '/api/whatsapp'
+    | '/api/public/hooks/tick-reminders'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/chat' | '/api/send-reminder' | '/api/whatsapp'
-  id: '__root__' | '/' | '/api/chat' | '/api/send-reminder' | '/api/whatsapp'
+  to:
+    | '/'
+    | '/api/chat'
+    | '/api/send-reminder'
+    | '/api/whatsapp'
+    | '/api/public/hooks/tick-reminders'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/chat'
+    | '/api/send-reminder'
+    | '/api/whatsapp'
+    | '/api/public/hooks/tick-reminders'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -67,6 +93,7 @@ export interface RootRouteChildren {
   ApiChatRoute: typeof ApiChatRoute
   ApiSendReminderRoute: typeof ApiSendReminderRoute
   ApiWhatsappRoute: typeof ApiWhatsappRoute
+  ApiPublicHooksTickRemindersRoute: typeof ApiPublicHooksTickRemindersRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -99,6 +126,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiChatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/hooks/tick-reminders': {
+      id: '/api/public/hooks/tick-reminders'
+      path: '/api/public/hooks/tick-reminders'
+      fullPath: '/api/public/hooks/tick-reminders'
+      preLoaderRoute: typeof ApiPublicHooksTickRemindersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -107,6 +141,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChatRoute: ApiChatRoute,
   ApiSendReminderRoute: ApiSendReminderRoute,
   ApiWhatsappRoute: ApiWhatsappRoute,
+  ApiPublicHooksTickRemindersRoute: ApiPublicHooksTickRemindersRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

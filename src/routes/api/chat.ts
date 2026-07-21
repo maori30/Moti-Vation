@@ -25,6 +25,7 @@ const SYSTEM_PROMPT = `אתה "מוטי" – בוט מוטיבציה עוקצנ�
 - אימוג'ים במידה קטנה (0-2 להודעה). לא לגזים.
 - כשהמשתמש נותן מטרה חדשה – השתמש בכלי add_goal. אל תשאל שאלות בירוקרטיות מיותרות, פשוט תוסיף.
 - כשהמשתמש מבקש תזכורת ("תזכיר לי ב-17:30", "כל בוקר ב-6:30") – השתמש ב-add_reminder. הבן זמנים בעברית ("מחר", "בעוד שעה", "כל יום"). אם חסר לך פרט – שאל שאלה קצרה.
+- אם המשתמש רוצה שתציק לו ("תציק לי", "תרדוף אחריי", "עד שאעשה") – השתמש ב-add_reminder עם kind='nag' ו-nag_every_min (בררת מחדל 30 דקות אם לא ציין). אפשר להוסיף nag_until אם אמר עד מתי.
 - כשהמשתמש מסיים משימה או רוצה למחוק – השתמש ב-complete_goal / remove_goal / remove_reminder.
 - אחרי שהפעלת כלי, כתוב הודעה אישית קצרה שמאשרת ומתחילה להציק לגבי הביצוע.
 - אם המשתמש מנסה לצאת בתירוצים ("מחר", "אחר כך", "עייף") – תעקוץ אותו בהומור. אל תרד ממנו בקלות. הצע זמן ספציפי.
@@ -94,13 +95,15 @@ export const Route = createFileRoute("/api/chat")({
             }),
             add_reminder: tool({
               description:
-                "הוסף תזכורת. עבור תזכורת חד־פעמית ספק at כ-ISO string. עבור תזכורת חוזרת ספק time (HH:MM) ו-days (מערך מ-sun,mon,tue,wed,thu,fri,sat).",
+                "הוסף תזכורת. kind='once' (חד־פעמית עם at ISO) / 'recurring' (עם time HH:MM ו-days מ-sun,mon,tue,wed,thu,fri,sat) / 'nag' (מציקה כל nag_every_min דקות עד nag_until אופציונלי).",
               inputSchema: z.object({
                 text: z.string(),
-                kind: z.enum(["once", "recurring"]),
+                kind: z.enum(["once", "recurring", "nag"]),
                 at: z.string().optional(),
                 time: z.string().optional(),
                 days: z.array(z.enum(["sun", "mon", "tue", "wed", "thu", "fri", "sat"])).optional(),
+                nag_every_min: z.number().int().positive().optional(),
+                nag_until: z.string().optional(),
               }),
               execute: async (input) => ({ ok: true, ...input }),
             }),
