@@ -14,7 +14,57 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      reminders: {
+        Row: {
+          active: boolean
+          at: string | null
+          created_at: string
+          days: number[] | null
+          id: string
+          kind: string
+          last_sent_at: string | null
+          nag_every_min: number | null
+          nag_until: string | null
+          phone: string
+          text: string
+          time: string | null
+          timezone: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          at?: string | null
+          created_at?: string
+          days?: number[] | null
+          id?: string
+          kind: string
+          last_sent_at?: string | null
+          nag_every_min?: number | null
+          nag_until?: string | null
+          phone: string
+          text: string
+          time?: string | null
+          timezone?: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          at?: string | null
+          created_at?: string
+          days?: number[] | null
+          id?: string
+          kind?: string
+          last_sent_at?: string | null
+          nag_every_min?: number | null
+          nag_until?: string | null
+          phone?: string
+          text?: string
+          time?: string | null
+          timezone?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
