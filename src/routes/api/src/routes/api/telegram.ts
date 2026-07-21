@@ -1,5 +1,5 @@
-const TG_TOKEN = "PUT_YOUR_TELEGRAM_TOKEN_HERE";
-const TG_SECRET = "PUT_YOUR_SECRET_HERE";
+const TG_TOKEN = "8874634451:AAHCobKuZMX6GPG_1Nv7lyMuURiRGixm40U";
+const TG_SECRET = "maorliavkfir";
 
 export async function POST(request: Request) {
   const update = await request.json();
