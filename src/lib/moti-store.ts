@@ -5,10 +5,12 @@ export type Goal = { id: string; text: string; done?: boolean };
 export type Reminder = {
   id: string;
   text: string;
-  kind: "once" | "recurring";
+  kind: "once" | "recurring" | "nag";
   at?: string; // ISO
   time?: string; // HH:MM
   days?: string[]; // sun..sat
+  nag_every_min?: number;
+  nag_until?: string;
   lastFired?: string; // ISO date "YYYY-MM-DD" for recurring dedupe
 };
 
@@ -80,7 +82,8 @@ export function applyToolCall(
       return { ...state, goals: state.goals.filter((g) => g.text !== text) };
     }
     case "add_reminder": {
-      const kind = input.kind === "recurring" ? "recurring" : "once";
+      const kind =
+        input.kind === "recurring" ? "recurring" : input.kind === "nag" ? "nag" : "once";
       const rem: Reminder = {
         id: crypto.randomUUID(),
         text,
@@ -88,6 +91,9 @@ export function applyToolCall(
         at: typeof input.at === "string" ? input.at : undefined,
         time: typeof input.time === "string" ? input.time : undefined,
         days: Array.isArray(input.days) ? (input.days as string[]) : undefined,
+        nag_every_min:
+          typeof input.nag_every_min === "number" ? input.nag_every_min : undefined,
+        nag_until: typeof input.nag_until === "string" ? input.nag_until : undefined,
       };
       return { ...state, reminders: [...state.reminders, rem] };
     }
