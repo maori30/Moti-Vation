@@ -4,7 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -39,9 +39,7 @@ async function sendMessage(chatId: number, text: string, keyboard?: object) {
 
 async function askGemini(userMessage: string, personalityKey: string, context: string): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
-  const systemPrompt = `${personality.prompt}
-
-הקשר נוסף: ${context}`;
+  const systemPrompt = `${personality.prompt}\n\nהקשר נוסף: ${context}`;
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -195,14 +193,12 @@ serve(async (req: Request) => {
     const update = await req.json();
     console.log("Update:", JSON.stringify(update));
 
-    // Callback query (button press)
     if (update.callback_query) {
       const cq = update.callback_query;
       const chatId = cq.message.chat.id;
       const data = cq.data as string;
       const user = await getOrCreateUser(chatId, cq.from.first_name);
 
-      // Answer callback to remove loading state
       await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -244,7 +240,6 @@ serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    // Regular message
     const message = update.message;
     if (!message) return new Response(JSON.stringify({ ok: true }), { status: 200 });
 
@@ -265,7 +260,6 @@ serve(async (req: Request) => {
     } else if ((user.state as string).startsWith("awaiting_reminder_time_")) {
       await handleReminderTime(chatId, text, user);
     } else if (user.state === "chatting" || user.state === "idle") {
-      // AI chat
       const activeReminders = await supabase
         .from("reminders")
         .select("text, time, type")
