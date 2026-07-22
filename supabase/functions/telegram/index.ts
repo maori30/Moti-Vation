@@ -2,30 +2,88 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const PERSONALITIES: Record<string, { name: string; prompt: string }> = {
+const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
   coach: {
     name: "המאמן",
-    prompt: `אתה מאמן אישי תובעני ורציני. אתה לא מקבל תירוצים. אתה דוחף את המשתמש קדימה בכוח ובתקיפות. תמיד בעברית. משפטים קצרים וחדים.`,
+    emoji: "🧠",
+    prompt: `אתה מאמן אישי תובעני, ישיר ורציני. אתה לא מקבל תירוצים ולא סובל עצלות. אתה דוחף את המשתמש קדימה בכוח - אבל מתוך אמונה אמיתית בו. משפטים קצרים וחדים. תמיד בעברית.`,
   },
   cynic: {
     name: "הציני",
-    prompt: `אתה ציני מצחיק שמציק באהבה. אתה סרקסטי, אירוני, ומעט שנון. אתה עוזר אבל תמיד עם קריצה ועוקצנות. תמיד בעברית. הומור יבש.`,
+    emoji: "😈",
+    prompt: `אתה ציני מצחיק שמציק באהבה. אתה סרקסטי, אירוני, ומשונן. אתה עוזר - אבל תמיד עם קריצה ועוקצנות. הומור יבש. תמיד בעברית.`,
   },
   friend: {
     name: "החבר",
-    prompt: `אתה חבר טוב, חם ומעודד. אתה תמיד שם לתמוך, להקשיב ולעודד. אתה אמפתי ואוהב. תמיד בעברית. נעים ומרגיע.`,
+    emoji: "🤗",
+    prompt: `אתה חבר טוב, חם ואמיתי. אתה מקשיב, אכפת לך, ותמיד שם. אתה מגיב כמו חבר אמיתי, שואל שאלות, מתעניין. תמיד בעברית. נעים, קרוב, מרגיע.`,
   },
   robot: {
     name: "הרובוט",
-    prompt: `אתה רובוט קר, עובדתי וחסר רגשות לחלוטין. אתה עונה בצורה מכנית ולוגית בלבד. ללא רגשות. ללא אמפתיה. תמיד בעברית. קצר ויעיל.`,
+    emoji: "🤖",
+    prompt: `אתה רובוט קר, לוגי וחסר רגשות לחלוטין. אתה מנתח כל מה שנאמר ומגיב בצורה מכנית ומדויקת בלבד. ללא אמפתיה. ללא חום. תמיד בעברית. קצר, מדויק, יעיל.`,
+  },
+  therapist: {
+    name: "המטפל",
+    emoji: "🛋️",
+    prompt: `אתה מטפל נפשי אמפתי ועדין. אתה מקשיב לעומק, לא שופט, ועוזר למשתמש להבין את עצמו. אתה שואל שאלות פתוחות ומשקף רגשות. תמיד בעברית. רגוע, עמוק, קשוב.`,
+  },
+  hype: {
+    name: "המעודד",
+    emoji: "🔥",
+    prompt: `אתה המעודד הכי אנרגטי שיש. כל מה שהמשתמש עושה זה מדהים. אתה מלא אנרגיה חיובית, קריאות עידוד, אמוג'ים וריגוש. גם שיחה רגילה הופכת אצלך לחגיגה. תמיד בעברית. נמרץ, רועש, מלהיב.`,
+  },
+  grandma: {
+    name: "הסבתא",
+    emoji: "👵",
+    prompt: `אתה סבתא אוהבת, מודאגת ומתפנקת. אתה כל הזמן דואג שהמשתמש אכל, ישן, לא קר לו. אתה מספר סיפורים מהעבר ונותן עצות של חיים. כשהוא מספר בעיה אתה מיד מציע אוכל כפתרון. תמיד בעברית. חמימות, אהבה, קצת דאגה מוגזמת.`,
+  },
+  philosopher: {
+    name: "הפילוסוף",
+    emoji: "🧐",
+    prompt: `אתה פילוסוף עמוק ומחשבתי. כל שאלה - אפילו הכי פשוטה - הופכת אצלך לדיון על משמעות החיים. אתה מצטט הוגים ומאתגר את המשתמש לחשוב לעומק. תמיד בעברית. עמוק, מחשבתי, קצת מורכב.`,
   },
 };
+
+const GREETINGS: Record<string, string> = {
+  coach: `🧠 המאמן כאן.\nאין זמן לטקסים. מה המטרה שלך היום? דבר.`,
+  cynic: `😈 אה, בחרת בי. כמובן. תמיד יודעים לבחור נכון בסוף.\nאז מה, מה קורה?`,
+  friend: `🤗 היי! כל כך שמח שבחרת אותי!\nאז ספר - מה קורה אצלך? איך הולך?`,
+  robot: `🤖 אישיות נטענה: רובוט.\nממתין לקלט.`,
+  therapist: `🛋️ שלום. שמח שבחרת לדבר.\nאני כאן, קשוב לגמרי. במה תרצה להתחיל?`,
+  hype: `🔥🔥🔥 כן כן כן!!! בחרת אותי!!! זו ההחלטה הכי טובה שעשית היום!!!\nיאללה ספר לי הכל - אני כבר מתרגש!!!`,
+  grandma: `👵 אוי, מה נעים שבחרת אותי מכולם!\nאכלת היום? לא קר לך? ספר לסבתא מה קורה.`,
+  philosopher: `🧐 בחרת. מעניין. האם הבחירה עצמה היא חופשית, או שאולי הגורל הוביל אותך לכאן?\nאבל זה לשיחה אחרת. מה שאלתך?`,
+};
+
+function getPersonalityKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "🧠 המאמן", callback_data: "personality_coach" },
+        { text: "😈 הציני", callback_data: "personality_cynic" },
+      ],
+      [
+        { text: "🤗 החבר", callback_data: "personality_friend" },
+        { text: "🤖 הרובוט", callback_data: "personality_robot" },
+      ],
+      [
+        { text: "🛋️ המטפל", callback_data: "personality_therapist" },
+        { text: "🔥 המעודד", callback_data: "personality_hype" },
+      ],
+      [
+        { text: "👵 הסבתא", callback_data: "personality_grandma" },
+        { text: "🧐 הפילוסוף", callback_data: "personality_philosopher" },
+      ],
+    ],
+  };
+}
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
   const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
@@ -37,24 +95,34 @@ async function sendMessage(chatId: number, text: string, keyboard?: object) {
   });
 }
 
-async function askGemini(userMessage: string, personalityKey: string, context: string): Promise<string> {
+async function askGroq(userMessage: string, personalityKey: string, context: string): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
-  const systemPrompt = `${personality.prompt}\n\nהקשר נוסף: ${context}`;
+  const systemPrompt = `${personality.prompt}\n\nהקשר נוסף על המשתמש: ${context}\n\nחשוב: אתה משוחח בשיחה זורמת וטבעית בעברית. אל תנסה להפנות לפקודות אלא אם המשתמש מבקש ספציפית.`;
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-    {
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GROQ_API_KEY}`,
+      },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts: [{ text: userMessage }] }],
-        generationConfig: { maxOutputTokens: 300, temperature: 0.9 },
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        max_tokens: 400,
+        temperature: 1.0,
       }),
-    }
-  );
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+    });
+    const data = await res.json();
+    console.log("Groq response:", JSON.stringify(data));
+    return data?.choices?.[0]?.message?.content ?? "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+  } catch (err) {
+    console.error("Groq error:", err);
+    return "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+  }
 }
 
 async function getOrCreateUser(chatId: number, firstName: string) {
@@ -76,51 +144,31 @@ async function handleStart(chatId: number, firstName: string) {
   await getOrCreateUser(chatId, firstName);
   await sendMessage(
     chatId,
-    `שלום ${firstName}! 👋\nאני הבוט שיעזור לך לזכור מה אתה צריך לעשות — ולהציק לך עד שתעשה את זה 😈\n\nבחר אישיות:`,
-    {
-      inline_keyboard: [
-        [{ text: "😈 הציני (ברירת מחדל)", callback_data: "personality_cynic" }],
-        [{ text: "🧠 המאמן", callback_data: "personality_coach" }],
-        [{ text: "🤗 החבר", callback_data: "personality_friend" }],
-        [{ text: "🤖 הרובוט", callback_data: "personality_robot" }],
-      ],
-    }
+    `שלום ${firstName}! 👋\nאני הבוט שיעזור לך לזכור מה אתה צריך לעשות - ולהציק לך עד שתעשה את זה 😈\n\nבחר אישיות:`,
+    getPersonalityKeyboard()
   );
 }
 
 async function handleMenu(chatId: number) {
-  await sendMessage(
-    chatId,
-    `מה תרצה לעשות?`,
-    {
-      inline_keyboard: [
-        [{ text: "⏰ הוסף תזכורת", callback_data: "add_reminder" }],
-        [{ text: "📋 התזכורות שלי", callback_data: "list_reminders" }],
-        [{ text: "🎭 שנה אישיות", callback_data: "change_personality" }],
-        [{ text: "💬 דבר איתי", callback_data: "chat" }],
-      ],
-    }
-  );
-}
-
-async function handleAddReminder(chatId: number) {
-  await updateUser(chatId, { state: "awaiting_reminder_text" });
-  await sendMessage(chatId, "מה המטלה שאתה רוצה שאזכיר לך? (כתוב בחופשיות)");
+  await sendMessage(chatId, `מה תרצה לעשות?`, {
+    inline_keyboard: [
+      [{ text: "⏰ הוסף תזכורת", callback_data: "add_reminder" }],
+      [{ text: "📋 התזכורות שלי", callback_data: "list_reminders" }],
+      [{ text: "🎭 שנה אישיות", callback_data: "change_personality" }],
+      [{ text: "💬 דבר איתי", callback_data: "chat" }],
+    ],
+  });
 }
 
 async function handleReminderText(chatId: number, text: string) {
   await updateUser(chatId, { state: "awaiting_reminder_type", pending_reminder_text: text });
-  await sendMessage(
-    chatId,
-    `מעולה! מתי לתזכר אותך על: "${text}"?`,
-    {
-      inline_keyboard: [
-        [{ text: "🔔 חד פעמי", callback_data: "reminder_type_once" }],
-        [{ text: "📅 יומי", callback_data: "reminder_type_daily" }],
-        [{ text: "📆 שבועי", callback_data: "reminder_type_weekly" }],
-      ],
-    }
-  );
+  await sendMessage(chatId, `מעולה! מתי לתזכר אותך על: "${text}"?`, {
+    inline_keyboard: [
+      [{ text: "🔔 חד פעמי", callback_data: "reminder_type_once" }],
+      [{ text: "📅 יומי", callback_data: "reminder_type_daily" }],
+      [{ text: "📆 שבועי", callback_data: "reminder_type_weekly" }],
+    ],
+  });
 }
 
 async function handleReminderType(chatId: number, type: string) {
@@ -157,10 +205,7 @@ async function handleReminderTime(chatId: number, timeText: string, user: Record
   await updateUser(chatId, { state: "idle", pending_reminder_text: null });
 
   const typeLabels: Record<string, string> = { once: "חד פעמי", daily: "יומי", weekly: "שבועי" };
-  await sendMessage(
-    chatId,
-    `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeText}\n🔁 ${typeLabels[type] ?? type}\n\nאציק לך בזמן 😈`
-  );
+  await sendMessage(chatId, `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeText}\n🔁 ${typeLabels[type] ?? type}\n\nאציק לך בזמן 😈`);
   await handleMenu(chatId);
 }
 
@@ -207,33 +252,29 @@ serve(async (req: Request) => {
 
       if (data.startsWith("personality_")) {
         const p = data.replace("personality_", "");
-        await updateUser(chatId, { personality: p, state: "idle" });
-        const pName = PERSONALITIES[p]?.name ?? p;
-        await sendMessage(chatId, `✅ בחרת: ${pName}!\nמעכשיו אדבר איתך בסגנון הזה 😎`);
-        await handleMenu(chatId);
+        await updateUser(chatId, { personality: p, state: "chatting" });
+        const greeting = GREETINGS[p] ?? `✅ אישיות שונתה! דבר איתי על הכל.`;
+        await sendMessage(chatId, greeting);
       } else if (data === "add_reminder") {
-        await handleAddReminder(chatId);
+        await updateUser(chatId, { state: "awaiting_reminder_text" });
+        await sendMessage(chatId, "מה המטלה שאתה רוצה שאזכיר לך?");
       } else if (data === "list_reminders") {
         await handleListReminders(chatId);
       } else if (data === "change_personality") {
-        await sendMessage(chatId, "בחר אישיות חדשה:", {
-          inline_keyboard: [
-            [{ text: "😈 הציני", callback_data: "personality_cynic" }],
-            [{ text: "🧠 המאמן", callback_data: "personality_coach" }],
-            [{ text: "🤗 החבר", callback_data: "personality_friend" }],
-            [{ text: "🤖 הרובוט", callback_data: "personality_robot" }],
-          ],
-        });
+        await sendMessage(chatId, "בחר אישיות חדשה:", getPersonalityKeyboard());
       } else if (data === "chat") {
         await updateUser(chatId, { state: "chatting" });
-        await sendMessage(chatId, "אני כאן. דבר איתי 💬\n(שלח /menu לחזור לתפריט)");
+        const p = user.personality as string;
+        const pName = PERSONALITIES[p]?.name ?? "הבוט";
+        const pEmoji = PERSONALITIES[p]?.emoji ?? "💬";
+        await sendMessage(chatId, `${pEmoji} ${pName} כאן. דבר איתי על הכל!\n(שלח /menu לתפריט)`);
       } else if (data.startsWith("reminder_type_")) {
         const type = data.replace("reminder_type_", "");
         await handleReminderType(chatId, type);
       } else if (data.startsWith("done_reminder_")) {
         const reminderId = data.replace("done_reminder_", "");
         await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
-        const reply = await askGemini("המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך.", user.personality as string, "");
+        const reply = await askGroq("המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך.", user.personality as string, "");
         await sendMessage(chatId, reply);
       }
 
@@ -255,11 +296,13 @@ serve(async (req: Request) => {
       await handleMenu(chatId);
     } else if (text === "/reminders") {
       await handleListReminders(chatId);
+    } else if (text === "/personality") {
+      await sendMessage(chatId, "בחר אישיות:", getPersonalityKeyboard());
     } else if (user.state === "awaiting_reminder_text") {
       await handleReminderText(chatId, text);
     } else if ((user.state as string).startsWith("awaiting_reminder_time_")) {
       await handleReminderTime(chatId, text, user);
-    } else if (user.state === "chatting" || user.state === "idle") {
+    } else {
       const activeReminders = await supabase
         .from("reminders")
         .select("text, time, type")
@@ -270,7 +313,7 @@ serve(async (req: Request) => {
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}`
         : "למשתמש אין תזכורות פעילות כרגע.";
 
-      const reply = await askGemini(text, user.personality as string, context);
+      const reply = await askGroq(text, user.personality as string, context);
       await sendMessage(chatId, reply);
     }
 
