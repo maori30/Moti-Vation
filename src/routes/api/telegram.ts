@@ -17,10 +17,22 @@ import { createFileRoute } from "@tanstack/react-router";
 const TG_TOKEN  = process.env.TELEGRAM_BOT_TOKEN  ?? "8874634451:AAHCobKuZMX6GPG_1Nv7lyMuURiRGixm40U";
 const TG_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "maorliavkfirmaorliavkfir";
 const GROQ_API_KEY = process.env.GROQ_API_KEY ?? "";
-const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
-const SUPABASE_KEY = process.env.SB_SERVICE_ROLE_KEY ?? "";
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+let _supabase: ReturnType<typeof createClient> | null = null;
+function getSupabase() {
+  if (_supabase) return _supabase;
+  const url = process.env.SUPABASE_URL ?? "";
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+    process.env.SB_SERVICE_ROLE_KEY ??
+    process.env.SUPABASE_PUBLISHABLE_KEY ??
+    "";
+  if (!url || !key) throw new Error("Supabase env not configured");
+  _supabase = createClient(url, key);
+  return _supabase;
+}
+const supabase = new Proxy({} as ReturnType<typeof createClient>, {
+  get(_t, prop, recv) { return Reflect.get(getSupabase(), prop, recv); },
+});
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 type PersonalityKey =
