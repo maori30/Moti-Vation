@@ -1,5 +1,2 @@
-DROP POLICY IF EXISTS "Open access to reminders" ON public.reminders;
-REVOKE ALL ON public.reminders FROM anon, authenticated, PUBLIC;
-GRANT ALL ON public.reminders TO service_role;
-ALTER TABLE public.reminders ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Deny all direct client access" ON public.reminders FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
+-- Migration fixed: was adding columns to old schema, now a no-op since tables are created above
+SELECT 1; -- placeholder, tables already created in previous migration

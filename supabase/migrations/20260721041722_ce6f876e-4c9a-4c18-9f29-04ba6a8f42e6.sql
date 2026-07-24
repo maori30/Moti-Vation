@@ -1,44 +1,49 @@
-
+-- Migration fixed: replaced old schema with current bot schema (IF NOT EXISTS)
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pg_net;
 
-CREATE TABLE public.reminders (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone text NOT NULL,
-  text text NOT NULL,
-  kind text NOT NULL CHECK (kind IN ('once','recurring','nag')),
-  at timestamptz,
-  "time" text,
-  days int[],
-  timezone text NOT NULL DEFAULT 'Asia/Jerusalem',
-  nag_every_min int,
-  nag_until timestamptz,
-  active boolean NOT NULL DEFAULT true,
-  last_sent_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+-- Users table
+CREATE TABLE IF NOT EXISTS public.users (
+  id BIGSERIAL PRIMARY KEY,
+  chat_id BIGINT UNIQUE NOT NULL,
+  first_name TEXT,
+  personality TEXT DEFAULT 'cynic',
+  state TEXT DEFAULT 'idle',
+  pending_reminder_text TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.reminders TO anon;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.reminders TO authenticated;
-GRANT ALL ON public.reminders TO service_role;
+-- Reminders table
+CREATE TABLE IF NOT EXISTS public.reminders (
+  id BIGSERIAL PRIMARY KEY,
+  chat_id BIGINT NOT NULL,
+  text TEXT NOT NULL,
+  time TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('once', 'daily', 'weekly')),
+  day TEXT,
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_reminders_active ON public.reminders(active);
+CREATE INDEX IF NOT EXISTS idx_reminders_chat_id ON public.reminders(chat_id);
+CREATE INDEX IF NOT EXISTS idx_users_chat_id ON public.users(chat_id);
+
+-- Grants
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.users TO anon, authenticated;
+GRANT ALL ON public.users TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.reminders TO anon, authenticated;
+GRANT ALL ON public.reminders TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE public.users_id_seq TO anon, authenticated, service_role;
+GRANT USAGE, SELECT ON SEQUENCE public.reminders_id_seq TO anon, authenticated, service_role;
+
+-- RLS
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reminders ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Open access to reminders"
-  ON public.reminders FOR ALL
-  USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "Open access to users"
+  ON public.users FOR ALL USING (true) WITH CHECK (true);
 
-CREATE OR REPLACE FUNCTION public.update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SET search_path = public;
-
-CREATE TRIGGER update_reminders_updated_at
-BEFORE UPDATE ON public.reminders
-FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
-
-CREATE INDEX reminders_active_idx ON public.reminders (active) WHERE active = true;
+CREATE POLICY IF NOT EXISTS "Open access to reminders"
+  ON public.reminders FOR ALL USING (true) WITH CHECK (true);
