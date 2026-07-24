@@ -426,7 +426,7 @@ export const Route = createFileRoute("/api/telegram")({
             const reply = await askGroq(userText, session.personality, context);
 
             session.history.push({ role: "user",      content: userText });
-            session.history.push({ role: "assistant\", content: reply });
+            session.history.push({ role: "assistant", content: reply });
             if (session.history.length > 20) session.history = session.history.slice(-20);
 
             await sendTg(chatId, reply);
