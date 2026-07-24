@@ -17,10 +17,22 @@ import { createFileRoute } from "@tanstack/react-router";
 const TG_TOKEN  = process.env.TELEGRAM_BOT_TOKEN  ?? "8874634451:AAHCobKuZMX6GPG_1Nv7lyMuURiRGixm40U";
 const TG_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "maorliavkfirmaorliavkfir";
 const GROQ_API_KEY = process.env.GROQ_API_KEY ?? "";
-const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
-const SUPABASE_KEY = process.env.SB_SERVICE_ROLE_KEY ?? "";
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+let _supabase: any = null;
+function getSupabase(): any {
+  if (_supabase) return _supabase;
+  const url = process.env.SUPABASE_URL ?? "";
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+    process.env.SB_SERVICE_ROLE_KEY ??
+    process.env.SUPABASE_PUBLISHABLE_KEY ??
+    "";
+  if (!url || !key) throw new Error("Supabase env not configured");
+  _supabase = createClient(url, key);
+  return _supabase;
+}
+const supabase: any = new Proxy({}, {
+  get(_t, prop) { return (getSupabase() as any)[prop]; },
+});
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 type PersonalityKey =
@@ -245,7 +257,7 @@ async function sendReminderList(chatId: number): Promise<void> {
     return;
   }
   const lines = ["📋 <b>התזכורות שלך:</b>"];
-  data.forEach((r, i) => {
+  data.forEach((r: any, i: number) => {
     const typeLabel = r.type === "once" ? "חד-פעמי" : r.type === "daily" ? "יומי" : "שבועי";
     lines.push(`${i + 1}. ${r.text} — ${r.time} (${typeLabel})`);
   });
@@ -408,7 +420,7 @@ export const Route = createFileRoute("/api/telegram")({
               .eq("chat_id", chatId)
               .eq("active", true);
             const context = activeReminders?.length
-              ? `למשתמש יש תזכורות פעילות: ${activeReminders.map((r) => r.text).join(", ")}`
+              ? `למשתמש יש תזכורות פעילות: ${activeReminders.map((r: any) => r.text).join(", ")}`
               : "למשתמש אין תזכורות פעילות כרגע.";
 
             const reply = await askGroq(userText, session.personality, context);
