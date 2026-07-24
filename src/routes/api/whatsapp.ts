@@ -5,7 +5,7 @@
 
 import { createLovableAiGatewayProvider } from "@/lib/ai-gateway.server";
 import { createFileRoute } from "@tanstack/react-router";
-import { generateText, tool } from "ai";
+import { generateText, tool, stepCountIs } from "ai";
 import { z } from "zod";
 
 // ─── Credentials ──────────────────────────────────────────────────────────────
@@ -256,13 +256,13 @@ export const Route = createFileRoute("/api/whatsapp")({
                     system: SYSTEM_PROMPT + "\n\n" + contextBlock,
                     messages: session.history,
                     tools: {
-                      add_goal: tool({ description: "הוסף מטרה חדשה.", parameters: z.object({ text: z.string() }), execute: async ({ text }) => { session.goals.push({ id: crypto.randomUUID(), text, done: false, createdAt: new Date().toISOString() }); return { ok: true }; } }),
-                      complete_goal: tool({ description: "סמן מטרה כהושלמה.", parameters: z.object({ text: z.string() }), execute: async ({ text }) => { const g = session.goals.find((g) => g.text.includes(text)); if (g) g.done = true; return { ok: true }; } }),
-                      remove_goal: tool({ description: "מחק מטרה.", parameters: z.object({ text: z.string() }), execute: async ({ text }) => { session.goals = session.goals.filter((g) => !g.text.includes(text)); return { ok: true }; } }),
-                      add_reminder: tool({ description: "הוסף תזכורת.", parameters: z.object({ text: z.string(), kind: z.enum(["once", "recurring"]), at: z.string().optional(), time: z.string().optional(), days: z.array(z.enum(["sun","mon","tue","wed","thu","fri","sat"])).optional() }), execute: async (input) => { session.reminders.push({ id: crypto.randomUUID(), ...input }); return { ok: true }; } }),
-                      remove_reminder: tool({ description: "מחק תזכורת.", parameters: z.object({ text: z.string() }), execute: async ({ text }) => { session.reminders = session.reminders.filter((r) => !r.text.includes(text)); return { ok: true }; } }),
+                      add_goal: tool({ description: "הוסף מטרה חדשה.", inputSchema: z.object({ text: z.string() }), execute: async ({ text }: { text: string }) => { session.goals.push({ id: crypto.randomUUID(), text, done: false, createdAt: new Date().toISOString() }); return { ok: true }; } }),
+                      complete_goal: tool({ description: "סמן מטרה כהושלמה.", inputSchema: z.object({ text: z.string() }), execute: async ({ text }: { text: string }) => { const g = session.goals.find((g) => g.text.includes(text)); if (g) g.done = true; return { ok: true }; } }),
+                      remove_goal: tool({ description: "מחק מטרה.", inputSchema: z.object({ text: z.string() }), execute: async ({ text }: { text: string }) => { session.goals = session.goals.filter((g) => !g.text.includes(text)); return { ok: true }; } }),
+                      add_reminder: tool({ description: "הוסף תזכורת.", inputSchema: z.object({ text: z.string(), kind: z.enum(["once", "recurring"]), at: z.string().optional(), time: z.string().optional(), days: z.array(z.enum(["sun","mon","tue","wed","thu","fri","sat"])).optional() }), execute: async (input: any) => { session.reminders.push({ id: crypto.randomUUID(), ...input }); return { ok: true }; } }),
+                      remove_reminder: tool({ description: "מחק תזכורת.", inputSchema: z.object({ text: z.string() }), execute: async ({ text }: { text: string }) => { session.reminders = session.reminders.filter((r) => !r.text.includes(text)); return { ok: true }; } }),
                     },
-                    maxSteps: 6,
+                    stopWhen: stepCountIs(6),
                   });
 
                   const reply = result.text?.trim();
