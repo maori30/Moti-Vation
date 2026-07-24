@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiWhatsappRouteImport } from './routes/api/whatsapp'
+import { Route as ApiTelegramRouteImport } from './routes/api/telegram'
 import { Route as ApiSendReminderRouteImport } from './routes/api/send-reminder'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiPublicHooksTickRemindersRouteImport } from './routes/api/public/hooks/tick-reminders'
@@ -23,6 +24,11 @@ const IndexRoute = IndexRouteImport.update({
 const ApiWhatsappRoute = ApiWhatsappRouteImport.update({
   id: '/api/whatsapp',
   path: '/api/whatsapp',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTelegramRoute = ApiTelegramRouteImport.update({
+  id: '/api/telegram',
+  path: '/api/telegram',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiSendReminderRoute = ApiSendReminderRouteImport.update({
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/chat': typeof ApiChatRoute
   '/api/send-reminder': typeof ApiSendReminderRoute
+  '/api/telegram': typeof ApiTelegramRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
   '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/chat': typeof ApiChatRoute
   '/api/send-reminder': typeof ApiSendReminderRoute
+  '/api/telegram': typeof ApiTelegramRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
   '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
@@ -61,6 +69,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/api/chat': typeof ApiChatRoute
   '/api/send-reminder': typeof ApiSendReminderRoute
+  '/api/telegram': typeof ApiTelegramRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
   '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
@@ -70,6 +79,7 @@ export interface FileRouteTypes {
     | '/'
     | '/api/chat'
     | '/api/send-reminder'
+    | '/api/telegram'
     | '/api/whatsapp'
     | '/api/public/hooks/tick-reminders'
   fileRoutesByTo: FileRoutesByTo
@@ -77,6 +87,7 @@ export interface FileRouteTypes {
     | '/'
     | '/api/chat'
     | '/api/send-reminder'
+    | '/api/telegram'
     | '/api/whatsapp'
     | '/api/public/hooks/tick-reminders'
   id:
@@ -84,6 +95,7 @@ export interface FileRouteTypes {
     | '/'
     | '/api/chat'
     | '/api/send-reminder'
+    | '/api/telegram'
     | '/api/whatsapp'
     | '/api/public/hooks/tick-reminders'
   fileRoutesById: FileRoutesById
@@ -92,6 +104,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiSendReminderRoute: typeof ApiSendReminderRoute
+  ApiTelegramRoute: typeof ApiTelegramRoute
   ApiWhatsappRoute: typeof ApiWhatsappRoute
   ApiPublicHooksTickRemindersRoute: typeof ApiPublicHooksTickRemindersRoute
 }
@@ -110,6 +123,13 @@ declare module '@tanstack/react-router' {
       path: '/api/whatsapp'
       fullPath: '/api/whatsapp'
       preLoaderRoute: typeof ApiWhatsappRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/telegram': {
+      id: '/api/telegram'
+      path: '/api/telegram'
+      fullPath: '/api/telegram'
+      preLoaderRoute: typeof ApiTelegramRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/send-reminder': {
@@ -140,19 +160,10 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiChatRoute: ApiChatRoute,
   ApiSendReminderRoute: ApiSendReminderRoute,
+  ApiTelegramRoute: ApiTelegramRoute,
   ApiWhatsappRoute: ApiWhatsappRoute,
   ApiPublicHooksTickRemindersRoute: ApiPublicHooksTickRemindersRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

@@ -17,8 +17,8 @@ import { createFileRoute } from "@tanstack/react-router";
 const TG_TOKEN  = process.env.TELEGRAM_BOT_TOKEN  ?? "8874634451:AAHCobKuZMX6GPG_1Nv7lyMuURiRGixm40U";
 const TG_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "maorliavkfirmaorliavkfir";
 const GROQ_API_KEY = process.env.GROQ_API_KEY ?? "";
-let _supabase: ReturnType<typeof createClient> | null = null;
-function getSupabase() {
+let _supabase: any = null;
+function getSupabase(): any {
   if (_supabase) return _supabase;
   const url = process.env.SUPABASE_URL ?? "";
   const key =
@@ -30,8 +30,8 @@ function getSupabase() {
   _supabase = createClient(url, key);
   return _supabase;
 }
-const supabase = new Proxy({} as ReturnType<typeof createClient>, {
-  get(_t, prop, recv) { return Reflect.get(getSupabase(), prop, recv); },
+const supabase: any = new Proxy({}, {
+  get(_t, prop) { return (getSupabase() as any)[prop]; },
 });
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
