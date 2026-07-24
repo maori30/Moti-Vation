@@ -125,11 +125,12 @@ async function askGroq(userMessage: string, personalityKey: string, context: str
   }
 }
 
+// Table name: 'users' (not 'bot_users')
 async function getOrCreateUser(chatId: number, firstName: string) {
-  const { data } = await supabase.from("bot_users").select("*").eq("chat_id", chatId).single();
+  const { data } = await supabase.from("users").select("*").eq("chat_id", chatId).single();
   if (data) return data;
   const { data: newUser } = await supabase
-    .from("bot_users")
+    .from("users")
     .insert({ chat_id: chatId, first_name: firstName, personality: "cynic", state: "idle" })
     .select()
     .single();
@@ -137,7 +138,7 @@ async function getOrCreateUser(chatId: number, firstName: string) {
 }
 
 async function updateUser(chatId: number, updates: object) {
-  await supabase.from("bot_users").update(updates).eq("chat_id", chatId);
+  await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
 
 async function handleStart(chatId: number, firstName: string) {
@@ -187,18 +188,11 @@ async function handleReminderTime(chatId: number, timeText: string, user: Record
     return;
   }
 
-  const now = new Date();
-  const [hours, minutes] = timeText.split(":").map(Number);
-  const scheduledAt = new Date(now);
-  scheduledAt.setHours(hours, minutes, 0, 0);
-  if (scheduledAt <= now) scheduledAt.setDate(scheduledAt.getDate() + 1);
-
   await supabase.from("reminders").insert({
     chat_id: chatId,
     text: reminderText,
     type,
     time: timeText,
-    scheduled_at: scheduledAt.toISOString(),
     active: true,
   });
 
