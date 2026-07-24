@@ -257,7 +257,7 @@ async function sendReminderList(chatId: number): Promise<void> {
     return;
   }
   const lines = ["📋 <b>התזכורות שלך:</b>"];
-  data.forEach((r, i) => {
+  data.forEach((r: any, i: number) => {
     const typeLabel = r.type === "once" ? "חד-פעמי" : r.type === "daily" ? "יומי" : "שבועי";
     lines.push(`${i + 1}. ${r.text} — ${r.time} (${typeLabel})`);
   });
@@ -420,7 +420,7 @@ export const Route = createFileRoute("/api/telegram")({
               .eq("chat_id", chatId)
               .eq("active", true);
             const context = activeReminders?.length
-              ? `למשתמש יש תזכורות פעילות: ${activeReminders.map((r) => r.text).join(", ")}`
+              ? `למשתמש יש תזכורות פעילות: ${activeReminders.map((r: any) => r.text).join(", ")}`
               : "למשתמש אין תזכורות פעילות כרגע.";
 
             const reply = await askGroq(userText, session.personality, context);
