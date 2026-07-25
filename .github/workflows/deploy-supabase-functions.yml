@@ -1,0 +1,38 @@
+name: Deploy Supabase Functions
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'supabase/functions/**'
+      - '.github/workflows/deploy-supabase-functions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SB_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SB_PROJECT_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Push function secrets to Supabase
+        run: |
+          supabase secrets set GEMINI_API_KEY="${GEMINI_API_KEY}" --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Deploy edge functions
+        run: |
+          supabase functions deploy telegram --project-ref "$SUPABASE_PROJECT_ID" --use-api
