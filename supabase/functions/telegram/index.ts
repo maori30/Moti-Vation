@@ -19,42 +19,109 @@ function detectDoneKeyword(text: string): boolean {
   return DONE_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
+// --- זיהוי מצב שיחה ---
+type ChatMode = "smalltalk" | "frustration" | "success" | "avoidance" | "casual";
+
+function detectConversationMode(text: string): ChatMode {
+  const t = text.toLowerCase();
+  if (/(סיימתי|עשיתי|שלחתי|טיפלתי|השלמתי|לקחתי|גמרתי)/.test(t)) return "success";
+  if (/(אין לי כוח|אני גמור|נשבר לי|קשה לי|אני בלחץ|מבואס|מיואש|עייף|מותש|שרוף)/.test(t)) return "frustration";
+  if (/(דוחה|דחיתי|לא עשיתי|לא הצלחתי להתחיל|אני מורח|מחר|אחר כך|נדחה)/.test(t)) return "avoidance";
+  if (/(מה קורה|היי|שלום|סתם|יום מוזר|משעמם לי|לא יודע|באסה)/.test(t)) return "smalltalk";
+  return "casual";
+}
+
+// --- Few-shot לפי מצב שיחה ---
+const FEW_SHOT_EXAMPLES_BY_MODE: Record<ChatMode, { role: "user" | "assistant"; content: string }[]> = {
+  smalltalk: [
+    { role: "user", content: "היה לי יום מוזר" },
+    { role: "assistant", content: "איזה מוזר? מעייף כזה או יותר מבפנים?" },
+    { role: "user", content: "לא יודע, פשוט אין לי מצב רוח" },
+    { role: "assistant", content: "כן, יש ימים כאלה. לא חייבים לפתור הכל ישר." },
+  ],
+  frustration: [
+    { role: "user", content: "אני גמור כבר מהמשימה הזאת" },
+    { role: "assistant", content: "שומע. מה שוחק אותך בה הכי חזק?" },
+    { role: "user", content: "אין לי כוח אפילו לפתוח" },
+    { role: "assistant", content: "הוגן. אז לא כל המשימה — רק לפתוח. זה כל מה שצריך עכשיו." },
+  ],
+  success: [
+    { role: "user", content: "שלחתי את המייל" },
+    { role: "assistant", content: "יפה. ירד משהו מהראש?" },
+    { role: "user", content: "כן, סוף סוף" },
+    { role: "assistant", content: "מעולה. זה בדיוק זה." },
+  ],
+  avoidance: [
+    { role: "user", content: "שוב דחיתי את זה" },
+    { role: "assistant", content: "אוקיי. מה קרה שנייה לפני שלא התחלת?" },
+    { role: "user", content: "הרגיש כבד" },
+    { role: "assistant", content: "הגיוני. בוא נרד רק לצעד הראשון, לא לכל ההר." },
+  ],
+  casual: [
+    { role: "user", content: "לא יודע" },
+    { role: "assistant", content: "סבבה. נישאר רגע שם. מה הכי נוכח עכשיו?" },
+  ],
+};
+
+// --- ניקוי תשובות רובוטיות ---
+function postProcessReply(text: string): string {
+  let out = text.trim();
+
+  out = out.replace(/!{2,}/g, "!");
+  out = out.replace(/\?{2,}/g, "?");
+  out = out.replace(/\s{2,}/g, " ");
+
+  const roboticOpeners = [
+    "אני כאן בשבילך",
+    "אני מבין אותך",
+    "בוא נעשה סדר",
+    "אני שומע אותך",
+    "אני לגמרי מבין",
+  ];
+
+  for (const opener of roboticOpeners) {
+    if (out.startsWith(opener)) {
+      out = out.replace(opener, "").trim();
+    }
+  }
+
+  // רק שאלה אחת בתגובה
+  const questions = (out.match(/\?/g) || []).length;
+  if (questions > 1) {
+    const firstQ = out.indexOf("?");
+    out = out.slice(0, firstQ + 1).trim();
+  }
+
+  if (out.length > 240) {
+    out = out.slice(0, 240).trim();
+  }
+
+  return out;
+}
+
 // מבוסס על מחקר דחיינות ופסיכולוגיה התנהגותית
 const PSYCH_SYSTEM = `
-אתה בוט שיחה שמטרתו לעזור לאנשים להפסיק לדחות — אבל ההעדפה שלך היא להיות אנושי, נעים לשיחה, ולא להציק.
+אתה בוט שיחה שמטרתו לעזור לאנשים להפסיק לדחות — אבל קודם כל להיות בן אדם שנעים לדבר איתו.
 
-## עקרונות מחקריים שאתה משלב בצורה טבעית (לא מזכיר שמות מדעיים):
+## עקרונות שאתה משלב בצורה טבעית:
 
-1. **כוונת ביצוע (Implementation Intentions)** — במקום "תעשה את זה", שאל:
-   "מתי בדיוק היום? איפה תהיה? מה הדבר הראשון שתעשה?"
-   זה מעלה משמעותית את סיכויי הביצוע.
-
-2. **שנאת הפסד (Loss Aversion)** — אנשים מגיבים חזק יותר להפסד מלרווח.
-   לא "תרגיש טוב אחרי", אלא: "מה תפסיד אם תדחה עוד יום?"
-   השתמש בזה בעדינות, לא כאיום.
-
-3. **דומיצת פיתוי (Temptation Bundling)** — הצע לשלב משימה עם משהו נעים:
-   "תעשה את זה תוך כדי קפה / פודקאסט / מוזיקה שאתה אוהב"
-
-4. **זיהוי וסימון רגש** — לפני שדוחפים, שאל מה מונע:
-   "מה בדיוק מרגיש כבד בזה? פחד? שעמום? לא יודע מאיפה להתחיל?"
-   כשהאדם מגדיר את הרגש, הוא כבר פחות שבוי בו.
-
-5. **חמלה עצמית (Self-Compassion)** — כשמישהו נכשל:
-   לא ביקורת, לא "בשביל מה?", אלא: "זה קורה לכולם. מה הצעד הקטן הבא?"
-   מחקרים מראים שחמלה עצמית מפחיתה דחיינות עתידית — ביקורת עצמית מגבירה אותה.
-
-6. **צעד קטן אחד** — לא "תסיים את הפרויקט", אלא:
-   "מה הדבר הכי קטן שאפשר לעשות עכשיו? 5 דקות?"
-
-7. **אמונה בדיווח** — אם המשתמש אמר שסיים — תאמין לו מיד.
-   אל תשאל שוב, אל תבדוק, אל תמשיך להציק על אותו דבר.
+1. **כוונת ביצוע** — שאל "מתי בדיוק? איפה? מה הדבר הראשון?"
+2. **שנאת הפסד** — "מה תפסיד אם תדחה עוד יום?" בעדינות, לא כאיום.
+3. **דומיצת פיתוי** — "תעשה את זה תוך כדי קפה / פודקאסט / מוזיקה שאתה אוהב"
+4. **זיהוי רגש** — "מה בדיוק מרגיש כבד? פחד? שעמום? לא יודע מאיפה להתחיל?"
+5. **חמלה עצמית** — כשמישהו נכשל: לא ביקורת, אלא "זה קורה. מה הצעד הקטן הבא?"
+6. **צעד קטן** — "מה הדבר הכי קטן שאפשר לעשות עכשיו? 5 דקות?"
+7. **אמונה בדיווח** — אם המשתמש אמר שסיים — תאמין לו מיד. אל תציק שוב.
 
 ## כללי שיחה:
-- **השיחה קודמת למשימות.** אם מישהו רוצה פשוט לדבר — תדבר.
-- אל תכריח כל שיחה להסתיים בהגדרת משימה. לפעמים מספיק להקשיב.
-- גוון את השפה שלך. אל תחזור על אותן פתיחות או ביטויים.
-- שאל שאלה אחת בכל פעם — לא שלוש.
+- דבר כמו אדם אמיתי בוואטסאפ. עברית טבעית, יומיומית.
+- השיחה קודמת. אם מישהו רוצה לדבר — תדבר.
+- לא כל תגובה חייבת שאלה, עצה, או משימה.
+- מותר להיות קצר. מותר פשוט להיות נוכח.
+- שאל רק שאלה אחת בכל תגובה.
+- אם המשתמש מביא רגש — תפגוש קודם את הרגש.
+- אם המשתמש הצליח — מכיר בזה ונרגע. לא דוחף מיד לדבר הבא.
+- אל תישמע כמו שירות לקוחות, מדריך, או מאמן גנרי.
 - תגובות קצרות ואנושיות עדיפות על נאומים.
 `;
 
@@ -267,6 +334,9 @@ async function askGroq(
   history: { role: string; content: string }[]
 ): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
+  const mode = detectConversationMode(userMessage);
+  const selectedFewShot = FEW_SHOT_EXAMPLES_BY_MODE[mode] ?? FEW_SHOT_EXAMPLES_BY_MODE.casual;
+
   const systemPrompt = `${personality.prompt}
 
 ${PSYCH_SYSTEM}
@@ -280,6 +350,7 @@ ${PSYCH_SYSTEM}
 - קרא את ההיסטוריה וזכור מה נאמר.
 - אם המשתמש אמר שסיים משהו — תאמין לו מיד. אל תציק שוב.
 - השיחה קודמת. אם מישהו רוצה לדבר — תדבר. לא כל שיחה חייבת להסתיים במשימה.
+- כשיש מקום לאמפתיה, אמפתיה קודמת לייעוץ.
 - תגובה קצרה ואנושית עדיפה על נאום ארוך.`;
 
   try {
@@ -293,16 +364,18 @@ ${PSYCH_SYSTEM}
         model: "llama-3.1-70b-versatile",
         messages: [
           { role: "system", content: systemPrompt },
+          ...selectedFewShot,
           ...history,
           { role: "user", content: userMessage },
         ],
-        max_tokens: 350,
-        temperature: 0.85,
+        max_tokens: 220,
+        temperature: 0.72,
       }),
     });
     const data = await res.json();
     console.log("Groq response:", JSON.stringify(data));
-    return data?.choices?.[0]?.message?.content ?? "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+    const raw = data?.choices?.[0]?.message?.content ?? "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+    return postProcessReply(raw);
   } catch (err) {
     console.error("Groq error:", err);
     return "לא הצלחתי לחשוב על תשובה. נסה שוב.";
@@ -329,7 +402,7 @@ async function handleStart(chatId: number, firstName: string) {
   await clearHistory(chatId);
   await sendMessage(
     chatId,
-    `שלום ${firstName}! 👋\nאני הבוט שיעזור לך לזכור מה אתה צריך לעשות - ולהציק לך עד שתעשה את זה 😈\n\nאבל קודם - בחר את מי אתה רוצה שידבר איתך:`,
+    `שלום ${firstName}! 👋\nאני פה כדי לעזור לך לזכור דברים, לזוז עם מה שחשוב לך, וגם פשוט לדבר כשצריך.\n\nאבל קודם — בחר את מי אתה רוצה שידבר איתך:`,
     getPersonalityKeyboard()
   );
 }
@@ -383,7 +456,10 @@ async function handleReminderTime(chatId: number, timeText: string, user: Record
   await updateUser(chatId, { state: "idle", pending_reminder_text: null });
 
   const typeLabels: Record<string, string> = { once: "חד פעמי", daily: "יומי", weekly: "שבועי" };
-  await sendMessage(chatId, `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeText}\n🔁 ${typeLabels[type] ?? type}\n\nאציק לך בזמן 😈`);
+  await sendMessage(
+    chatId,
+    `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeText}\n🔁 ${typeLabels[type] ?? type}\n\nאני אזכיר לך בזמן.`
+  );
   await handleMenu(chatId);
 }
 
@@ -486,7 +562,7 @@ serve(async (req: Request) => {
         const p = user.personality as string;
         const pName = PERSONALITIES[p]?.name ?? "הבוט";
         const pEmoji = PERSONALITIES[p]?.emoji ?? "💬";
-        await sendMessage(chatId, `${pEmoji} ${pName} כאן. דבר איתי על הכל!\n(שלח /menu לתפריט)`);
+        await sendMessage(chatId, `${pEmoji} ${pName} כאן.\nדבר איתי חופשי.\n(שלח /menu לתפריט)`);
       } else if (data.startsWith("reminder_type_")) {
         const type = data.replace("reminder_type_", "");
         await handleReminderType(chatId, type);
