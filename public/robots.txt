@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://moti-vation.lovable.app/sitemap.xml
