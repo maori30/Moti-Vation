@@ -10,13 +10,30 @@ export const Route = createFileRoute("/")({
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
+    links: [{ rel: "canonical", href: "https://moti-vation.lovable.app/" }],
+    scripts: [
+      {
+        type: "application/ld+json",
+        children: JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "SoftwareApplication",
+          name: "מוטי",
+          description:
+            "בוט מוטיבציה בוואטסאפ – סמל ציני וסרקסטי שרודף אחריך עד שתסגור מטרות.",
+          applicationCategory: "ProductivityApplication",
+          operatingSystem: "Web, WhatsApp",
+          url: "https://moti-vation.lovable.app/",
+          offers: { "@type": "Offer", price: "0", priceCurrency: "ILS" },
+        }),
+      },
+    ],
   }),
   component: Index,
 });
 
 function Index() {
   return (
-    <div dir="rtl" className="min-h-screen bg-[#0b141a] text-white flex items-center justify-center px-6 py-12">
+    <main dir="rtl" className="min-h-screen bg-[#0b141a] text-white flex items-center justify-center px-6 py-12">
       <div className="max-w-lg w-full text-center space-y-6">
         <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-[#25d366] text-3xl font-bold shadow-lg">
           מ
@@ -26,7 +43,7 @@ function Index() {
           זה לא אתר. זה בוט. סמל קשוח, ציני וסרקסטי שרודף אחריך בוואטסאפ עד שתסגור את המשימות שלך.
         </p>
         <div className="rounded-xl border border-white/10 bg-white/5 p-5 text-right space-y-3">
-          <div className="text-sm text-gray-400">איך מתחילים:</div>
+          <h2 className="text-sm text-gray-400 font-normal">איך מתחילים:</h2>
           <ol className="space-y-2 text-gray-100 list-decimal pr-5">
             <li>שלח הודעת "היי" למוטי בוואטסאפ.</li>
             <li>ספר לו מה אתה דוחה או מתי להזכיר לך.</li>
@@ -52,6 +69,6 @@ function Index() {
           חייבים לפתוח שיחה קודם בוואטסאפ כדי שהוא יוכל לשלוח הודעות בחזרה.
         </p>
       </div>
-    </div>
+    </main>
   );
 }
