@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -67,6 +67,12 @@ function Index() {
 
         <p className="text-xs text-gray-500">
           חייבים לפתוח שיחה קודם בוואטסאפ כדי שהוא יוכל לשלוח הודעות בחזרה.
+        </p>
+
+        <p className="text-sm text-gray-400 pt-4 border-t border-white/10">
+          <Link to="/blog/stop-procrastination-with-ai" className="underline hover:text-white">
+            מדריך: איך להפסיק לדחות עם AI →
+          </Link>
         </p>
       </div>
     </main>
