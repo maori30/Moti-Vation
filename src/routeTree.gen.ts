@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as BlogStopProcrastinationWithAiRouteImport } from './routes/blog.stop-procrastination-with-ai'
 import { Route as ApiWhatsappRouteImport } from './routes/api/whatsapp'
 import { Route as ApiTelegramRouteImport } from './routes/api/telegram'
 import { Route as ApiSendReminderRouteImport } from './routes/api/send-reminder'
@@ -27,6 +28,12 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BlogStopProcrastinationWithAiRoute =
+  BlogStopProcrastinationWithAiRouteImport.update({
+    id: '/blog/stop-procrastination-with-ai',
+    path: '/blog/stop-procrastination-with-ai',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiWhatsappRoute = ApiWhatsappRouteImport.update({
   id: '/api/whatsapp',
   path: '/api/whatsapp',
@@ -61,6 +68,7 @@ export interface FileRoutesByFullPath {
   '/api/send-reminder': typeof ApiSendReminderRoute
   '/api/telegram': typeof ApiTelegramRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
+  '/blog/stop-procrastination-with-ai': typeof BlogStopProcrastinationWithAiRoute
   '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
 export interface FileRoutesByTo {
@@ -70,6 +78,7 @@ export interface FileRoutesByTo {
   '/api/send-reminder': typeof ApiSendReminderRoute
   '/api/telegram': typeof ApiTelegramRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
+  '/blog/stop-procrastination-with-ai': typeof BlogStopProcrastinationWithAiRoute
   '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
 export interface FileRoutesById {
@@ -80,6 +89,7 @@ export interface FileRoutesById {
   '/api/send-reminder': typeof ApiSendReminderRoute
   '/api/telegram': typeof ApiTelegramRoute
   '/api/whatsapp': typeof ApiWhatsappRoute
+  '/blog/stop-procrastination-with-ai': typeof BlogStopProcrastinationWithAiRoute
   '/api/public/hooks/tick-reminders': typeof ApiPublicHooksTickRemindersRoute
 }
 export interface FileRouteTypes {
@@ -91,6 +101,7 @@ export interface FileRouteTypes {
     | '/api/send-reminder'
     | '/api/telegram'
     | '/api/whatsapp'
+    | '/blog/stop-procrastination-with-ai'
     | '/api/public/hooks/tick-reminders'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -100,6 +111,7 @@ export interface FileRouteTypes {
     | '/api/send-reminder'
     | '/api/telegram'
     | '/api/whatsapp'
+    | '/blog/stop-procrastination-with-ai'
     | '/api/public/hooks/tick-reminders'
   id:
     | '__root__'
@@ -109,6 +121,7 @@ export interface FileRouteTypes {
     | '/api/send-reminder'
     | '/api/telegram'
     | '/api/whatsapp'
+    | '/blog/stop-procrastination-with-ai'
     | '/api/public/hooks/tick-reminders'
   fileRoutesById: FileRoutesById
 }
@@ -119,6 +132,7 @@ export interface RootRouteChildren {
   ApiSendReminderRoute: typeof ApiSendReminderRoute
   ApiTelegramRoute: typeof ApiTelegramRoute
   ApiWhatsappRoute: typeof ApiWhatsappRoute
+  BlogStopProcrastinationWithAiRoute: typeof BlogStopProcrastinationWithAiRoute
   ApiPublicHooksTickRemindersRoute: typeof ApiPublicHooksTickRemindersRoute
 }
 
@@ -136,6 +150,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/blog/stop-procrastination-with-ai': {
+      id: '/blog/stop-procrastination-with-ai'
+      path: '/blog/stop-procrastination-with-ai'
+      fullPath: '/blog/stop-procrastination-with-ai'
+      preLoaderRoute: typeof BlogStopProcrastinationWithAiRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/whatsapp': {
@@ -183,6 +204,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiSendReminderRoute: ApiSendReminderRoute,
   ApiTelegramRoute: ApiTelegramRoute,
   ApiWhatsappRoute: ApiWhatsappRoute,
+  BlogStopProcrastinationWithAiRoute: BlogStopProcrastinationWithAiRoute,
   ApiPublicHooksTickRemindersRoute: ApiPublicHooksTickRemindersRoute,
 }
 export const routeTree = rootRouteImport
