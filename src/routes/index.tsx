@@ -32,7 +32,7 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const TELEGRAM_URL = "https://t.me/MotiVationBot";
+  const TELEGRAM_URL = "https://t.me/MotivationTheBot";
   return (
     <main
       dir="rtl"
