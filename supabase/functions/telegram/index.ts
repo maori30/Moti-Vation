@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
@@ -249,31 +249,46 @@ async function askGemini(
   ];
 
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt }] },
-          contents: [
-            ...geminiHistory,
-            { role: "user", parts: [{ text: userMessage }] },
-          ],
-          generationConfig: {
-            maxOutputTokens: 220,
-            temperature: 0.75,
-            topP: 0.95,
-          },
-        }),
-      }
-    );
+    if (!LOVABLE_API_KEY) {
+      console.error("Missing LOVABLE_API_KEY secret");
+      return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את LOVABLE_API_KEY.";
+    }
+    const chatMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+      { role: "system", content: systemPrompt },
+      ...selectedFewShot.map((m) => ({
+        role: (m.role === "model" ? "assistant" : "user") as "user" | "assistant",
+        content: m.parts.map((p) => p.text).join(""),
+      })),
+      ...history.map((m) => ({
+        role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+        content: m.content,
+      })),
+      { role: "user", content: userMessage },
+    ];
+    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Lovable-API-Key": LOVABLE_API_KEY,
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: chatMessages,
+        temperature: 0.75,
+        max_tokens: 220,
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`Lovable AI failed [${res.status}]: ${errText}`);
+      return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
+    }
     const data = await res.json();
-    console.log("Gemini response:", JSON.stringify(data));
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+    console.log("Lovable AI response:", JSON.stringify(data));
+    const raw = data?.choices?.[0]?.message?.content ?? "לא הצלחתי לחשוב על תשובה. נסה שוב.";
     return postProcessReply(raw);
   } catch (err) {
-    console.error("Gemini error:", err);
+    console.error("Lovable AI error:", err);
     return "לא הצלחתי לחשוב על תשובה. נסה שוב.";
   }
 }
