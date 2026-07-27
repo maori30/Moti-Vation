@@ -8,6 +8,22 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// In-memory ring buffer of recent Gemini errors for the /diag command.
+type DiagError = { at: string; status?: number; code?: string; message: string };
+const RECENT_ERRORS: DiagError[] = [];
+function recordError(e: DiagError) {
+  RECENT_ERRORS.unshift({ ...e, at: new Date().toISOString() });
+  if (RECENT_ERRORS.length > 5) RECENT_ERRORS.length = 5;
+}
+
+function logMissingSecrets() {
+  const required = ["TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SB_SERVICE_ROLE_KEY"];
+  const missing = required.filter((k) => !Deno.env.get(k));
+  if (missing.length) console.error(`[secrets] missing: ${missing.join(", ")}`);
+  return missing;
+}
+logMissingSecrets();
+
 const DONE_KEYWORDS = [
   "סיימתי", "עשיתי", "לקחתי", "גמרתי", "עשיתי את זה", "טיפלתי",
   "הלכתי", "שלחתי", "התקשרתי", "קניתי", "אכלתי", "שתיתי",
