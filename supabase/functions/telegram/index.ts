@@ -7,7 +7,9 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const GEMINI_MODEL = "gemini-1.5-flash";
+// Using v1 (stable) API with gemini-2.0-flash
+const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_API_VERSION = "v1beta";
 
 type DiagError = { at: string; status?: number; code?: string; message: string };
 const RECENT_ERRORS: DiagError[] = [];
@@ -127,7 +129,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה החבר הכי טוב — מקשיב באמת, לא שופט, זוכר פרטים.\nוואטסאפ אמיתי — קצר, ספונטני, חם.\nכתוב עברית ישראלית יומיומית ותקנית.\nאל תכתוב "החבר:" לפני התגובה.`,
   },
   sergeant: {
-    name: `הרס\"ר`,
+    name: `הרס"ר`,
     emoji: "🪖",
     prompt: `אתה רס"ר ותיק שראה הכל. מדבר קצר, חד, בלי עטיפות.\nכתוב עברית ישראלית תקנית.\nאל תכתוב 'רס"ר:' לפני התגובה.`,
   },
@@ -256,7 +258,7 @@ async function askGemini(
       { role: "user" as const, parts: [{ text: userMessage }] },
     ];
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -315,7 +317,7 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent?key=${key}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
