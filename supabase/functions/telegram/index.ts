@@ -2,13 +2,11 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
-const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// In-memory ring buffer of recent Gemini errors for the /diag command.
 type DiagError = { at: string; status?: number; code?: string; message: string };
 const RECENT_ERRORS: DiagError[] = [];
 function recordError(e: DiagError) {
@@ -256,7 +254,7 @@ async function askGemini(
       { role: "user" as const, parts: [{ text: userMessage }] },
     ];
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -315,7 +313,7 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -343,7 +341,6 @@ async function handleDiag(chatId: number) {
     TELEGRAM_BOT_TOKEN: !!Deno.env.get("TELEGRAM_BOT_TOKEN"),
     SUPABASE_URL: !!Deno.env.get("SUPABASE_URL"),
     SB_SERVICE_ROLE_KEY: !!Deno.env.get("SB_SERVICE_ROLE_KEY"),
-    LOVABLE_API_KEY: !!Deno.env.get("LOVABLE_API_KEY"),
   };
   const ping = await pingGemini();
 
