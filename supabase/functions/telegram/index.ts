@@ -527,6 +527,8 @@ serve(async (req: Request) => {
 
     if (text === "/start") {
       await handleStart(chatId, firstName);
+    } else if (text === "/diag") {
+      await handleDiag(chatId);
     } else if (text === "/menu") {
       await updateUser(chatId, { state: "idle" });
       await handleMenu(chatId);
