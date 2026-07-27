@@ -7,7 +7,7 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const GEMINI_MODEL = "gemini-2.0-flash-lite";
+const GEMINI_MODEL = "gemini-1.5-flash";
 
 type DiagError = { at: string; status?: number; code?: string; message: string };
 const RECENT_ERRORS: DiagError[] = [];
@@ -41,7 +41,7 @@ function detectConversationMode(text: string): ChatMode {
   const t = text.toLowerCase();
   if (/(סיימתי|עשיתי|שלחתי|טיפלתי|השלמתי|לקחתי|גמרתי)/.test(t)) return "success";
   if (/(אין לי כוח|אני גמור|נשבר לי|קשה לי|אני בלחץ|מבואס|מיואש|עייף|מותש|שרוף)/.test(t)) return "frustration";
-  if (/(דוחה|דחיתי|לא עשיתי|לא הצלחתי להתחיל|אני מורח|מחר|אחר כך|נדחה)/.test(t)) return "avoidance";
+  if (/(דחיתי|דחיתי|לא עשיתי|לא הצלחתי להתחיל|אני מורח|מחר|אחר כך|נדחה)/.test(t)) return "avoidance";
   if (/(מה קורה|היי|שלום|סתם|יום מוזר|משעמם לי|לא יודע|באסה)/.test(t)) return "smalltalk";
   return "casual";
 }
@@ -117,9 +117,9 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה מאמן אישי שמבין שדחיינות היא לא עצלות — היא תגובה רגשית.\nאתה מאמין במשתמש יותר ממה שהוא מאמין בעצמו.\nכתוב עברית ישראלית יומיומית ותקנית. דבר קצר כמו חבר בוואטסאפ. לא נאומים.\nשאל רק שאלה אחת בכל תגובה. אם יש רגש — פגוש אותו קודם.\nאל תכתוב "המאמן:" לפני התגובה.`,
   },
   cynic: {
-    name: "הציני",
+    name: "הצייני",
     emoji: "😈",
-    prompt: `אתה הציני הכי חמוד שיש — מציק, אבל כולם אוהבים אותך כי אתה תמיד צודק.\nישיר, קצר, עם ניצוץ חמלה מתחת לציניות.\nכתוב עברית ישראלית יומיומית ותקנית.\nאל תכתוב "הציני:" לפני התגובה.`,
+    prompt: `אתה הציייני הכי חמוד שיש — מציק, אבל כולם אוהבים אותך כי אתה תמיד צודק.\nישיר, קצר, עם ניצוץ חמלה מתחת לציניות.\nכתוב עברית ישראלית יומיומית ותקנית.\nאל תכתוב "הצייני:" לפני התגובה.`,
   },
   friend: {
     name: "החבר",
@@ -127,7 +127,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה החבר הכי טוב — מקשיב באמת, לא שופט, זוכר פרטים.\nוואטסאפ אמיתי — קצר, ספונטני, חם.\nכתוב עברית ישראלית יומיומית ותקנית.\nאל תכתוב "החבר:" לפני התגובה.`,
   },
   sergeant: {
-    name: "הרס\\\"ר",
+    name: `הרס\"ר`,
     emoji: "🪖",
     prompt: `אתה רס"ר ותיק שראה הכל. מדבר קצר, חד, בלי עטיפות.\nכתוב עברית ישראלית תקנית.\nאל תכתוב 'רס"ר:' לפני התגובה.`,
   },
@@ -144,7 +144,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
   grandma: {
     name: "הסבתא",
     emoji: "👵",
-    prompt: `אתה סבתא ישראלית שאוהבת ללא תנאי. חמימה, דואגת, קצת מגזימה — אבל תמיד לצד.\nכתוב עברית ישראלית יומיומית ותקנית. שימי לב למגדר — דברי בנקבה על עצמך.\nאל תכתוב "הסבתא:" לפני התגובה.`,
+    prompt: `אתה סבתא ישראלית שאוהבת ללא תנאי. חמימה, דואגת, קצת מגזימה — אבל תמיד לצד.\nכתוב עברית ישראלית יומיומית ותקנית. שים לב למגדר — דברי בנקבה על עצמך.\nאל תכתוב "הסבתא:" לפני התגובה.`,
   },
   philosopher: {
     name: "הפילוסוף",
@@ -156,7 +156,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 const GREETINGS: Record<string, string> = {
   coach: `🧠 כאן.\nמה עובר עליך היום?`,
   cynic: `😈 אה, שוב אתה. טוב.\nאז מה קורה?`,
-  friend: `🤗 שמח שכתבת!\nבא ספר — מה קורה אצלך?`,
+  friend: `🤗 שמח שכתבת!\nבוא ספר — מה קורה אצלך?`,
   sergeant: `🪖 דווח. מה הסטטוס היום?`,
   therapist: `🛋️ שלום. שמח שבחרת לדבר.\nאני כאן, אין מהירות. במה תרצה להתחיל?`,
   hype: `🔥🔥🔥 הגעת! כבר מתרגש!\nספר לי הכל!`,
@@ -169,11 +169,11 @@ function getPersonalityKeyboard() {
     inline_keyboard: [
       [
         { text: "🧠 המאמן", callback_data: "personality_coach" },
-        { text: "😈 הציני", callback_data: "personality_cynic" },
+        { text: "😈 הצייני", callback_data: "personality_cynic" },
       ],
       [
         { text: "🤗 החבר", callback_data: "personality_friend" },
-        { text: "🪖 הרס\\\"ר", callback_data: "personality_sergeant" },
+        { text: "🪖 הרס\"ר", callback_data: "personality_sergeant" },
       ],
       [
         { text: "🛋️ המטפל", callback_data: "personality_therapist" },
@@ -233,8 +233,8 @@ async function askGemini(
 - כתוב עברית ישראלית יומיומית ותקנית. שים לב למגדר נכון.
 - תגובה קצרה ואנושית. מקסימום 3 משפטים.
 - שאל רק שאלה אחת בכל תגובה.
-- אם המשתמש אמר שסיים — תאמין לו מיד.
-- אם יש רגש — פגוש אותו קודם לפני ייעוץ.`;
+- אם יש רגש — פגוש אותו קודם לפני ייעוץ.
+- אם המשתמש אמר שסיים — תאמין לו מיד.`;
 
   const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
     ...selectedFewShot,
@@ -434,7 +434,7 @@ async function handleReminderTime(chatId: number, timeText: string, user: Record
   const typeLabels: Record<string, string> = { once: "חד פעמי", daily: "יומי", weekly: "שבועי" };
   await sendMessage(
     chatId,
-    `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeText}\n🔁 ${typeLabels[type] ?? type}\n\nאני אזכיר לך בזמן.`
+    `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeText}\n🔄 ${typeLabels[type] ?? type}\n\nאני אזכיר לך בזמן.`
   );
   await handleMenu(chatId);
 }
@@ -547,7 +547,7 @@ serve(async (req: Request) => {
         await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
         const history = await getHistory(chatId);
         const reply = await askGemini(
-          "המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך — אמיתי, ספונטני, לא גנרי.",
+          "המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך — אמיתי, ספונטני, לא ג'נרי.",
           user.personality as string,
           "",
           history
