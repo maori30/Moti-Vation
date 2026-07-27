@@ -7,7 +7,7 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-2.0-flash-lite";
 
 type DiagError = { at: string; status?: number; code?: string; message: string };
 const RECENT_ERRORS: DiagError[] = [];
