@@ -249,46 +249,40 @@ async function askGemini(
   ];
 
   try {
-    if (!LOVABLE_API_KEY) {
-      console.error("Missing LOVABLE_API_KEY secret");
-      return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את LOVABLE_API_KEY.";
+    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+    if (!GEMINI_API_KEY) {
+      console.error("Missing GEMINI_API_KEY secret");
+      return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
-    const chatMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
-      { role: "system", content: systemPrompt },
-      ...selectedFewShot.map((m) => ({
-        role: (m.role === "model" ? "assistant" : "user") as "user" | "assistant",
-        content: m.parts.map((p) => p.text).join(""),
-      })),
-      ...history.map((m) => ({
-        role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
-        content: m.content,
-      })),
-      { role: "user", content: userMessage },
+    const contents = [
+      ...geminiHistory,
+      { role: "user" as const, parts: [{ text: userMessage }] },
     ];
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Lovable-API-Key": LOVABLE_API_KEY,
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents,
+          generationConfig: { temperature: 0.75, maxOutputTokens: 220 },
+        }),
       },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: chatMessages,
-        temperature: 0.75,
-        max_tokens: 220,
-      }),
-    });
+    );
     if (!res.ok) {
       const errText = await res.text();
-      console.error(`Lovable AI failed [${res.status}]: ${errText}`);
+      console.error(`Gemini API failed [${res.status}]: ${errText}`);
       return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
     }
     const data = await res.json();
-    console.log("Lovable AI response:", JSON.stringify(data));
-    const raw = data?.choices?.[0]?.message?.content ?? "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+    console.log("Gemini response:", JSON.stringify(data));
+    const raw =
+      data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ||
+      "לא הצלחתי לחשוב על תשובה. נסה שוב.";
     return postProcessReply(raw);
   } catch (err) {
-    console.error("Lovable AI error:", err);
+    console.error("Gemini error:", err);
     return "לא הצלחתי לחשוב על תשובה. נסה שוב.";
   }
 }
