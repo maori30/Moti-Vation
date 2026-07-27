@@ -7,6 +7,8 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+const GEMINI_MODEL = "gemini-2.5-flash";
+
 type DiagError = { at: string; status?: number; code?: string; message: string };
 const RECENT_ERRORS: DiagError[] = [];
 function recordError(e: DiagError) {
@@ -254,7 +256,7 @@ async function askGemini(
       { role: "user" as const, parts: [{ text: userMessage }] },
     ];
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -313,7 +315,7 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -346,7 +348,7 @@ async function handleDiag(chatId: number) {
 
   const mark = (b: boolean) => (b ? "✅" : "❌");
   const lines: string[] = [];
-  lines.push("🔧 <b>אבחון מערכת</b>\n");
+  lines.push(`🔧 <b>אבחון מערכת</b> (מודל: ${GEMINI_MODEL})\n`);
   lines.push("<b>סודות:</b>");
   for (const [k, v] of Object.entries(secrets)) lines.push(`${mark(v)} ${k}`);
   lines.push("");
