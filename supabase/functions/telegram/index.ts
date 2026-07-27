@@ -8,6 +8,22 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// In-memory ring buffer of recent Gemini errors for the /diag command.
+type DiagError = { at: string; status?: number; code?: string; message: string };
+const RECENT_ERRORS: DiagError[] = [];
+function recordError(e: DiagError) {
+  RECENT_ERRORS.unshift({ ...e, at: new Date().toISOString() });
+  if (RECENT_ERRORS.length > 5) RECENT_ERRORS.length = 5;
+}
+
+function logMissingSecrets() {
+  const required = ["TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SB_SERVICE_ROLE_KEY"];
+  const missing = required.filter((k) => !Deno.env.get(k));
+  if (missing.length) console.error(`[secrets] missing: ${missing.join(", ")}`);
+  return missing;
+}
+logMissingSecrets();
+
 const DONE_KEYWORDS = [
   "סיימתי", "עשיתי", "לקחתי", "גמרתי", "עשיתי את זה", "טיפלתי",
   "הלכתי", "שלחתי", "התקשרתי", "קניתי", "אכלתי", "שתיתי",
@@ -251,7 +267,8 @@ async function askGemini(
   try {
     const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
     if (!GEMINI_API_KEY) {
-      console.error("Missing GEMINI_API_KEY secret");
+      console.error("[gemini] missing secret GEMINI_API_KEY");
+      recordError({ code: "MISSING_KEY", message: "GEMINI_API_KEY not set in Supabase secrets" });
       return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
     const contents = [
@@ -272,17 +289,28 @@ async function askGemini(
     );
     if (!res.ok) {
       const errText = await res.text();
-      console.error(`Gemini API failed [${res.status}]: ${errText}`);
+      let apiCode: string | undefined;
+      try {
+        const j = JSON.parse(errText);
+        apiCode = j?.error?.status || j?.error?.code?.toString();
+      } catch { /* not json */ }
+      console.error(`[gemini] http ${res.status} ${apiCode ?? ""} body=${errText.slice(0, 500)}`);
+      recordError({ status: res.status, code: apiCode, message: errText.slice(0, 300) });
       return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
     }
     const data = await res.json();
-    console.log("Gemini response:", JSON.stringify(data));
+    if (data?.promptFeedback?.blockReason) {
+      console.error(`[gemini] blocked: ${data.promptFeedback.blockReason}`);
+      recordError({ code: "BLOCKED", message: data.promptFeedback.blockReason });
+    }
     const raw =
       data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ||
       "לא הצלחתי לחשוב על תשובה. נסה שוב.";
     return postProcessReply(raw);
   } catch (err) {
-    console.error("Gemini error:", err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[gemini] exception: ${msg}`);
+    recordError({ code: "EXCEPTION", message: msg });
     return "לא הצלחתי לחשוב על תשובה. נסה שוב.";
   }
 }
@@ -300,6 +328,70 @@ async function getOrCreateUser(chatId: number, firstName: string) {
 
 async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
+}
+
+async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: string; message?: string }> {
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "ping" }] }],
+          generationConfig: { maxOutputTokens: 5 },
+        }),
+      },
+    );
+    if (!res.ok) {
+      const t = await res.text();
+      let code: string | undefined;
+      try { code = JSON.parse(t)?.error?.status; } catch { /* ignore */ }
+      return { ok: false, status: res.status, code, message: t.slice(0, 200) };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    return { ok: false, code: "EXCEPTION", message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function handleDiag(chatId: number) {
+  const secrets = {
+    GEMINI_API_KEY: !!Deno.env.get("GEMINI_API_KEY"),
+    TELEGRAM_BOT_TOKEN: !!Deno.env.get("TELEGRAM_BOT_TOKEN"),
+    SUPABASE_URL: !!Deno.env.get("SUPABASE_URL"),
+    SB_SERVICE_ROLE_KEY: !!Deno.env.get("SB_SERVICE_ROLE_KEY"),
+    LOVABLE_API_KEY: !!Deno.env.get("LOVABLE_API_KEY"),
+  };
+  const ping = await pingGemini();
+
+  const mark = (b: boolean) => (b ? "✅" : "❌");
+  const lines: string[] = [];
+  lines.push("🔧 <b>אבחון מערכת</b>\n");
+  lines.push("<b>סודות:</b>");
+  for (const [k, v] of Object.entries(secrets)) lines.push(`${mark(v)} ${k}`);
+  lines.push("");
+  lines.push("<b>Gemini API:</b>");
+  if (ping.ok) {
+    lines.push(`✅ מגיב תקין (HTTP ${ping.status})`);
+  } else {
+    lines.push(`❌ נכשל${ping.status ? ` (HTTP ${ping.status})` : ""}${ping.code ? ` — ${ping.code}` : ""}`);
+    if (ping.message) lines.push(`<code>${ping.message.replace(/[<>&]/g, "")}</code>`);
+  }
+  lines.push("");
+  lines.push("<b>שגיאות אחרונות:</b>");
+  if (RECENT_ERRORS.length === 0) {
+    lines.push("(אין)");
+  } else {
+    for (const e of RECENT_ERRORS) {
+      const when = e.at.replace("T", " ").slice(0, 19);
+      const tag = [e.status, e.code].filter(Boolean).join(" ");
+      lines.push(`• ${when} ${tag ? `[${tag}] ` : ""}${e.message.replace(/[<>&]/g, "").slice(0, 180)}`);
+    }
+  }
+  await sendMessage(chatId, lines.join("\n"));
 }
 
 async function handleStart(chatId: number, firstName: string) {
@@ -499,6 +591,8 @@ serve(async (req: Request) => {
 
     if (text === "/start") {
       await handleStart(chatId, firstName);
+    } else if (text === "/diag") {
+      await handleDiag(chatId);
     } else if (text === "/menu") {
       await updateUser(chatId, { state: "idle" });
       await handleMenu(chatId);
