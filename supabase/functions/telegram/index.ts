@@ -267,7 +267,8 @@ async function askGemini(
   try {
     const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
     if (!GEMINI_API_KEY) {
-      console.error("Missing GEMINI_API_KEY secret");
+      console.error("[gemini] missing secret GEMINI_API_KEY");
+      recordError({ code: "MISSING_KEY", message: "GEMINI_API_KEY not set in Supabase secrets" });
       return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
     const contents = [
@@ -288,17 +289,28 @@ async function askGemini(
     );
     if (!res.ok) {
       const errText = await res.text();
-      console.error(`Gemini API failed [${res.status}]: ${errText}`);
+      let apiCode: string | undefined;
+      try {
+        const j = JSON.parse(errText);
+        apiCode = j?.error?.status || j?.error?.code?.toString();
+      } catch { /* not json */ }
+      console.error(`[gemini] http ${res.status} ${apiCode ?? ""} body=${errText.slice(0, 500)}`);
+      recordError({ status: res.status, code: apiCode, message: errText.slice(0, 300) });
       return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
     }
     const data = await res.json();
-    console.log("Gemini response:", JSON.stringify(data));
+    if (data?.promptFeedback?.blockReason) {
+      console.error(`[gemini] blocked: ${data.promptFeedback.blockReason}`);
+      recordError({ code: "BLOCKED", message: data.promptFeedback.blockReason });
+    }
     const raw =
       data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ||
       "לא הצלחתי לחשוב על תשובה. נסה שוב.";
     return postProcessReply(raw);
   } catch (err) {
-    console.error("Gemini error:", err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[gemini] exception: ${msg}`);
+    recordError({ code: "EXCEPTION", message: msg });
     return "לא הצלחתי לחשוב על תשובה. נסה שוב.";
   }
 }
