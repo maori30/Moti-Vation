@@ -27,6 +27,11 @@ let LAST_MODEL_ERROR: string | null = null;
 // Models confirmed to return 404/NOT_FOUND for this API key – skip them
 const BLOCKED_MODELS = new Set<string>();
 
+function isGeminiModel(name: string): boolean {
+  // Only allow models that start with "gemini-" — exclude gemma, palm, etc.
+  return name.startsWith("gemini-");
+}
+
 async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${apiKey}`
@@ -37,8 +42,9 @@ async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
   }
   const data = await res.json();
   return (data.models ?? [])
-    .filter((m: { supportedGenerationMethods?: string[] }) =>
-      (m.supportedGenerationMethods ?? []).includes("generateContent")
+    .filter((m: { supportedGenerationMethods?: string[]; name: string }) =>
+      (m.supportedGenerationMethods ?? []).includes("generateContent") &&
+      isGeminiModel(m.name.replace(/^models\//, ""))
     )
     .map((m: { name: string }) => m.name.replace(/^models\//, ""));
 }
@@ -85,9 +91,9 @@ async function resolveGeminiModel(): Promise<string> {
 
     // Build candidate list: preferred order, filtered to what models.list returns
     const candidates = PREFERRED_GEMINI_MODELS.filter((m) => available.includes(m));
-    // Append any remaining available models not in our preferred list
+    // Append any remaining available gemini models not in our preferred list
     for (const m of available) {
-      if (!candidates.includes(m)) candidates.push(m);
+      if (!candidates.includes(m) && isGeminiModel(m)) candidates.push(m);
     }
 
     for (const model of candidates) {
