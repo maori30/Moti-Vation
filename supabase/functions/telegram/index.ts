@@ -144,6 +144,43 @@ function detectConversationMode(text: string): ChatMode {
   return "casual";
 }
 
+// ===== Hebrew Humor / Intent Detection Engine =====
+// Runs BEFORE the message is sent to Gemini. Detects sarcasm, jokes, wordplay,
+// or genuine seriousness, and injects a short instruction into the prompt so the
+// model interprets the message correctly instead of taking it literally.
+type IntentTone = "sarcastic" | "joke" | "wordplay" | "serious" | "neutral";
+
+function analyzeHebrewIntent(text: string): IntentTone {
+  const t = text.trim().toLowerCase();
+  if (!t) return "neutral";
+
+  const sarcasmMarkers =
+    /(כן,? ?בטח|נו ?באמת|וואו איזה|איזה כבוד|בדיוק מה שחיפשתי|איזה יופי|מגניב\.\.\.|כן ?ברור|בטח בטח|חחח+|😏|🙄|😅|איזה מזל שלי|מה איכפת לי)/;
+  const jokeMarkers =
+    /(סתם(?!\s?ה)|צוחק|בצחוק|קונדס|בדיחה|😂|🤣|חחח+|היי זה היה סתם)/;
+  const wordplayMarkers =
+    /(משחק מילים|התכוונתי ל|לא זה התכוונתי|טעות דפוס|התכוונתי בעצם)/;
+
+  if (sarcasmMarkers.test(t)) return "sarcastic";
+  if (jokeMarkers.test(t)) return "joke";
+  if (wordplayMarkers.test(t)) return "wordplay";
+  if (t.length < 2) return "neutral";
+  return "serious";
+}
+
+function intentToneInstruction(tone: IntentTone): string {
+  switch (tone) {
+    case "sarcastic":
+      return "לתשומת לבך: ההודעה הזו נשמעת ציניקנית/אירונית. אל תיקח אותה מילולית — נסה להבין את הכוונה האמיתית מתחת לציניות, ותגיב בהתאם, בלי להיפגע ובלי להטיף מוסר.";
+    case "joke":
+      return "לתשומת לבך: ההודעה הזו נשמעת כמו בדיחה או קלילות. תגיב בקלילות ובהומור מתאים, לא ברצינות תהומית.";
+    case "wordplay":
+      return "לתשומת לבך: יכול להיות שיש כאן משחק מילים, כפל משמעות, או טעות ניסוח. בחר את הפירוש הטבעי ביותר לשיחה יומיומית בעברית ישראלית.";
+    default:
+      return "";
+  }
+}
+
 // Few-shot examples — botivation style: קצר, ספציפי, הומור ישראלי אמיתי, שאלה אחת קונקרטית
 const FEW_SHOT_EXAMPLES_BY_MODE: Record<ChatMode, { role: "user" | "model"; parts: { text: string }[] }[]> = {
   smalltalk: [
@@ -251,6 +288,9 @@ const FEW_SHOT_BY_PERSONALITY: Record<string, { role: "user" | "model"; parts: {
  * 1. Clean up repeated punctuation and extra spaces
  * 2. Remove robotic openers
  * 3. NEVER cut mid-sentence — always end on a complete sentence boundary (. ! ?)
+ *    If no clean boundary is found within the cap, extend the search window
+ *    instead of truncating awkwardly, and only as a last resort trim at a
+ *    whitespace boundary (never mid-word).
  */
 function postProcessReply(text: string): string {
   let out = text.trim();
@@ -273,7 +313,7 @@ function postProcessReply(text: string): string {
     }
   }
 
-  const HARD_CAP = 500;
+  const HARD_CAP = 600;
   if (out.length > HARD_CAP) {
     const endings = /[.!?]/g;
     let lastBoundary = -1;
@@ -285,13 +325,41 @@ function postProcessReply(text: string): string {
         break;
       }
     }
-    if (lastBoundary > 30) {
+    if (lastBoundary > 20) {
       out = out.slice(0, lastBoundary + 1).trim();
+    } else {
+      // No sentence boundary found within cap — search a wider window
+      // rather than cutting badly. Fall back to nearest whitespace only
+      // if truly nothing else is available.
+      const extendedSearch = out.slice(0, HARD_CAP + 200);
+      const extendedMatch = extendedSearch.match(/[.!?](?=[^.!?]*$)/);
+      if (extendedMatch && extendedMatch.index !== undefined && extendedMatch.index > 20) {
+        out = out.slice(0, extendedMatch.index + 1).trim();
+      } else {
+        const lastSpace = out.lastIndexOf(" ", HARD_CAP);
+        if (lastSpace > 20) {
+          out = out.slice(0, lastSpace).trim();
+          if (!/[.!?]$/.test(out)) out += ".";
+        }
+      }
     }
+  }
+
+  // Final safety net: if the text does not end with proper punctuation,
+  // it likely means the model was cut off mid-thought. Rather than leaving
+  // a dangling sentence, close it out naturally.
+  if (out.length > 0 && !/[.!?׃…]$/.test(out)) {
+    out += ".";
   }
 
   return out;
 }
+
+const GLOBAL_LANGUAGE_INSTRUCTIONS = `אתה מדבר עברית ישראלית טבעית וחיה — לא עברית מתורגמת, לא עברית ספרים.
+הכר ביטויים ישראליים, סלנג, קיצורים וניבים יומיומיים ("סתם", "יאללה", "חחח", "אחלה", "וואטס", "פשוט תעשה", וכו').
+אם המשתמש משתמש בסלנג, הומור, ציניות, משחקי מילים או עקיצות — נסה להבין את הכוונה האמיתית לפני שאתה עונה. אל תיקח כל משפט באופן מילולי.
+אם יש כמה פירושים אפשריים למשפט, בחר את הפירוש הטבעי ביותר לשיחה יומיומית בין ישראלים — לא את הפירוש המילולי או הפורמלי.
+אם אתה לא בטוח בכוונה, עדיף לשאול בקלילות ("רגע, אתה מתכוון ש...?") מאשר לענות ברצינות למשפט שהיה בצחוק.`;
 
 const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
   coach: {
@@ -388,10 +456,16 @@ async function askGemini(
   const modeExamples = FEW_SHOT_EXAMPLES_BY_MODE[mode] ?? FEW_SHOT_EXAMPLES_BY_MODE.casual;
   const personalityExamples = FEW_SHOT_BY_PERSONALITY[personalityKey] ?? [];
 
-  const systemPrompt = `${personality.prompt}
+  const intentTone = analyzeHebrewIntent(userMessage);
+  const intentInstruction = intentToneInstruction(intentTone);
+
+  const systemPrompt = `${GLOBAL_LANGUAGE_INSTRUCTIONS}
+
+${personality.prompt}
 
 הקשר על המשתמש: ${context}
 
+${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}\n` : ""}
 כללים קריטיים:
 - כתוב עברית ישראלית יומיומית וחיה. שים לב למגדר נכון.
 - תגובה קצרה ואנושית. מקסימום 2-3 משפטים קצרים!
@@ -401,7 +475,7 @@ async function askGemini(
 - אם המשתמש אמר שסיים — תאמין לו מיד ותגיב בהתאם.
 - אל תהיה רובוטי. אל תגיד "אני כאן בשבילך". דבר כמו אדם אמיתי.
 - אם שואלים על מודל או טכנולוגיה — תענה בסגנון האישיות שלך, קצר ומצחיק, ואז תחזור לשיחה.
-- חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה.`;
+- חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה. אם אתה מתקרב למגבלת האורך — סכם וסגור את המשפט הנוכחי במקום להתחיל משפט חדש.`;
 
   // Combine personality-specific + mode-specific few-shot, then conversation history
   const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
@@ -435,7 +509,7 @@ async function askGemini(
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents,
-          generationConfig: { temperature: 0.85, maxOutputTokens: 400 },
+          generationConfig: { temperature: 0.85, maxOutputTokens: 600 },
         }),
       },
     );
