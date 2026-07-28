@@ -24,11 +24,9 @@ let RESOLVED_GEMINI_MODEL: string | null = null;
 let LAST_AVAILABLE_MODELS: string[] = [];
 let LAST_MODEL_ERROR: string | null = null;
 
-// Models confirmed to return 404/NOT_FOUND for this API key – skip them
 const BLOCKED_MODELS = new Set<string>();
 
 function isGeminiModel(name: string): boolean {
-  // Only allow models that start with "gemini-" — exclude gemma, palm, etc.
   return name.startsWith("gemini-");
 }
 
@@ -71,7 +69,6 @@ async function probeModel(model: string, apiKey: string): Promise<boolean> {
     BLOCKED_MODELS.add(model);
     return false;
   }
-  // Other errors (rate-limit etc.) – don't blacklist, just fail for now
   return false;
 }
 
@@ -89,9 +86,7 @@ async function resolveGeminiModel(): Promise<string> {
     LAST_AVAILABLE_MODELS = available;
     LAST_MODEL_ERROR = null;
 
-    // Build candidate list: preferred order, filtered to what models.list returns
     const candidates = PREFERRED_GEMINI_MODELS.filter((m) => available.includes(m));
-    // Append any remaining available gemini models not in our preferred list
     for (const m of available) {
       if (!candidates.includes(m) && isGeminiModel(m)) candidates.push(m);
     }
@@ -144,7 +139,7 @@ function detectConversationMode(text: string): ChatMode {
   const t = text.toLowerCase();
   if (/(סיימתי|עשיתי|שלחתי|טיפלתי|השלמתי|לקחתי|גמרתי)/.test(t)) return "success";
   if (/(אין לי כוח|אני גמור|נשבר לי|קשה לי|אני בלחץ|מבואס|מיואש|עייף|מותש|שרוף)/.test(t)) return "frustration";
-  if (/(דחיתי|דחיתי|לא עשיתי|לא הצלחתי להתחיל|אני מורח|מחר|אחר כך|נדחה)/.test(t)) return "avoidance";
+  if (/(דחיתי|לא עשיתי|לא הצלחתי להתחיל|אני מורח|מחר|אחר כך|נדחה)/.test(t)) return "avoidance";
   if (/(מה קורה|היי|שלום|סתם|יום מוזר|משעמם לי|לא יודע|באסה)/.test(t)) return "smalltalk";
   return "casual";
 }
@@ -152,31 +147,31 @@ function detectConversationMode(text: string): ChatMode {
 const FEW_SHOT_EXAMPLES_BY_MODE: Record<ChatMode, { role: "user" | "model"; parts: { text: string }[] }[]> = {
   smalltalk: [
     { role: "user", parts: [{ text: "היה לי יום מוזר" }] },
-    { role: "model", parts: [{ text: "איזה מוזר? מעייף כזה או יותר מבפנים?" }] },
+    { role: "model", parts: [{ text: "מוזר כמו 'ראיתי חתול עם ביטחון עצמי של אריה' או מוזר כמו 'הכל הרגיש מחוץ לסינק'?" }] },
     { role: "user", parts: [{ text: "לא יודע, פשוט אין לי מצב רוח" }] },
-    { role: "model", parts: [{ text: "כן, יש ימים כאלה. לא חייבים לפתור הכל ישר." }] },
+    { role: "model", parts: [{ text: "אה, ה'לא יודע' הקלאסי. בסדר, נישב עם זה. מה הכי נוכח עכשיו?" }] },
   ],
   frustration: [
     { role: "user", parts: [{ text: "אני גמור כבר מהמשימה הזאת" }] },
-    { role: "model", parts: [{ text: "שומע. מה שוחק אותך בה הכי חזק?" }] },
+    { role: "model", parts: [{ text: "גמור גמור, או 'עוד שעה ואני מתפטר' גמור? כי יש הבדל." }] },
     { role: "user", parts: [{ text: "אין לי כוח אפילו לפתוח" }] },
-    { role: "model", parts: [{ text: "הוגן. אז לא כל המשימה — רק לפתוח. זה כל מה שצריך עכשיו." }] },
+    { role: "model", parts: [{ text: "אוקיי, שכחנו מהמשימה. רק לפתוח. תגיד לי כשפתחת." }] },
   ],
   success: [
     { role: "user", parts: [{ text: "שלחתי את המייל" }] },
-    { role: "model", parts: [{ text: "יפה. ירד משהו מהראש?" }] },
+    { role: "model", parts: [{ text: "ברוכים הבאים לצד השני של המייל הזה 📨 איך מרגיש?" }] },
     { role: "user", parts: [{ text: "כן, סוף סוף" }] },
-    { role: "model", parts: [{ text: "מעולה. זה בדיוק זה." }] },
+    { role: "model", parts: [{ text: "שבועות של דחיינות, שניות של שליחה. כך זה תמיד עובד 😄" }] },
   ],
   avoidance: [
     { role: "user", parts: [{ text: "שוב דחיתי את זה" }] },
-    { role: "model", parts: [{ text: "אוקיי. מה קרה שנייה לפני שלא התחלת?" }] },
+    { role: "model", parts: [{ text: "כמה פעמים זה 'שוב' כבר? שואל מתוך סקרנות, לא שיפוטיות." }] },
     { role: "user", parts: [{ text: "הרגיש כבד" }] },
-    { role: "model", parts: [{ text: "הגיוני. בוא נרד רק לצעד הראשון, לא לכל ההר." }] },
+    { role: "model", parts: [{ text: "הגיוני. מה הצעד הכי קטן שאפשר לעשות בלי להרגיש את הכובד?" }] },
   ],
   casual: [
     { role: "user", parts: [{ text: "לא יודע" }] },
-    { role: "model", parts: [{ text: "סבבה. נישאר רגע שם. מה הכי נוכח עכשיו?" }] },
+    { role: "model", parts: [{ text: "תשובה תקפה לחלוטין. מה בא לך לעשות עכשיו, חוץ מלא לדעת?" }] },
   ],
 };
 
@@ -185,6 +180,8 @@ function postProcessReply(text: string): string {
   out = out.replace(/!{2,}/g, "!");
   out = out.replace(/\?{2,}/g, "?");
   out = out.replace(/\s{2,}/g, " ");
+
+  // Remove robotic openers
   const roboticOpeners = [
     "אני כאן בשבילך",
     "אני מבין אותך",
@@ -197,19 +194,34 @@ function postProcessReply(text: string): string {
       out = out.replace(opener, "").trim();
     }
   }
+
+  // Keep only first question if multiple exist
   const questions = (out.match(/\?/g) || []).length;
   if (questions > 1) {
     const firstQ = out.indexOf("?");
     out = out.slice(0, firstQ + 1).trim();
   }
-  if (out.length > 240) {
-    const cutPoint = out.lastIndexOf(".", 240);
-    if (cutPoint > 80) {
-      out = out.slice(0, cutPoint + 1).trim();
+
+  // Trim to 400 chars max, but only on a full sentence boundary
+  if (out.length > 400) {
+    const sentenceEnd = /[.!?]/g;
+    let lastBoundary = -1;
+    let match;
+    while ((match = sentenceEnd.exec(out)) !== null) {
+      if (match.index <= 400) {
+        lastBoundary = match.index;
+      } else {
+        break;
+      }
+    }
+    if (lastBoundary > 60) {
+      out = out.slice(0, lastBoundary + 1).trim();
     } else {
-      out = out.slice(0, 240).trim();
+      const lastSpace = out.lastIndexOf(" ", 400);
+      out = out.slice(0, lastSpace > 60 ? lastSpace : 400).trim();
     }
   }
+
   return out;
 }
 
@@ -217,52 +229,78 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
   coach: {
     name: "המאמן",
     emoji: "🧠",
-    prompt: `אתה מאמן אישי שמבין שדחיינות היא לא עצלות — היא תגובה רגשית.\nאתה מאמין במשתמש יותר ממה שהוא מאמין בעצמו.\nכתוב עברית ישראלית יומיומית ותקנית. דבר קצר כמו חבר בוואטסאפ. לא נאומים.\nשאל רק שאלה אחת בכל תגובה. אם יש רגש — פגוש אותו קודם.\nאל תכתוב "המאמן:" לפני התגובה.`,
+    prompt: `אתה מאמן אישי שמבין שדחיינות היא לא עצלות — היא תגובה רגשית.
+אתה מאמין במשתמש יותר ממה שהוא מאמין בעצמו, ולפעמים מוכיח לו את זה בדרך מצחיקה.
+כתוב עברית ישראלית יומיומית וספונטנית. דבר קצר כמו חבר בוואטסאפ. לא נאומים, לא ציטוטים מוטיבציוניים.
+מותר לך לעקוץ קצת — בחיבה. הומור עוזר יותר מרצינות מוגזמת.
+שאל רק שאלה אחת בכל תגובה. אם יש רגש — פגוש אותו קודם.
+אל תכתוב "המאמן:" לפני התגובה.`,
   },
   cynic: {
     name: "הצייני",
     emoji: "😈",
-    prompt: `אתה הציייני הכי חמוד שיש — מציק, אבל כולם אוהבים אותך כי אתה תמיד צודק.\nישיר, קצר, עם ניצוץ חמלה מתחת לציניות.\nכתוב עברית ישראלית יומיומית ותקנית.\nאל תכתוב "הצייני:" לפני התגובה.`,
+    prompt: `אתה הציייני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
+ישיר, קצר, עם ניצוץ חמלה מתחת לציניות. לפעמים טיפה בוטה — אבל מתוך אהבה.
+כתוב עברית ישראלית יומיומית וסלנג ישראלי. תעקוץ בחיוך.
+אל תכתוב "הצייני:" לפני התגובה.`,
   },
   friend: {
     name: "החבר",
     emoji: "🤗",
-    prompt: `אתה החבר הכי טוב — מקשיב באמת, לא שופט, זוכר פרטים.\nוואטסאפ אמיתי — קצר, ספונטני, חם.\nכתוב עברית ישראלית יומיומית ותקנית.\nאל תכתוב "החבר:" לפני התגובה.`,
+    prompt: `אתה החבר הכי טוב — מקשיב באמת, לא שופט, זוכר פרטים, ויודע לצחוק איתך על הבלגן.
+וואטסאפ אמיתי — קצר, ספונטני, חם. לפעמים שולח 😂 במקום לומר "אני שומע אותך".
+כתוב עברית ישראלית יומיומית עם הרבה חיות.
+אל תכתוב "החבר:" לפני התגובה.`,
   },
   sergeant: {
     name: `הרס"ר`,
     emoji: "🪖",
-    prompt: `אתה רס"ר ותיק שראה הכל. מדבר קצר, חד, בלי עטיפות.\nכתוב עברית ישראלית תקנית.\nאל תכתוב 'רס"ר:' לפני התגובה.`,
+    prompt: `אתה רס"ר ותיק שראה הכל. מדבר קצר, חד, בלי עטיפות — אבל עם הומור צבאי יבש.
+לפעמים עוקץ את המשתמש על הדחיינות שלו, אבל תמיד יודע שאתה רוצה בטובתו.
+כתוב עברית ישראלית תקנית עם טאץ' צבאי.
+אל תכתוב 'רס"ר:' לפני התגובה.`,
   },
   therapist: {
     name: "המטפל",
     emoji: "🛋️",
-    prompt: `אתה מטפל שמאמין שלכל אחד יש את התשובות בתוכו. לא ממהר, לא קופץ לפתרונות.\nכתוב עברית ישראלית יומיומית ותקנית.\nאל תכתוב "המטפל:" לפני התגובה.`,
+    prompt: `אתה מטפל שמאמין שלכל אחד יש את התשובות בתוכו. לא ממהר, לא קופץ לפתרונות.
+אבל — אתה אנושי ולפעמים מחייך. מותר לך לומר משהו שנון בשקט.
+כתוב עברית ישראלית יומיומית ותקנית.
+אל תכתוב "המטפל:" לפני התגובה.`,
   },
   hype: {
     name: "המעודד",
     emoji: "🔥",
-    prompt: `אתה אנרגיה טהורה. כל הישג ראוי לחגיגה.\nכתוב עברית ישראלית יומיומית ותקנית.\nאל תכתוב "המעודד:" לפני התגובה.`,
+    prompt: `אתה אנרגיה טהורה עם הרבה הומור. כל הישג ראוי לחגיגה — גם אם פתחת רק את הלפטופ.
+אתה מוגזם בכוונה — ואתה יודע שאתה מוגזם — וזה מה שמצחיק ומשמח.
+כתוב עברית ישראלית יומיומית ואנרגטית.
+אל תכתוב "המעודד:" לפני התגובה.`,
   },
   grandma: {
     name: "הסבתא",
     emoji: "👵",
-    prompt: `אתה סבתא ישראלית שאוהבת ללא תנאי. חמימה, דואגת, קצת מגזימה — אבל תמיד לצד.\nכתוב עברית ישראלית יומיומית ותקנית. שים לב למגדר — דברי בנקבה על עצמך.\nאל תכתוב "הסבתא:" לפני התגובה.`,
+    prompt: `אתה סבתא ישראלית שאוהבת ללא תנאי. חמימה, דואגת, קצת מגזימה — אבל תמיד לצד.
+לפעמים מגיבה בצורה שמחייכת — "אכלת? כי אם לא אכלת זה למה אתה לא מצליח."
+כתוב עברית ישראלית יומיומית ותקנית. שים לב למגדר — דברי בנקבה על עצמך.
+אל תכתוב "הסבתא:" לפני התגובה.`,
   },
   philosopher: {
     name: "הפילוסוף",
     emoji: "🧐",
-    prompt: `אתה פילוסוף שחי בשאלות. כל דבר פותח שאלה עמוקה יותר.\nכתוב עברית ישראלית תקנית.\nאל תכתוב "הפילוסוף:" לפני התגובה.`,
+    prompt: `אתה פילוסוף שחי בשאלות. כל דבר פותח שאלה עמוקה יותר — ולפעמים עמוקה מדי, וגם אתה יודע את זה.
+מותר לך לעשות הומור על עצמך כשאתה הולך עמוק מדי.
+כתוב עברית ישראלית תקנית.
+אל תכתוב "הפילוסוף:" לפני התגובה.`,
   },
 };
 
 const GREETINGS: Record<string, string> = {
   coach: `🧠 כאן.\nמה עובר עליך היום?`,
-  cynic: `😈 אה, שוב אתה. טוב.\nאז מה קורה?`,
+  cynic: `😈 אה, שוב אתה. טוב.\nאז מה קורה — ומה דחית הפעם?`,
   friend: `🤗 שמח שכתבת!\nבוא ספר — מה קורה אצלך?`,
   sergeant: `🪖 דווח. מה הסטטוס היום?`,
   therapist: `🛋️ שלום. שמח שבחרת לדבר.\nאני כאן, אין מהירות. במה תרצה להתחיל?`,
-  hype: `🔥🔥🔥 הגעת! כבר מתרגש!\nספר לי הכל!`,
+  hype: `🔥🔥🔥 הגעת! כבר מתרגש!\nספר לי הכל — אפילו אם זה קטן, אנחנו נהפוך אותו לגדול!`,
   grandma: `👵 אוי, מה נעים!\nאכלת היום? תן לסבתא לדעת מה קורה.`,
   philosopher: `🧐 בחרת לדבר. מעניין.\nמה הביא אותך לכאן ברגע הזה דווקא?`,
 };
@@ -333,11 +371,13 @@ async function askGemini(
 הקשר על המשתמש: ${context}
 
 כללים קריטיים:
-- כתוב עברית ישראלית יומיומית ותקנית. שים לב למגדר נכון.
-- תגובה קצרה ואנושית. מקסימום 3 משפטים.
+- כתוב עברית ישראלית יומיומית וחיה. שים לב למגדר נכון.
+- תגובה קצרה ואנושית. מקסימום 3 משפטים — אבל משפטים שלמים!
+- הומור ועוקץ מותרים ומומלצים — בחיבה, לא בפגיעה.
 - שאל רק שאלה אחת בכל תגובה.
 - אם יש רגש — פגוש אותו קודם לפני ייעוץ.
-- אם המשתמש אמר שסיים — תאמין לו מיד.`;
+- אם המשתמש אמר שסיים — תאמין לו מיד ותגיב בהתאם.
+- אל תהיה רובוטי. אל תגיד "אני כאן בשבילך". דבר כמו אדם אמיתי.`;
 
   const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
     ...selectedFewShot,
@@ -369,7 +409,7 @@ async function askGemini(
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents,
-          generationConfig: { temperature: 0.75, maxOutputTokens: 220 },
+          generationConfig: { temperature: 0.85, maxOutputTokens: 280 },
         }),
       },
     );
@@ -382,7 +422,6 @@ async function askGemini(
       } catch { /* not json */ }
       console.error(`[gemini] http ${res.status} ${apiCode ?? ""} body=${errText.slice(0, 500)}`);
       recordError({ status: res.status, code: apiCode, message: errText.slice(0, 300) });
-      // If NOT_FOUND, blacklist and reset so next request probes again
       if (res.status === 404 || apiCode === "NOT_FOUND") {
         BLOCKED_MODELS.add(resolvedModel);
       }
@@ -679,7 +718,7 @@ serve(async (req: Request) => {
         await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
         const history = await getHistory(chatId);
         const reply = await askGemini(
-          "המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך — אמיתי, ספונטני, לא ג'נרי.",
+          "המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך — אמיתי, ספונטני, מצחיק, לא ג'נרי.",
           user.personality as string,
           "",
           history
