@@ -179,8 +179,7 @@ const FEW_SHOT_EXAMPLES_BY_MODE: Record<ChatMode, { role: "user" | "model"; part
  * Post-process Gemini reply:
  * 1. Clean up repeated punctuation and extra spaces
  * 2. Remove robotic openers
- * 3. Keep only the first question (cut after first ?)
- * 4. NEVER cut mid-sentence — always end on a complete sentence boundary (. ! ?)
+ * 3. NEVER cut mid-sentence — always end on a complete sentence boundary (. ! ?)
  *    The hard cap is 500 chars. If no boundary found within 500 chars, keep the full text.
  */
 function postProcessReply(text: string): string {
@@ -203,16 +202,9 @@ function postProcessReply(text: string): string {
     }
   }
 
-  // Keep only up to (and including) the first question mark
-  const firstQ = out.indexOf("?");
-  if (firstQ !== -1) {
-    out = out.slice(0, firstQ + 1).trim();
-  }
-
   // Hard cap at 500 chars — but only cut at a full sentence boundary
   const HARD_CAP = 500;
   if (out.length > HARD_CAP) {
-    // Find last sentence-ending punctuation at or before HARD_CAP
     const endings = /[.!?]/g;
     let lastBoundary = -1;
     let m;
