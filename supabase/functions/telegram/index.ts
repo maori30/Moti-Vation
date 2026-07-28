@@ -7,8 +7,63 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_API_VERSION = "v1beta";
+
+const PREFERRED_GEMINI_MODELS = [
+  Deno.env.get("GEMINI_MODEL")?.trim(),
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash-lite",
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-8b",
+].filter(Boolean) as string[];
+
+let RESOLVED_GEMINI_MODEL: string | null = null;
+let LAST_AVAILABLE_MODELS: string[] = [];
+let LAST_MODEL_ERROR: string | null = null;
+
+async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${apiKey}`
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`models.list failed: HTTP ${res.status} ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  return (data.models ?? [])
+    .filter((m: { supportedGenerationMethods?: string[] }) =>
+      (m.supportedGenerationMethods ?? []).includes("generateContent")
+    )
+    .map((m: { name: string }) => m.name.replace(/^models\//, ""));
+}
+
+async function resolveGeminiModel(): Promise<string> {
+  if (RESOLVED_GEMINI_MODEL) return RESOLVED_GEMINI_MODEL;
+  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  if (!apiKey) throw new Error("GEMINI_API_KEY not set");
+  try {
+    const available = await listAvailableGeminiModels(apiKey);
+    LAST_AVAILABLE_MODELS = available;
+    LAST_MODEL_ERROR = null;
+    for (const preferred of PREFERRED_GEMINI_MODELS) {
+      if (available.includes(preferred)) {
+        RESOLVED_GEMINI_MODEL = preferred;
+        console.log(`[gemini] resolved model: ${preferred}`);
+        return preferred;
+      }
+    }
+    if (available.length > 0) {
+      RESOLVED_GEMINI_MODEL = available[0];
+      console.log(`[gemini] fallback model: ${available[0]}`);
+      return available[0];
+    }
+    throw new Error("No generateContent models returned by models.list");
+  } catch (err) {
+    LAST_MODEL_ERROR = err instanceof Error ? err.message : String(err);
+    throw err;
+  }
+}
 
 type DiagError = { at: string; status?: number; code?: string; message: string };
 const RECENT_ERRORS: DiagError[] = [];
@@ -252,12 +307,15 @@ async function askGemini(
       recordError({ code: "MISSING_KEY", message: "GEMINI_API_KEY not set in Supabase secrets" });
       return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
+
+    const resolvedModel = await resolveGeminiModel();
+
     const contents = [
       ...geminiHistory,
       { role: "user" as const, parts: [{ text: userMessage }] },
     ];
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -277,6 +335,8 @@ async function askGemini(
       } catch { /* not json */ }
       console.error(`[gemini] http ${res.status} ${apiCode ?? ""} body=${errText.slice(0, 500)}`);
       recordError({ status: res.status, code: apiCode, message: errText.slice(0, 300) });
+      // reset resolved model so next request retries
+      RESOLVED_GEMINI_MODEL = null;
       return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
     }
     const data = await res.json();
@@ -292,6 +352,7 @@ async function askGemini(
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[gemini] exception: ${msg}`);
     recordError({ code: "EXCEPTION", message: msg });
+    RESOLVED_GEMINI_MODEL = null;
     return "לא הצלחתי לחשוב על תשובה. נסה שוב.";
   }
 }
@@ -311,12 +372,13 @@ async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
 
-async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: string; message?: string }> {
+async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: string; message?: string; model?: string }> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
+    const resolvedModel = await resolveGeminiModel();
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent?key=${key}`,
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${key}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -330,11 +392,12 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
       const t = await res.text();
       let code: string | undefined;
       try { code = JSON.parse(t)?.error?.status; } catch { /* ignore */ }
-      return { ok: false, status: res.status, code, message: t.slice(0, 200) };
+      return { ok: false, status: res.status, code, message: t.slice(0, 200), model: resolvedModel };
     }
-    return { ok: true, status: res.status };
+    return { ok: true, status: res.status, model: resolvedModel };
   } catch (e) {
-    return { ok: false, code: "EXCEPTION", message: e instanceof Error ? e.message : String(e) };
+    LAST_MODEL_ERROR = e instanceof Error ? e.message : String(e);
+    return { ok: false, code: "EXCEPTION", message: LAST_MODEL_ERROR };
   }
 }
 
@@ -349,9 +412,11 @@ async function handleDiag(chatId: number) {
 
   const mark = (b: boolean) => (b ? "✅" : "❌");
   const lines: string[] = [];
-  lines.push(`🔧 <b>אבחון מערכת</b> (מודל: ${GEMINI_MODEL})\n`);
+  lines.push(`🔧 <b>אבחון מערכת</b>\n`);
   lines.push("<b>סודות:</b>");
   for (const [k, v] of Object.entries(secrets)) lines.push(`${mark(v)} ${k}`);
+  lines.push("");
+  lines.push(`<b>מודל נבחר:</b> ${ping.model ?? RESOLVED_GEMINI_MODEL ?? "לא נבחר עדיין"}`);
   lines.push("");
   lines.push("<b>Gemini API:</b>");
   if (ping.ok) {
@@ -361,12 +426,21 @@ async function handleDiag(chatId: number) {
     if (ping.message) lines.push(`<code>${ping.message.replace(/[<>&]/g, "")}</code>`);
   }
   lines.push("");
+  lines.push("<b>מודלים זמינים (8 ראשונים):</b>");
+  if (LAST_AVAILABLE_MODELS.length > 0) {
+    lines.push(LAST_AVAILABLE_MODELS.slice(0, 8).join(", "));
+  } else if (LAST_MODEL_ERROR) {
+    lines.push(`<code>${LAST_MODEL_ERROR.replace(/[<>&]/g, "")}</code>`);
+  } else {
+    lines.push("(לא נטען)");
+  }
+  lines.push("");
   lines.push("<b>שגיאות אחרונות:</b>");
   if (RECENT_ERRORS.length === 0) {
     lines.push("(אין)");
   } else {
     for (const e of RECENT_ERRORS) {
-      const when = e.at.replace("T", " ").slice(0, 19);
+      const when = e.at.replace("T", " ").slice(0, 16);
       const tag = [e.status, e.code].filter(Boolean).join(" ");
       lines.push(`• ${when} ${tag ? `[${tag}] ` : ""}${e.message.replace(/[<>&]/g, "").slice(0, 180)}`);
     }
