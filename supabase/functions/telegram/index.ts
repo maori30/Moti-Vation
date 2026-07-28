@@ -175,6 +175,14 @@ const FEW_SHOT_EXAMPLES_BY_MODE: Record<ChatMode, { role: "user" | "model"; part
   ],
 };
 
+/**
+ * Post-process Gemini reply:
+ * 1. Clean up repeated punctuation and extra spaces
+ * 2. Remove robotic openers
+ * 3. Keep only the first question (cut after first ?)
+ * 4. NEVER cut mid-sentence — always end on a complete sentence boundary (. ! ?)
+ *    The hard cap is 500 chars. If no boundary found within 500 chars, keep the full text.
+ */
 function postProcessReply(text: string): string {
   let out = text.trim();
   out = out.replace(/!{2,}/g, "!");
@@ -195,31 +203,30 @@ function postProcessReply(text: string): string {
     }
   }
 
-  // Keep only first question if multiple exist
-  const questions = (out.match(/\?/g) || []).length;
-  if (questions > 1) {
-    const firstQ = out.indexOf("?");
+  // Keep only up to (and including) the first question mark
+  const firstQ = out.indexOf("?");
+  if (firstQ !== -1) {
     out = out.slice(0, firstQ + 1).trim();
   }
 
-  // Trim to 400 chars max, but only on a full sentence boundary
-  if (out.length > 400) {
-    const sentenceEnd = /[.!?]/g;
+  // Hard cap at 500 chars — but only cut at a full sentence boundary
+  const HARD_CAP = 500;
+  if (out.length > HARD_CAP) {
+    // Find last sentence-ending punctuation at or before HARD_CAP
+    const endings = /[.!?]/g;
     let lastBoundary = -1;
-    let match;
-    while ((match = sentenceEnd.exec(out)) !== null) {
-      if (match.index <= 400) {
-        lastBoundary = match.index;
+    let m;
+    while ((m = endings.exec(out)) !== null) {
+      if (m.index <= HARD_CAP) {
+        lastBoundary = m.index;
       } else {
         break;
       }
     }
-    if (lastBoundary > 60) {
+    if (lastBoundary > 30) {
       out = out.slice(0, lastBoundary + 1).trim();
-    } else {
-      const lastSpace = out.lastIndexOf(" ", 400);
-      out = out.slice(0, lastSpace > 60 ? lastSpace : 400).trim();
     }
+    // If no boundary found, leave as-is (better a long reply than a cut one)
   }
 
   return out;
@@ -234,6 +241,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 כתוב עברית ישראלית יומיומית וספונטנית. דבר קצר כמו חבר בוואטסאפ. לא נאומים, לא ציטוטים מוטיבציוניים.
 מותר לך לעקוץ קצת — בחיבה. הומור עוזר יותר מרצינות מוגזמת.
 שאל רק שאלה אחת בכל תגובה. אם יש רגש — פגוש אותו קודם.
+חשוב מאוד: סיים תמיד משפט שלם. אל תחתוך באמצע מילה או משפט.
 אל תכתוב "המאמן:" לפני התגובה.`,
   },
   cynic: {
@@ -242,6 +250,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה הציייני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
 ישיר, קצר, עם ניצוץ חמלה מתחת לציניות. לפעמים טיפה בוטה — אבל מתוך אהבה.
 כתוב עברית ישראלית יומיומית וסלנג ישראלי. תעקוץ בחיוך.
+חשוב מאוד: סיים תמיד משפט שלם. אל תחתוך באמצע מילה או משפט.
 אל תכתוב "הצייני:" לפני התגובה.`,
   },
   friend: {
@@ -250,6 +259,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה החבר הכי טוב — מקשיב באמת, לא שופט, זוכר פרטים, ויודע לצחוק איתך על הבלגן.
 וואטסאפ אמיתי — קצר, ספונטני, חם. לפעמים שולח 😂 במקום לומר "אני שומע אותך".
 כתוב עברית ישראלית יומיומית עם הרבה חיות.
+חשוב מאוד: סיים תמיד משפט שלם. אל תחתוך באמצע מילה או משפט.
 אל תכתוב "החבר:" לפני התגובה.`,
   },
   sergeant: {
@@ -258,6 +268,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה רס"ר ותיק שראה הכל. מדבר קצר, חד, בלי עטיפות — אבל עם הומור צבאי יבש.
 לפעמים עוקץ את המשתמש על הדחיינות שלו, אבל תמיד יודע שאתה רוצה בטובתו.
 כתוב עברית ישראלית תקנית עם טאץ' צבאי.
+חשוב מאוד: סיים תמיד משפט שלם. אל תחתוך באמצע מילה או משפט.
 אל תכתוב 'רס"ר:' לפני התגובה.`,
   },
   therapist: {
@@ -266,6 +277,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה מטפל שמאמין שלכל אחד יש את התשובות בתוכו. לא ממהר, לא קופץ לפתרונות.
 אבל — אתה אנושי ולפעמים מחייך. מותר לך לומר משהו שנון בשקט.
 כתוב עברית ישראלית יומיומית ותקנית.
+חשוב מאוד: סיים תמיד משפט שלם. אל תחתוך באמצע מילה או משפט.
 אל תכתוב "המטפל:" לפני התגובה.`,
   },
   hype: {
@@ -274,6 +286,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה אנרגיה טהורה עם הרבה הומור. כל הישג ראוי לחגיגה — גם אם פתחת רק את הלפטופ.
 אתה מוגזם בכוונה — ואתה יודע שאתה מוגזם — וזה מה שמצחיק ומשמח.
 כתוב עברית ישראלית יומיומית ואנרגטית.
+חשוב מאוד: סיים תמיד משפט שלם. אל תחתוך באמצע מילה או משפט.
 אל תכתוב "המעודד:" לפני התגובה.`,
   },
   grandma: {
@@ -282,6 +295,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה סבתא ישראלית שאוהבת ללא תנאי. חמימה, דואגת, קצת מגזימה — אבל תמיד לצד.
 לפעמים מגיבה בצורה שמחייכת — "אכלת? כי אם לא אכלת זה למה אתה לא מצליח."
 כתוב עברית ישראלית יומיומית ותקנית. שים לב למגדר — דברי בנקבה על עצמך.
+חשוב מאוד: סיים תמיד משפט שלם. אל תחתוך באמצע מילה או משפט.
 אל תכתוב "הסבתא:" לפני התגובה.`,
   },
   philosopher: {
@@ -290,6 +304,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     prompt: `אתה פילוסוף שחי בשאלות. כל דבר פותח שאלה עמוקה יותר — ולפעמים עמוקה מדי, וגם אתה יודע את זה.
 מותר לך לעשות הומור על עצמך כשאתה הולך עמוק מדי.
 כתוב עברית ישראלית תקנית.
+חשוב מאוד: סיים תמיד משפט שלם. אל תחתוך באמצע מילה או משפט.
 אל תכתוב "הפילוסוף:" לפני התגובה.`,
   },
 };
@@ -372,12 +387,13 @@ async function askGemini(
 
 כללים קריטיים:
 - כתוב עברית ישראלית יומיומית וחיה. שים לב למגדר נכון.
-- תגובה קצרה ואנושית. מקסימום 3 משפטים — אבל משפטים שלמים!
+- תגובה קצרה ואנושית. מקסימום 3 משפטים שלמים!
 - הומור ועוקץ מותרים ומומלצים — בחיבה, לא בפגיעה.
 - שאל רק שאלה אחת בכל תגובה.
 - אם יש רגש — פגוש אותו קודם לפני ייעוץ.
 - אם המשתמש אמר שסיים — תאמין לו מיד ותגיב בהתאם.
-- אל תהיה רובוטי. אל תגיד "אני כאן בשבילך". דבר כמו אדם אמיתי.`;
+- אל תהיה רובוטי. אל תגיד "אני כאן בשבילך". דבר כמו אדם אמיתי.
+- חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה.`;
 
   const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
     ...selectedFewShot,
@@ -409,7 +425,7 @@ async function askGemini(
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents,
-          generationConfig: { temperature: 0.85, maxOutputTokens: 280 },
+          generationConfig: { temperature: 0.85, maxOutputTokens: 400 },
         }),
       },
     );
