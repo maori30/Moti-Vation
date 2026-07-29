@@ -438,10 +438,7 @@ function postProcessReply(text: string): string {
   out = out.replace(/!{2,}/g, "!");
   out = out.replace(/\?{2,}/g, "?");
   out = out.replace(/[ 	]{2,}/g, " ");
-  out = out.replace(/
-{3,}/g, "
-
-");
+  out = out.replace(/\n{3,}/g, "\n\n");
 
   const roboticOpeners = [
     "אני כאן בשבילך",
@@ -470,8 +467,7 @@ function postProcessReply(text: string): string {
       out = out.slice(0, validEndings[validEndings.length - 1] + 1).trim();
     } else {
       let cut = out.lastIndexOf(" ", HARD_CAP);
-      if (cut < 15) cut = out.lastIndexOf("
-", HARD_CAP);
+      if (cut < 15) cut = out.lastIndexOf("\n", HARD_CAP);
       if (cut > 15) out = out.slice(0, cut).trim();
     }
   }
