@@ -148,34 +148,151 @@ function detectConversationMode(text: string): ChatMode {
 // Runs BEFORE the message is sent to Gemini. Detects sarcasm, jokes, wordplay,
 // or genuine seriousness, and injects a short instruction into the prompt so the
 // model interprets the message correctly instead of taking it literally.
-type IntentTone = "sarcastic" | "joke" | "wordplay" | "serious" | "neutral";
+type IntentTone =
+  | "sarcastic"
+  | "dark_humor"
+  | "self_deprecating"
+  | "hyperbole"
+  | "deadpan"
+  | "affectionate_mock"
+  | "joke"
+  | "wordplay"
+  | "rhetorical"
+  | "masked_sadness"
+  | "serious"
+  | "neutral";
 
-function analyzeHebrewIntent(text: string): IntentTone {
+type EmotionalLayer = {
+  tone: IntentTone;
+  intensity: number;
+  maskedEmotion: "none" | "loneliness" | "anxiety" | "exhaustion" | "shame" | "pride" | "relief";
+};
+
+/**
+ * Hebrew Humor & Emotional Intelligence Engine
+ * ------------------------------------------------
+ * Real Israeli humor rarely announces itself. It hides behind exaggeration,
+ * dry understatement, self-mockery, or a joke that's really a cry for help
+ * wrapped in "בסדר, אין מה לדאוג". This engine tries to catch BOTH the
+ * comedic register AND the emotional layer hiding underneath it, so the
+ * model can respond like a sharp, emotionally attuned friend — not a
+ * literal-minded assistant that answers the words instead of the person.
+ */
+function analyzeHebrewIntent(text: string): EmotionalLayer {
   const t = text.trim().toLowerCase();
-  if (!t) return "neutral";
+  if (!t) return { tone: "neutral", intensity: 0, maskedEmotion: "none" };
 
   const sarcasmMarkers =
-    /(כן,? ?בטח|נו ?באמת|וואו איזה|איזה כבוד|בדיוק מה שחיפשתי|איזה יופי|מגניב\.\.\.|כן ?ברור|בטח בטח|חחח+|😏|🙄|😅|איזה מזל שלי|מה איכפת לי)/;
-  const jokeMarkers =
-    /(סתם(?!\s?ה)|צוחק|בצחוק|קונדס|בדיחה|😂|🤣|חחח+|היי זה היה סתם)/;
-  const wordplayMarkers =
-    /(משחק מילים|התכוונתי ל|לא זה התכוונתי|טעות דפוס|התכוונתי בעצם)/;
+    /(כן,? ?בטח|נו ?באמת|וואו איזה|איזה כבוד|בדיוק מה שחיפשתי|איזה יופי|מגניב\.\.\.|כן ?ברור|בטח בטח|איזה מזל שלי|מה איכפת לי|בטח שכן|ברור שכן|נו כן|איזה נס|מדהים ממש|וואי איזה כיף לי)/;
 
-  if (sarcasmMarkers.test(t)) return "sarcastic";
-  if (jokeMarkers.test(t)) return "joke";
-  if (wordplayMarkers.test(t)) return "wordplay";
-  if (t.length < 2) return "neutral";
-  return "serious";
+  const darkHumorMarkers =
+    /(גם ככה נגמר העולם|לפחות לא מתו|יהיה בסדר, תמיד יהיה בסדר|קלאסי ישראלי|רק אצלנו|מה יש לי להפסיד|ממילא הכל הרוס|בשביל מה בכלל)/;
+
+  const selfDeprecatingMarkers =
+    /(אני כישלון|אני תמיד ככה|קלאסי שלי|בול אני|זה כל כך אני|אני הכי גרוע ב|טיפוסי לי|אני לא מסוגל לכלום|מזל שיש לי הומור על עצמי)/;
+
+  const hyperboleMarkers =
+    /(מתתי|רצח אותי|נדרסתי|נשברתי לגמרי|הכי גרוע בהיסטוריה|אף פעם בחיים|מיליון פעם|אלף שנה|העולם נגמר|אני עומד למות|קטסטרופה|אסון עולמי)/;
+
+  const deadpanMarkers =
+    /(בסדר גמור\.?$|לא נורא\.?$|יהיה טוב, כנראה|בטח, למה לא|כאילו, בסדר|אין דבר כזה בעיה|סבבה, מה שתגיד)/;
+
+  const affectionateMockMarkers =
+    /(אתה מטומטם( חמוד)?|כזה טמבל אתה|אין עליך|קלאסי אותך|אתה בנאדם בלתי אפשרי|רק אתה מסוגל)/;
+
+  const jokeMarkers =
+    /(סתם(?!\s?ה)|צוחק|בצחוק|קונדס|בדיחה|😂|🤣|חחח+|היי זה היה סתם|לא ברצינות)/;
+
+  const wordplayMarkers =
+    /(משחק מילים|התכוונתי ל|לא זה התכוונתי|טעות דפוס|התכוונתי בעצם|זה יצא לי אחרת)/;
+
+  const rhetoricalMarkers =
+    /(מה אני בכלל עושה|למה תמיד ככה|מי בכלל בא לי|מה זה חשוב בסוף|למה לי בכלל|מה הטעם)/;
+
+  const maskedSadnessMarkers =
+    /(סבבה\.?$|טוב, מה יש|לא נורא, רגיל|כאילו לא נורא|זה מה שיש|אין דבר, רגיל אצלי|כרגיל, לא משנה)/;
+
+  const emojiIntensity = (t.match(/😂|🤣|😅|😭|😩|😔|🥲|😐/g) ?? []).length;
+  const repeatedLaughter = /חחח+|האהה+|:\)+|:D+/.test(t);
+  const punctuationDrama = /!{1,}\.\.\.|\.\.\.$|!\?|\?!/.test(t);
+
+  let tone: IntentTone = "serious";
+  let maskedEmotion: EmotionalLayer["maskedEmotion"] = "none";
+
+  if (maskedSadnessMarkers.test(t) && t.length < 40) {
+    tone = "masked_sadness";
+    maskedEmotion = "loneliness";
+  } else if (darkHumorMarkers.test(t)) {
+    tone = "dark_humor";
+    maskedEmotion = "exhaustion";
+  } else if (selfDeprecatingMarkers.test(t)) {
+    tone = "self_deprecating";
+    maskedEmotion = "shame";
+  } else if (sarcasmMarkers.test(t)) {
+    tone = "sarcastic";
+  } else if (affectionateMockMarkers.test(t)) {
+    tone = "affectionate_mock";
+  } else if (hyperboleMarkers.test(t)) {
+    tone = "hyperbole";
+  } else if (deadpanMarkers.test(t)) {
+    tone = "deadpan";
+  } else if (jokeMarkers.test(t)) {
+    tone = "joke";
+  } else if (wordplayMarkers.test(t)) {
+    tone = "wordplay";
+  } else if (rhetoricalMarkers.test(t)) {
+    tone = "rhetorical";
+    maskedEmotion = "anxiety";
+  } else if (t.length < 2) {
+    tone = "neutral";
+  }
+
+  const intensity = Math.min(
+    1,
+    0.25 * emojiIntensity + (repeatedLaughter ? 0.25 : 0) + (punctuationDrama ? 0.2 : 0) + (tone !== "serious" && tone !== "neutral" ? 0.3 : 0)
+  );
+
+  return { tone, intensity, maskedEmotion };
 }
 
-function intentToneInstruction(tone: IntentTone): string {
+function intentToneInstruction(layer: EmotionalLayer): string {
+  const { tone, maskedEmotion } = layer;
+  const maskHint =
+    maskedEmotion !== "none"
+      ? ` יכול להיות שמתחת לזה יש גם תחושת ${
+          maskedEmotion === "loneliness"
+            ? "בדידות או צורך פשוט שידברו איתו"
+            : maskedEmotion === "anxiety"
+            ? "חרדה או חוסר ודאות"
+            : maskedEmotion === "exhaustion"
+            ? "שחיקה אמיתית, לא רק ציניות"
+            : maskedEmotion === "shame"
+            ? "בושה עצמית שמוסווית בבדיחה"
+            : ""
+        } — כדאי לגעת בזה בעדינות, לא ישירות ולא בבת אחת.`
+      : "";
+
   switch (tone) {
     case "sarcastic":
-      return "לתשומת לבך: ההודעה הזו נשמעת ציניקנית/אירונית. אל תיקח אותה מילולית — נסה להבין את הכוונה האמיתית מתחת לציניות, ותגיב בהתאם, בלי להיפגע ובלי להטיף מוסר.";
+      return `לתשומת לבך: ההודעה נשמעת ציניקנית/אירונית — הכוונה כנראה הפוכה ממה שנכתב מילולית. אל תיקח את המילים כפשוטן, תגיב לכוונה האמיתית, בלי להיפגע ובלי להטיף מוסר.${maskHint}`;
+    case "dark_humor":
+      return `לתשומת לבך: זה הומור שחור/גלולה מרה בסגנון ישראלי קלאסי — צוחקים כדי לא לשבור. אפשר להצטרף להומור בקלילות, אבל בלי לזלזל במה שבאמת קשה מתחתיו.${maskHint}`;
+    case "self_deprecating":
+      return `לתשומת לבך: המשתמש מלגלג על עצמו. אל תאשר את הביקורת העצמית ואל תתעלם ממנה — אפשר לצחוק קליל על זה ובו־זמנית לתת נגיעה של חמלה אמיתית.${maskHint}`;
+    case "hyperbole":
+      return `לתשומת לבך: יש כאן הגזמה מכוונת לצורך אפקט קומי ("מתתי", "העולם נגמר") — אל תיקח את זה מילולית, תשחק עם ההגזמה בהומור מתאים.`;
+    case "deadpan":
+      return `לתשומת לבך: הטון שטוח/יבש בכוונה — ייתכן שמתחת לזה יש הרבה יותר ממה שנכתב. תגיב בקלילות אבל תן מקום גם למה שלא נאמר במפורש.${maskHint}`;
+    case "affectionate_mock":
+      return `לתשומת לבך: זו עקיצה חיבתית, לא עלבון אמיתי. תגיב באותו רוח — קליל, חם, עם עקיצה חזרה אם זה מתאים לאישיות שלך.`;
     case "joke":
-      return "לתשומת לבך: ההודעה הזו נשמעת כמו בדיחה או קלילות. תגיב בקלילות ובהומור מתאים, לא ברצינות תהומית.";
+      return `לתשומת לבך: ההודעה נשמעת כמו בדיחה או קלילות. תגיב בקלילות ובהומור מתאים, לא ברצינות תהומית.`;
     case "wordplay":
-      return "לתשומת לבך: יכול להיות שיש כאן משחק מילים, כפל משמעות, או טעות ניסוח. בחר את הפירוש הטבעי ביותר לשיחה יומיומית בעברית ישראלית.";
+      return `לתשומת לבך: יכול להיות שיש כאן משחק מילים, כפל משמעות, או טעות ניסוח. בחר את הפירוש הטבעי ביותר לשיחה יומיומית בעברית ישראלית.`;
+    case "rhetorical":
+      return `לתשומת לבך: זו כנראה שאלה רטורית — המשתמש לא מחפש תשובה עובדתית אלא פורק תסכול. אל תענה כאילו ביקשו ממך מידע; פגוש את הרגש קודם.${maskHint}`;
+    case "masked_sadness":
+      return `לתשומת לבך: תשובה קצרה כמו "בסדר" או "רגיל" יכולה להסתיר עצב או בדידות אמיתיים. אל תיקח את זה כסגירת נושא — שאל בעדינות שאלה אחת שפותחת ולא סוגרת.${maskHint}`;
     default:
       return "";
   }
@@ -294,9 +411,12 @@ const FEW_SHOT_BY_PERSONALITY: Record<string, { role: "user" | "model"; parts: {
  */
 function postProcessReply(text: string): string {
   let out = text.trim();
+
+  out = out.replace(/\.{4,}/g, "...");
   out = out.replace(/!{2,}/g, "!");
   out = out.replace(/\?{2,}/g, "?");
-  out = out.replace(/\s{2,}/g, " ");
+  out = out.replace(/[ \t]{2,}/g, " ");
+  out = out.replace(/\n{3,}/g, "\n\n");
 
   const roboticOpeners = [
     "אני כאן בשבילך",
@@ -306,48 +426,38 @@ function postProcessReply(text: string): string {
     "אני לגמרי מבין",
     "אני מבין לגמרי",
     "זה מובן לחלוטין",
+    "אני מבין את התסכול",
+    "זה נשמע מאתגר",
   ];
   for (const opener of roboticOpeners) {
     if (out.startsWith(opener)) {
       out = out.replace(opener, "").trim();
+      out = out.replace(/^[,.\s]+/, "");
     }
   }
 
-  const HARD_CAP = 600;
+  const HARD_CAP = 700;
   if (out.length > HARD_CAP) {
-    const endings = /[.!?]/g;
-    let lastBoundary = -1;
-    let m;
-    while ((m = endings.exec(out)) !== null) {
-      if (m.index <= HARD_CAP) {
-        lastBoundary = m.index;
-      } else {
-        break;
-      }
-    }
-    if (lastBoundary > 20) {
+    const window = out.slice(0, HARD_CAP + 150);
+    const sentenceEndings = [...window.matchAll(/[.!?׃…]/g)].map((m) => m.index ?? -1);
+    const validEndings = sentenceEndings.filter((i) => i <= HARD_CAP && i > 15);
+
+    if (validEndings.length > 0) {
+      const lastBoundary = validEndings[validEndings.length - 1];
       out = out.slice(0, lastBoundary + 1).trim();
     } else {
-      // No sentence boundary found within cap — search a wider window
-      // rather than cutting badly. Fall back to nearest whitespace only
-      // if truly nothing else is available.
-      const extendedSearch = out.slice(0, HARD_CAP + 200);
-      const extendedMatch = extendedSearch.match(/[.!?](?=[^.!?]*$)/);
-      if (extendedMatch && extendedMatch.index !== undefined && extendedMatch.index > 20) {
-        out = out.slice(0, extendedMatch.index + 1).trim();
+      let cut = out.lastIndexOf(" ", HARD_CAP);
+      if (cut < 15) cut = out.lastIndexOf("\n", HARD_CAP);
+      if (cut > 15) {
+        out = out.slice(0, cut).trim();
       } else {
-        const lastSpace = out.lastIndexOf(" ", HARD_CAP);
-        if (lastSpace > 20) {
-          out = out.slice(0, lastSpace).trim();
-          if (!/[.!?]$/.test(out)) out += ".";
-        }
+        out = out.slice(0, HARD_CAP).trim();
       }
     }
   }
 
-  // Final safety net: if the text does not end with proper punctuation,
-  // it likely means the model was cut off mid-thought. Rather than leaving
-  // a dangling sentence, close it out naturally.
+  out = out.replace(/\s+[ובשלכה]$/, "").trim();
+
   if (out.length > 0 && !/[.!?׃…]$/.test(out)) {
     out += ".";
   }
@@ -355,11 +465,23 @@ function postProcessReply(text: string): string {
   return out;
 }
 
-const GLOBAL_LANGUAGE_INSTRUCTIONS = `אתה מדבר עברית ישראלית טבעית וחיה — לא עברית מתורגמת, לא עברית ספרים.
-הכר ביטויים ישראליים, סלנג, קיצורים וניבים יומיומיים ("סתם", "יאללה", "חחח", "אחלה", "וואטס", "פשוט תעשה", וכו').
-אם המשתמש משתמש בסלנג, הומור, ציניות, משחקי מילים או עקיצות — נסה להבין את הכוונה האמיתית לפני שאתה עונה. אל תיקח כל משפט באופן מילולי.
+const GLOBAL_LANGUAGE_INSTRUCTIONS = `אתה מדבר עברית ישראלית טבעית וחיה — לא עברית מתורגמת, לא עברית ספרים, ולא עברית של צ'אטבוט תאגידי.
+הכר ביטויים ישראליים, סלנג, קיצורים וניבים יומיומיים ("סתם", "יאללה", "חחח", "אחלה", "וואטס", "פשוט תעשה", "בקטנה", "חבל על הזמן", "יא גבר", "אחי", "סבבה", "מה איתך", וכו').
+
+אתה מבין הומור ישראלי לעומק — לא רק זיהוי "זה בדיחה כן/לא", אלא הבנה של הרגש שמסתתר מתחתיו:
+- הומור ישראלי לרוב לא צוחק על משהו — הוא צוחק כדי לשרוד משהו. מאחורי "קלאסי אני" יכולה להסתתר בושה אמיתית, ומאחורי "העולם נגמר בכל מקרה" יכולה להסתתר שחיקה אמיתית.
+- אירוניה וציניות ישראלית הן לרוב אהבה או תסכול שמתחפשים לזלזול. אל תיקח אותן כפשוטן, אבל גם אל תתעלם ממה שמתחתן.
+- הגזמות ("מתתי", "רצח אותי", "העולם נגמר") הן כלי סגנוני, לא תיאור מצב אמיתי — תגיב לרוח הדברים, לא למילים.
+- שתיקה מוסווית כקלילות ("בסדר", "רגיל", "לא נורא") היא לפעמים הדבר הכי רגיש שנאמר בשיחה. שים לב מתי תשובה קצרה מדי מסתירה יותר ממה שהיא חושפת.
+- עקיצה חיבתית בין חברים לא צריכה תשובה מתגוננת — היא צריכה עקיצה חזרה, בחיוך.
+
+כשאתה מגיב בהומור — תהיה ספציפי וקונקרטי, לא כללי. בדיחה גנרית ("חחח כן זה קורה") לא מצחיקה. בדיחה שמתייחסת בדיוק למה שהמשתמש אמר, עם ניסוח מפתיע או טוויסט קטן בסוף המשפט — כן מצחיקה. עדיף משפט קצר וחד עם טוויסט אחד טוב, מאשר שני משפטים בינוניים.
+
+אם המשתמש משתמש בסלנג, הומור, ציניות, משחקי מילים או עקיצות — נסה להבין את הכוונה האמיתית ואת הרגש שמתחתיה לפני שאתה עונה. אל תיקח כל משפט באופן מילולי.
 אם יש כמה פירושים אפשריים למשפט, בחר את הפירוש הטבעי ביותר לשיחה יומיומית בין ישראלים — לא את הפירוש המילולי או הפורמלי.
-אם אתה לא בטוח בכוונה, עדיף לשאול בקלילות ("רגע, אתה מתכוון ש...?") מאשר לענות ברצינות למשפט שהיה בצחוק.`;
+אם אתה לא בטוח בכוונה, עדיף לשאול בקלילות ("רגע, אתה מתכוון ש...?") מאשר לענות ברצינות למשפט שהיה בצחוק.
+
+חשוב מאוד: לעולם אל תחתוך משפט או מילה באמצע. אם אתה מתקרב לגבול האורך — סכם וסגור את המשפט הנוכחי בקצרה במקום לפתוח רעיון חדש שלא תספיק לסיים.`;
 
 const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
   coach: {
@@ -469,13 +591,15 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
 כללים קריטיים:
 - כתוב עברית ישראלית יומיומית וחיה. שים לב למגדר נכון.
 - תגובה קצרה ואנושית. מקסימום 2-3 משפטים קצרים!
-- הומור ועוקץ מותרים ומומלצים — בחיבה, לא בפגיעה.
+- הומור ועוקץ מותרים ומומלצים — בחיבה, לא בפגיעה. עדיף בדיחה ספציפית וחדה על מה שהמשתמש בדיוק אמר, מאשר תגובה כללית וצפויה.
+- אם זיהית רגש מוסתר מתחת להומור או לציניות (בושה, שחיקה, בדידות, חרדה) — גע בו בעדינות, בלי לפרק את הבדיחה ובלי להטיף.
 - שאל רק שאלה אחת קונקרטית — "תכתוב משפט אחד" עדיף על "איך אתה מרגיש?".
-- אם יש רגש — פגוש אותו קודם לפני ייעוץ.
+- אם יש רגש — פגוש אותו קודם לפני ייעוץ. אל תזנק לפתרון לפני שהרגש קיבל מקום.
 - אם המשתמש אמר שסיים — תאמין לו מיד ותגיב בהתאם.
-- אל תהיה רובוטי. אל תגיד "אני כאן בשבילך". דבר כמו אדם אמיתי.
+- אל תהיה רובוטי. אל תגיד "אני כאן בשבילך" או "אני מבין את התסכול". דבר כמו אדם אמיתי עם דעה וטון משלו.
 - אם שואלים על מודל או טכנולוגיה — תענה בסגנון האישיות שלך, קצר ומצחיק, ואז תחזור לשיחה.
 - חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה. אם אתה מתקרב למגבלת האורך — סכם וסגור את המשפט הנוכחי במקום להתחיל משפט חדש.`;
+
 
   // Combine personality-specific + mode-specific few-shot, then conversation history
   const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
@@ -509,7 +633,7 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents,
-          generationConfig: { temperature: 0.85, maxOutputTokens: 600 },
+          generationConfig: { temperature: 0.85, maxOutputTokens: 700 },
         }),
       },
     );
