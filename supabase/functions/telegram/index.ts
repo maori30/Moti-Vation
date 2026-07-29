@@ -18,7 +18,7 @@ const PREFERRED_GEMINI_MODELS = [
   "gemini-2.0-flash",
   "gemini-1.5-flash",
   "gemini-1.5-pro",
-].filter(Boolean) as string[];
+].filter(Boolean).map((m) => normalizeGeminiModel(String(m))) as string[];
 
 let RESOLVED_GEMINI_MODEL: string | null = null;
 let LAST_AVAILABLE_MODELS: string[] = [];
@@ -27,7 +27,7 @@ let LAST_MODEL_ERROR: string | null = null;
 const BLOCKED_MODELS = new Set<string>();
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const HISTORY_LIMIT = 12;
-const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-pro";
+const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-flash-latest";
 
 function nowInTz(): Date {
   return new Date();
@@ -97,6 +97,12 @@ function isGeminiModel(name: string): boolean {
   return name.startsWith("gemini-");
 }
 
+function normalizeGeminiModel(name: string): string {
+  const n = name.trim();
+  if (n === "gemini-flash-latest") return "gemini-2.5-pro";
+  return n.replace(/^models\//, "");
+}
+
 async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${apiKey}`
@@ -111,7 +117,7 @@ async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
       (m.supportedGenerationMethods ?? []).includes("generateContent") &&
       isGeminiModel(m.name.replace(/^models\//, ""))
     )
-    .map((m: { name: string }) => m.name.replace(/^models\//, ""));
+    .map((m: { name: string }) => normalizeGeminiModel(m.name));
 }
 
 async function probeModel(model: string, apiKey: string): Promise<boolean> {
@@ -149,7 +155,7 @@ async function resolveGeminiModel(): Promise<string> {
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
 
   try {
-    const available = await listAvailableGeminiModels(apiKey);
+    const available = (await listAvailableGeminiModels(apiKey)).map((m) => normalizeGeminiModel(m));
     LAST_AVAILABLE_MODELS = available;
     LAST_MODEL_ERROR = null;
 
@@ -160,11 +166,11 @@ async function resolveGeminiModel(): Promise<string> {
 
     for (const model of candidates) {
       if (BLOCKED_MODELS.has(model)) continue;
-      const works = await probeModel(model, apiKey);
+      const works = await probeModel(normalizedModel, apiKey);
       if (works) {
-        RESOLVED_GEMINI_MODEL = model;
-        console.log(`[gemini] resolved model: ${model}`);
-        return model;
+        RESOLVED_GEMINI_MODEL = normalizedModel;
+        console.log(`[gemini] resolved model: ${normalizedModel}`);
+        return normalizedModel;
       }
     }
     throw new Error("No working generateContent model found");
@@ -626,7 +632,7 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
       return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
 
-    const resolvedModel = RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL;
+    const resolvedModel = normalizeGeminiModel(RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL);
 
     const contents = [
       ...geminiHistory,
@@ -696,7 +702,7 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
-    const resolvedModel = RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL;
+    const resolvedModel = normalizeGeminiModel(RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL);
     const res = await fetch(
       `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${key}`,
       {
