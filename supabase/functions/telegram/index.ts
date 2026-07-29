@@ -25,6 +25,73 @@ let LAST_AVAILABLE_MODELS: string[] = [];
 let LAST_MODEL_ERROR: string | null = null;
 
 const BLOCKED_MODELS = new Set<string>();
+const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
+const HISTORY_LIMIT = 12;
+const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
+
+function nowInTz(): Date {
+  return new Date();
+}
+
+function formatIsraelNow(): string {
+  return new Intl.DateTimeFormat("he-IL", {
+    timeZone: TZ,
+    weekday: "long",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(nowInTz());
+}
+
+function formatRelativeHours(ms: number): string {
+  const hours = Math.round(ms / (1000 * 60 * 60));
+  if (hours <= 1) return "בערך שעה";
+  if (hours < 24) return `בערך ${hours} שעות`;
+  const days = Math.round(hours / 24);
+  return days <= 1 ? "בערך יום" : `בערך ${days} ימים`;
+}
+
+function extractSleepSignal(text: string): boolean {
+  return /(הולכ(?:ת|ים)? לישון|הולך לישון|הולכת לישון|אני ישן|אני ישנה|לילה טוב|נדבר מחר|פורש לישון|נכנס לישון)/.test(text.toLowerCase());
+}
+
+function extractWakeSignal(text: string): boolean {
+  return /(קמתי|התעוררתי|בוקר טוב|ישנתי|ישנתי כבר|התעוררתי עכשיו)/.test(text.toLowerCase());
+}
+
+type HistoryMessage = { role: string; content: string; created_at?: string };
+
+function buildTemporalContext(history: HistoryMessage[]): string {
+  const nowText = formatIsraelNow();
+  if (!history.length) {
+    return `הזמן עכשיו בישראל: ${nowText}. אין היסטוריה קודמת בשיחה הזו.`;
+  }
+
+  const last = history[history.length - 1];
+  const parts: string[] = [`הזמן עכשיו בישראל: ${nowText}.`];
+
+  if (last.created_at) {
+    const deltaMs = nowInTz().getTime() - new Date(last.created_at).getTime();
+    if (deltaMs > 0) {
+      parts.push(`עברו מאז ההודעה האחרונה ${formatRelativeHours(deltaMs)}.`);
+    }
+  }
+
+  const sleepMsg = [...history].reverse().find((m) => m.role === "user" && extractSleepSignal(m.content));
+  const wakeMsg = [...history].reverse().find((m) => m.role === "user" && extractWakeSignal(m.content));
+
+  if (sleepMsg?.created_at) {
+    const deltaMs = nowInTz().getTime() - new Date(sleepMsg.created_at).getTime();
+    if (deltaMs >= 1000 * 60 * 60 * 8 && !wakeMsg) {
+      parts.push(`המשתמש אמר בעבר שהוא הולך לישון, ומאז עברו ${formatRelativeHours(deltaMs)} בלי שהוא אמר שהתעורר. אם טבעי, אפשר להתייחס לזה ולשאול אם הוא ישן או קם כבר.`);
+    }
+  }
+
+  return parts.join(" ");
+}
 
 function isGeminiModel(name: string): boolean {
   return name.startsWith("gemini-");
@@ -168,49 +235,20 @@ type EmotionalLayer = {
   maskedEmotion: "none" | "loneliness" | "anxiety" | "exhaustion" | "shame" | "pride" | "relief";
 };
 
-/**
- * Hebrew Humor & Emotional Intelligence Engine
- * ------------------------------------------------
- * Real Israeli humor rarely announces itself. It hides behind exaggeration,
- * dry understatement, self-mockery, or a joke that's really a cry for help
- * wrapped in "בסדר, אין מה לדאוג". This engine tries to catch BOTH the
- * comedic register AND the emotional layer hiding underneath it, so the
- * model can respond like a sharp, emotionally attuned friend — not a
- * literal-minded assistant that answers the words instead of the person.
- */
 function analyzeHebrewIntent(text: string): EmotionalLayer {
   const t = text.trim().toLowerCase();
   if (!t) return { tone: "neutral", intensity: 0, maskedEmotion: "none" };
 
-  const sarcasmMarkers =
-    /(כן,? ?בטח|נו ?באמת|וואו איזה|איזה כבוד|בדיוק מה שחיפשתי|איזה יופי|מגניב\.\.\.|כן ?ברור|בטח בטח|איזה מזל שלי|מה איכפת לי|בטח שכן|ברור שכן|נו כן|איזה נס|מדהים ממש|וואי איזה כיף לי)/;
-
-  const darkHumorMarkers =
-    /(גם ככה נגמר העולם|לפחות לא מתו|יהיה בסדר, תמיד יהיה בסדר|קלאסי ישראלי|רק אצלנו|מה יש לי להפסיד|ממילא הכל הרוס|בשביל מה בכלל)/;
-
-  const selfDeprecatingMarkers =
-    /(אני כישלון|אני תמיד ככה|קלאסי שלי|בול אני|זה כל כך אני|אני הכי גרוע ב|טיפוסי לי|אני לא מסוגל לכלום|מזל שיש לי הומור על עצמי)/;
-
-  const hyperboleMarkers =
-    /(מתתי|רצח אותי|נדרסתי|נשברתי לגמרי|הכי גרוע בהיסטוריה|אף פעם בחיים|מיליון פעם|אלף שנה|העולם נגמר|אני עומד למות|קטסטרופה|אסון עולמי)/;
-
-  const deadpanMarkers =
-    /(בסדר גמור\.?$|לא נורא\.?$|יהיה טוב, כנראה|בטח, למה לא|כאילו, בסדר|אין דבר כזה בעיה|סבבה, מה שתגיד)/;
-
-  const affectionateMockMarkers =
-    /(אתה מטומטם( חמוד)?|כזה טמבל אתה|אין עליך|קלאסי אותך|אתה בנאדם בלתי אפשרי|רק אתה מסוגל)/;
-
-  const jokeMarkers =
-    /(סתם(?!\s?ה)|צוחק|בצחוק|קונדס|בדיחה|😂|🤣|חחח+|היי זה היה סתם|לא ברצינות)/;
-
-  const wordplayMarkers =
-    /(משחק מילים|התכוונתי ל|לא זה התכוונתי|טעות דפוס|התכוונתי בעצם|זה יצא לי אחרת)/;
-
-  const rhetoricalMarkers =
-    /(מה אני בכלל עושה|למה תמיד ככה|מי בכלל בא לי|מה זה חשוב בסוף|למה לי בכלל|מה הטעם)/;
-
-  const maskedSadnessMarkers =
-    /(סבבה\.?$|טוב, מה יש|לא נורא, רגיל|כאילו לא נורא|זה מה שיש|אין דבר, רגיל אצלי|כרגיל, לא משנה)/;
+  const sarcasmMarkers = /(כן,? ?בטח|נו ?באמת|וואו איזה|איזה כבוד|בדיוק מה שחיפשתי|איזה יופי|מגניב\.\.\.|כן ?ברור|בטח בטח|איזה מזל שלי|מה איכפת לי|בטח שכן|ברור שכן|נו כן|איזה נס|מדהים ממש|וואי איזה כיף לי)/;
+  const darkHumorMarkers = /(גם ככה נגמר העולם|לפחות לא מתו|יהיה בסדר, תמיד יהיה בסדר|קלאסי ישראלי|רק אצלנו|מה יש לי להפסיד|ממילא הכל הרוס|בשביל מה בכלל)/;
+  const selfDeprecatingMarkers = /(אני כישלון|אני תמיד ככה|קלאסי שלי|בול אני|זה כל כך אני|אני הכי גרוע ב|טיפוסי לי|אני לא מסוגל לכלום|מזל שיש לי הומור על עצמי)/;
+  const hyperboleMarkers = /(מתתי|רצח אותי|נדרסתי|נשברתי לגמרי|הכי גרוע בהיסטוריה|אף פעם בחיים|מיליון פעם|אלף שנה|העולם נגמר|אני עומד למות|קטסטרופה|אסון עולמי)/;
+  const deadpanMarkers = /(בסדר גמור\.?$|לא נורא\.?$|יהיה טוב, כנראה|בטח, למה לא|כאילו, בסדר|אין דבר כזה בעיה|סבבה, מה שתגיד)/;
+  const affectionateMockMarkers = /(אתה מטומטם( חמוד)?|כזה טמבל אתה|אין עליך|קלאסי אותך|אתה בנאדם בלתי אפשרי|רק אתה מסוגל)/;
+  const jokeMarkers = /(סתם(?!\s?ה)|צוחק|בצחוק|קונדס|בדיחה|😂|🤣|חחח+|היי זה היה סתם|לא ברצינות)/;
+  const wordplayMarkers = /(משחק מילים|התכוונתי ל|לא זה התכוונתי|טעות דפוס|התכוונתי בעצם|זה יצא לי אחרת)/;
+  const rhetoricalMarkers = /(מה אני בכלל עושה|למה תמיד ככה|מי בכלל בא לי|מה זה חשוב בסוף|למה לי בכלל|מה הטעם)/;
+  const maskedSadnessMarkers = /(סבבה\.?$|טוב, מה יש|לא נורא, רגיל|כאילו לא נורא|זה מה שיש|אין דבר, רגיל אצלי|כרגיל, לא משנה)/;
 
   const emojiIntensity = (t.match(/😂|🤣|😅|😭|😩|😔|🥲|😐/g) ?? []).length;
   const repeatedLaughter = /חחח+|האהה+|:\)+|:D+/.test(t);
@@ -247,30 +285,15 @@ function analyzeHebrewIntent(text: string): EmotionalLayer {
     tone = "neutral";
   }
 
-  const intensity = Math.min(
-    1,
-    0.25 * emojiIntensity + (repeatedLaughter ? 0.25 : 0) + (punctuationDrama ? 0.2 : 0) + (tone !== "serious" && tone !== "neutral" ? 0.3 : 0)
-  );
-
+  const intensity = Math.min(1, 0.25 * emojiIntensity + (repeatedLaughter ? 0.25 : 0) + (punctuationDrama ? 0.2 : 0) + (tone !== "serious" && tone !== "neutral" ? 0.3 : 0));
   return { tone, intensity, maskedEmotion };
 }
 
 function intentToneInstruction(layer: EmotionalLayer): string {
   const { tone, maskedEmotion } = layer;
-  const maskHint =
-    maskedEmotion !== "none"
-      ? ` יכול להיות שמתחת לזה יש גם תחושת ${
-          maskedEmotion === "loneliness"
-            ? "בדידות או צורך פשוט שידברו איתו"
-            : maskedEmotion === "anxiety"
-            ? "חרדה או חוסר ודאות"
-            : maskedEmotion === "exhaustion"
-            ? "שחיקה אמיתית, לא רק ציניות"
-            : maskedEmotion === "shame"
-            ? "בושה עצמית שמוסווית בבדיחה"
-            : ""
-        } — כדאי לגעת בזה בעדינות, לא ישירות ולא בבת אחת.`
-      : "";
+  const maskHint = maskedEmotion !== "none"
+    ? ` יכול להיות שמתחת לזה יש גם תחושת ${maskedEmotion === "loneliness" ? "בדידות או צורך פשוט שידברו איתו" : maskedEmotion === "anxiety" ? "חרדה או חוסר ודאות" : maskedEmotion === "exhaustion" ? "שחיקה אמיתית, לא רק ציניות" : maskedEmotion === "shame" ? "בושה עצמית שמוסווית בבדיחה" : ""} — כדאי לגעת בזה בעדינות, לא ישירות ולא בבת אחת.`
+    : "";
 
   switch (tone) {
     case "sarcastic":
@@ -411,12 +434,14 @@ const FEW_SHOT_BY_PERSONALITY: Record<string, { role: "user" | "model"; parts: {
  */
 function postProcessReply(text: string): string {
   let out = text.trim();
-
   out = out.replace(/\.{4,}/g, "...");
   out = out.replace(/!{2,}/g, "!");
   out = out.replace(/\?{2,}/g, "?");
-  out = out.replace(/[ \t]{2,}/g, " ");
-  out = out.replace(/\n{3,}/g, "\n\n");
+  out = out.replace(/[ 	]{2,}/g, " ");
+  out = out.replace(/
+{3,}/g, "
+
+");
 
   const roboticOpeners = [
     "אני כאן בשבילך",
@@ -441,46 +466,28 @@ function postProcessReply(text: string): string {
     const window = out.slice(0, HARD_CAP + 150);
     const sentenceEndings = [...window.matchAll(/[.!?׃…]/g)].map((m) => m.index ?? -1);
     const validEndings = sentenceEndings.filter((i) => i <= HARD_CAP && i > 15);
-
     if (validEndings.length > 0) {
-      const lastBoundary = validEndings[validEndings.length - 1];
-      out = out.slice(0, lastBoundary + 1).trim();
+      out = out.slice(0, validEndings[validEndings.length - 1] + 1).trim();
     } else {
       let cut = out.lastIndexOf(" ", HARD_CAP);
-      if (cut < 15) cut = out.lastIndexOf("\n", HARD_CAP);
-      if (cut > 15) {
-        out = out.slice(0, cut).trim();
-      } else {
-        out = out.slice(0, HARD_CAP).trim();
-      }
+      if (cut < 15) cut = out.lastIndexOf("
+", HARD_CAP);
+      if (cut > 15) out = out.slice(0, cut).trim();
     }
   }
 
   out = out.replace(/\s+[ובשלכה]$/, "").trim();
-
-  if (out.length > 0 && !/[.!?׃…]$/.test(out)) {
-    out += ".";
-  }
-
+  if (out.length > 0 && !/[.!?׃…]$/.test(out)) out += ".";
   return out;
 }
 
 const GLOBAL_LANGUAGE_INSTRUCTIONS = `אתה מדבר עברית ישראלית טבעית וחיה — לא עברית מתורגמת, לא עברית ספרים, ולא עברית של צ'אטבוט תאגידי.
 הכר ביטויים ישראליים, סלנג, קיצורים וניבים יומיומיים ("סתם", "יאללה", "חחח", "אחלה", "וואטס", "פשוט תעשה", "בקטנה", "חבל על הזמן", "יא גבר", "אחי", "סבבה", "מה איתך", וכו').
-
-אתה מבין הומור ישראלי לעומק — לא רק זיהוי "זה בדיחה כן/לא", אלא הבנה של הרגש שמסתתר מתחתיו:
-- הומור ישראלי לרוב לא צוחק על משהו — הוא צוחק כדי לשרוד משהו. מאחורי "קלאסי אני" יכולה להסתתר בושה אמיתית, ומאחורי "העולם נגמר בכל מקרה" יכולה להסתתר שחיקה אמיתית.
-- אירוניה וציניות ישראלית הן לרוב אהבה או תסכול שמתחפשים לזלזול. אל תיקח אותן כפשוטן, אבל גם אל תתעלם ממה שמתחתן.
-- הגזמות ("מתתי", "רצח אותי", "העולם נגמר") הן כלי סגנוני, לא תיאור מצב אמיתי — תגיב לרוח הדברים, לא למילים.
-- שתיקה מוסווית כקלילות ("בסדר", "רגיל", "לא נורא") היא לפעמים הדבר הכי רגיש שנאמר בשיחה. שים לב מתי תשובה קצרה מדי מסתירה יותר ממה שהיא חושפת.
-- עקיצה חיבתית בין חברים לא צריכה תשובה מתגוננת — היא צריכה עקיצה חזרה, בחיוך.
-
-כשאתה מגיב בהומור — תהיה ספציפי וקונקרטי, לא כללי. בדיחה גנרית ("חחח כן זה קורה") לא מצחיקה. בדיחה שמתייחסת בדיוק למה שהמשתמש אמר, עם ניסוח מפתיע או טוויסט קטן בסוף המשפט — כן מצחיקה. עדיף משפט קצר וחד עם טוויסט אחד טוב, מאשר שני משפטים בינוניים.
-
+אתה מבין הומור ישראלי לעומק — לא רק זיהוי "זה בדיחה כן/לא", אלא גם את הרגש שמסתתר מתחתיו.
 אם המשתמש משתמש בסלנג, הומור, ציניות, משחקי מילים או עקיצות — נסה להבין את הכוונה האמיתית ואת הרגש שמתחתיה לפני שאתה עונה. אל תיקח כל משפט באופן מילולי.
 אם יש כמה פירושים אפשריים למשפט, בחר את הפירוש הטבעי ביותר לשיחה יומיומית בין ישראלים — לא את הפירוש המילולי או הפורמלי.
+שים לב גם לזמן: מה השעה עכשיו, כמה זמן עבר מההודעה הקודמת, והאם ההקשר השתנה מאז. אם המשתמש דיבר בלילה וחוזר חצי יום אחרי — אל תענה כאילו עדיין אותו רגע.
 אם אתה לא בטוח בכוונה, עדיף לשאול בקלילות ("רגע, אתה מתכוון ש...?") מאשר לענות ברצינות למשפט שהיה בצחוק.
-
 חשוב מאוד: לעולם אל תחתוך משפט או מילה באמצע. אם אתה מתקרב לגבול האורך — סכם וסגור את המשפט הנוכחי בקצרה במקום לפתוח רעיון חדש שלא תספיק לסיים.`;
 
 const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
@@ -571,7 +578,7 @@ async function askGemini(
   userMessage: string,
   personalityKey: string,
   context: string,
-  history: { role: string; content: string }[]
+  history: HistoryMessage[]
 ): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const mode = detectConversationMode(userMessage);
@@ -581,13 +588,17 @@ async function askGemini(
   const intentTone = analyzeHebrewIntent(userMessage);
   const intentInstruction = intentToneInstruction(intentTone);
 
+  const temporalContext = buildTemporalContext(history);
   const systemPrompt = `${GLOBAL_LANGUAGE_INSTRUCTIONS}
 
 ${personality.prompt}
 
 הקשר על המשתמש: ${context}
 
-${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}\n` : ""}
+הקשר זמן: ${temporalContext}
+
+${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}
+` : ""}
 כללים קריטיים:
 - כתוב עברית ישראלית יומיומית וחיה. שים לב למגדר נכון.
 - תגובה קצרה ואנושית. מקסימום 2-3 משפטים קצרים!
@@ -598,8 +609,8 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
 - אם המשתמש אמר שסיים — תאמין לו מיד ותגיב בהתאם.
 - אל תהיה רובוטי. אל תגיד "אני כאן בשבילך" או "אני מבין את התסכול". דבר כמו אדם אמיתי עם דעה וטון משלו.
 - אם שואלים על מודל או טכנולוגיה — תענה בסגנון האישיות שלך, קצר ומצחיק, ואז תחזור לשיחה.
+- שים לב לזמן שחלף: אם עברו שעות רבות מאז הודעת לילה או שינה, מותר ואפילו רצוי להתייחס לזה בטבעיות.
 - חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה. אם אתה מתקרב למגבלת האורך — סכם וסגור את המשפט הנוכחי במקום להתחיל משפט חדש.`;
-
 
   // Combine personality-specific + mode-specific few-shot, then conversation history
   const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
@@ -619,7 +630,7 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
       return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
 
-    const resolvedModel = await resolveGeminiModel();
+    const resolvedModel = RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL;
 
     const contents = [
       ...geminiHistory,
@@ -633,7 +644,7 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
           contents,
-          generationConfig: { temperature: 0.85, maxOutputTokens: 700 },
+          generationConfig: { temperature: 0.75, topP: 0.9, maxOutputTokens: 420 },
         }),
       },
     );
@@ -689,7 +700,7 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
-    const resolvedModel = await resolveGeminiModel();
+    const resolvedModel = RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL;
     const res = await fetch(
       `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${key}`,
       {
@@ -816,14 +827,14 @@ async function saveMessage(chatId: number, role: string, content: string) {
   await supabase.from("messages").insert({ chat_id: chatId, role, content });
 }
 
-async function getHistory(chatId: number): Promise<{ role: string; content: string }[]> {
+async function getHistory(chatId: number): Promise<HistoryMessage[]> {
   const { data } = await supabase
     .from("messages")
-    .select("role, content")
+    .select("role, content, created_at")
     .eq("chat_id", chatId)
-    .order("created_at", { ascending: true })
-    .limit(20);
-  return data ?? [];
+    .order("created_at", { ascending: false })
+    .limit(HISTORY_LIMIT);
+  return (data ?? []).reverse();
 }
 
 async function clearHistory(chatId: number) {
