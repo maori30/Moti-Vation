@@ -11,13 +11,13 @@ const GEMINI_API_VERSION = "v1beta";
 
 const PREFERRED_GEMINI_MODELS = [
   Deno.env.get("GEMINI_MODEL")?.trim(),
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
   "gemini-2.0-flash",
+  "gemini-2.5-pro",
   "gemini-2.0-flash-001",
   "gemini-2.0-flash-lite",
   "gemini-1.5-flash",
   "gemini-1.5-flash-8b",
+  "gemini-1.5-pro",
 ].filter(Boolean) as string[];
 
 let RESOLVED_GEMINI_MODEL: string | null = null;
@@ -27,7 +27,7 @@ let LAST_MODEL_ERROR: string | null = null;
 const BLOCKED_MODELS = new Set<string>();
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const HISTORY_LIMIT = 12;
-const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
+const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.0-flash";
 
 function nowInTz(): Date {
   return new Date();
