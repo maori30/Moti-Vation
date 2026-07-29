@@ -25,6 +25,7 @@ let LAST_AVAILABLE_MODELS: string[] = [];
 let LAST_MODEL_ERROR: string | null = null;
 
 const BLOCKED_MODELS = new Set<string>();
+const LAST_GOOD_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-2.0-flash-lite", "gemini-2.0-flash-lite-001", "gemini-1.5-flash", "gemini-1.5-pro"];
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const HISTORY_LIMIT = 12;
 const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-flash-latest";
@@ -139,7 +140,7 @@ async function probeModel(model: string, apiKey: string): Promise<boolean> {
   try { status = JSON.parse(errText)?.error?.status; } catch { /* ignore */ }
   if (res.status === 404 || status === "NOT_FOUND") {
     console.warn(`[gemini] model ${model} → NOT_FOUND, blacklisting`);
-    BLOCKED_MODELS.add(model);
+    if (model !== "gemini-flash-latest") BLOCKED_MODELS.add(model);
     return false;
   }
   return false;
@@ -739,6 +740,9 @@ async function handleDiag(chatId: number) {
     SB_SERVICE_ROLE_KEY: !!Deno.env.get("SB_SERVICE_ROLE_KEY"),
   };
   const ping = await pingGemini();
+  if (!LAST_AVAILABLE_MODELS.length) {
+    try { LAST_AVAILABLE_MODELS = await listAvailableGeminiModels(Deno.env.get("GEMINI_API_KEY") ?? ""); } catch { /* keep existing */ }
+  }
 
   const mark = (b: boolean) => (b ? "✅" : "❌");
   const lines: string[] = [];
