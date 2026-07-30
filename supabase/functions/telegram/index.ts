@@ -10,13 +10,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const GEMINI_API_VERSION = "v1beta";
 
 const PREFERRED_GEMINI_MODELS = [
-  Deno.env.get("GEMINI_MODEL")?.trim(),
-  "gemini-2.5-pro",
   "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.0-flash-lite",
   "gemini-2.0-flash",
+  "gemini-2.0-flash-001",
+  "gemini-2.0-flash-lite",
+  "gemini-2.0-flash-lite-001",
   "gemini-1.5-flash",
+  "gemini-2.5-pro",
   "gemini-1.5-pro",
 ].filter(Boolean).map((m) => normalizeGeminiModel(String(m))) as string[];
 
@@ -25,10 +25,10 @@ let LAST_AVAILABLE_MODELS: string[] = [];
 let LAST_MODEL_ERROR: string | null = null;
 
 const BLOCKED_MODELS = new Set<string>();
-const LAST_GOOD_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-2.0-flash-lite", "gemini-2.0-flash-lite-001", "gemini-1.5-flash", "gemini-1.5-pro"];
+const LAST_GOOD_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-2.0-flash-lite", "gemini-2.0-flash-lite-001", "gemini-1.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"];
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const HISTORY_LIMIT = 12;
-const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-flash-latest";
+const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
 
 function nowInTz(): Date {
   return new Date();
@@ -100,7 +100,6 @@ function isGeminiModel(name: string): boolean {
 
 function normalizeGeminiModel(name: string): string {
   const n = name.trim();
-  if (n === "gemini-flash-latest") return "gemini-2.5-pro";
   return n.replace(/^models\//, "");
 }
 
@@ -160,21 +159,36 @@ async function resolveGeminiModel(): Promise<string> {
     LAST_AVAILABLE_MODELS = available;
     LAST_MODEL_ERROR = null;
 
-    const candidates = PREFERRED_GEMINI_MODELS.filter((m) => available.includes(m));
-    for (const m of available) {
-      if (!candidates.includes(m) && isGeminiModel(m)) candidates.push(m);
-    }
+    const preferred = [
+      "gemini-2.5-flash",
+      "gemini-2.0-flash",
+      "gemini-2.0-flash-001",
+      "gemini-2.0-flash-lite",
+      "gemini-2.0-flash-lite-001",
+      "gemini-1.5-flash",
+      "gemini-2.5-pro",
+      "gemini-1.5-pro",
+      ...PREFERRED_GEMINI_MODELS,
+    ];
 
-    for (const model of candidates) {
-      if (BLOCKED_MODELS.has(model)) continue;
-      const works = await probeModel(normalizedModel, apiKey);
+    const candidateSet = new Set<string>();
+    for (const m of preferred) if (m && available.includes(m)) candidateSet.add(m);
+    for (const m of available) if (isGeminiModel(m)) candidateSet.add(m);
+    for (const m of preferred) if (m) candidateSet.add(m);
+
+    const candidates = [...candidateSet];
+
+    for (const rawModel of candidates) {
+      const model = normalizeGeminiModel(rawModel);
+      if (!model || BLOCKED_MODELS.has(model)) continue;
+      const works = await probeModel(model, apiKey);
       if (works) {
-        RESOLVED_GEMINI_MODEL = normalizedModel;
-        console.log(`[gemini] resolved model: ${normalizedModel}`);
-        return normalizedModel;
+        RESOLVED_GEMINI_MODEL = model;
+        console.log(`[gemini] resolved model: ${model}`);
+        return model;
       }
     }
-    throw new Error("No working generateContent model found");
+    throw new Error(`No working generateContent model found. Tried: ${candidates.join(", ") || "(none)"}`);
   } catch (err) {
     LAST_MODEL_ERROR = err instanceof Error ? err.message : String(err);
     throw err;
@@ -633,48 +647,71 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
       return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
 
-    const resolvedModel = normalizeGeminiModel(RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL);
+    let resolvedModel: string;
+    try {
+      resolvedModel = await resolveGeminiModel();
+    } catch (resolveErr) {
+      console.error(`[gemini] resolveGeminiModel failed: ${resolveErr instanceof Error ? resolveErr.message : String(resolveErr)}`);
+      resolvedModel = normalizeGeminiModel(FAST_MODEL);
+    }
 
     const contents = [
       ...geminiHistory,
       { role: "user" as const, parts: [{ text: userMessage }] },
     ];
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents,
-          generationConfig: { temperature: 0.75, topP: 0.9, maxOutputTokens: 420 },
-        }),
-      },
-    );
-    if (!res.ok) {
-      const errText = await res.text();
-      let apiCode: string | undefined;
-      try {
-        const j = JSON.parse(errText);
-        apiCode = j?.error?.status || j?.error?.code?.toString();
-      } catch { /* not json */ }
-      console.error(`[gemini] http ${res.status} ${apiCode ?? ""} body=${errText.slice(0, 500)}`);
-      recordError({ status: res.status, code: apiCode, message: errText.slice(0, 300) });
-      if (res.status === 404 || apiCode === "NOT_FOUND") {
-        BLOCKED_MODELS.add(resolvedModel);
+
+    let attempts = 0;
+    let currentModel = resolvedModel;
+    while (attempts < 4) {
+      attempts++;
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${currentModel}:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents,
+            generationConfig: { temperature: 0.75, topP: 0.9, maxOutputTokens: 420 },
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const errText = await res.text();
+        let apiCode: string | undefined;
+        try {
+          const j = JSON.parse(errText);
+          apiCode = j?.error?.status || j?.error?.code?.toString();
+        } catch { /* not json */ }
+        console.error(`[gemini] http ${res.status} ${apiCode ?? ""} model=${currentModel} body=${errText.slice(0, 500)}`);
+        recordError({ status: res.status, code: apiCode, message: `[${currentModel}] ${errText.slice(0, 280)}` });
+
+        if (res.status === 404 || apiCode === "NOT_FOUND") {
+          if (currentModel !== "gemini-flash-latest") BLOCKED_MODELS.add(currentModel);
+          if (RESOLVED_GEMINI_MODEL === currentModel) RESOLVED_GEMINI_MODEL = null;
+          try {
+            currentModel = await resolveGeminiModel();
+            continue;
+          } catch {
+            return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
+          }
+        }
+        return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
       }
-      RESOLVED_GEMINI_MODEL = null;
-      return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
+
+      const data = await res.json();
+      if (data?.promptFeedback?.blockReason) {
+        console.error(`[gemini] blocked: ${data.promptFeedback.blockReason}`);
+        recordError({ code: "BLOCKED", message: data.promptFeedback.blockReason });
+      }
+      const raw =
+        data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ||
+        "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+      return postProcessReply(raw);
     }
-    const data = await res.json();
-    if (data?.promptFeedback?.blockReason) {
-      console.error(`[gemini] blocked: ${data.promptFeedback.blockReason}`);
-      recordError({ code: "BLOCKED", message: data.promptFeedback.blockReason });
-    }
-    const raw =
-      data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ||
-      "לא הצלחתי לחשוב על תשובה. נסה שוב.";
-    return postProcessReply(raw);
+
+    return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[gemini] exception: ${msg}`);
@@ -703,29 +740,56 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
-    const resolvedModel = normalizeGeminiModel(RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL);
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: "ping" }] }],
-          generationConfig: { maxOutputTokens: 5 },
-        }),
-      }
-    );
-    if (!res.ok) {
-      const t = await res.text();
-      let code: string | undefined;
-      try { code = JSON.parse(t)?.error?.status; } catch { /* ignore */ }
-      if (res.status === 404 || code === "NOT_FOUND") {
-        BLOCKED_MODELS.add(resolvedModel);
-        RESOLVED_GEMINI_MODEL = null;
-      }
-      return { ok: false, status: res.status, code, message: t.slice(0, 200), model: resolvedModel };
+    let currentModel: string;
+    try {
+      currentModel = await resolveGeminiModel();
+    } catch (resolveErr) {
+      return {
+        ok: false,
+        code: "NO_MODEL",
+        message: resolveErr instanceof Error ? resolveErr.message : String(resolveErr),
+      };
     }
-    return { ok: true, status: res.status, model: resolvedModel };
+
+    let attempts = 0;
+    while (attempts < 4) {
+      attempts++;
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${currentModel}:generateContent?key=${key}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: "ping" }] }],
+            generationConfig: { maxOutputTokens: 5 },
+          }),
+        }
+      );
+      if (!res.ok) {
+        const t = await res.text();
+        let code: string | undefined;
+        try { code = JSON.parse(t)?.error?.status; } catch { /* ignore */ }
+        if (res.status === 404 || code === "NOT_FOUND") {
+          if (currentModel !== "gemini-flash-latest") BLOCKED_MODELS.add(currentModel);
+          if (RESOLVED_GEMINI_MODEL === currentModel) RESOLVED_GEMINI_MODEL = null;
+          try {
+            currentModel = await resolveGeminiModel();
+            continue;
+          } catch (resolveErr) {
+            return {
+              ok: false,
+              status: res.status,
+              code,
+              message: t.slice(0, 200),
+              model: currentModel,
+            };
+          }
+        }
+        return { ok: false, status: res.status, code, message: t.slice(0, 200), model: currentModel };
+      }
+      return { ok: true, status: res.status, model: currentModel };
+    }
+    return { ok: false, code: "EXHAUSTED_RETRIES", message: "Tried multiple models, all failed", model: currentModel };
   } catch (e) {
     LAST_MODEL_ERROR = e instanceof Error ? e.message : String(e);
     return { ok: false, code: "EXCEPTION", message: LAST_MODEL_ERROR };
