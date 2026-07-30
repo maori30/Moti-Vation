@@ -9,6 +9,20 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const GEMINI_API_VERSION = "v1beta";
 
+// Guards every outbound Gemini call with a hard timeout. Without this, a
+// single slow/hanging network request can make the whole function wait until
+// Supabase's own platform timeout kills it — which looks to the user exactly
+// like "the bot is stuck" with zero useful error ever recorded.
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 15000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Ordered by preference: newest/fastest first, safest fallback last.
 // This list is checked in order — the first model that both EXISTS for this
 // API key AND actually answers a real generateContent probe wins. Google
@@ -132,17 +146,23 @@ async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
 
 async function probeModel(model: string, apiKey: string): Promise<boolean> {
   if (BLOCKED_MODELS.has(model)) return false;
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: "hi" }] }],
-        generationConfig: { maxOutputTokens: 5 },
-      }),
-    }
-  );
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "hi" }] }],
+          generationConfig: { maxOutputTokens: 5 },
+        }),
+      },
+      8000
+    );
+  } catch {
+    return false;
+  }
   if (res.ok) return true;
   const errText = await res.text();
   let status: string | undefined;
@@ -265,14 +285,26 @@ async function generateContentWithFallback(
 
   const body = { ...bodyBase, generationConfig };
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  } catch (err) {
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    const msg = isAbort ? `request to ${model} timed out` : (err instanceof Error ? err.message : String(err));
+    console.error(`[gemini] network error on ${model}: ${msg}`);
+    recordError({ code: isAbort ? "TIMEOUT" : "NETWORK_ERROR", message: `[${model}] ${msg}` });
+    if (attempt + 1 < MAX_ATTEMPTS) {
+      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, forceNoThinking);
+    }
+    return { ok: false };
+  }
 
   if (res.ok) {
     const data = await res.json();
@@ -321,10 +353,39 @@ async function generateContentWithFallback(
 }
 
 type DiagError = { at: string; status?: number; code?: string; message: string };
+// In-memory cache is kept for same-isolate speed, but Supabase Edge Functions
+// run on short-lived isolates (Deno Deploy) — memory can reset between
+// requests, so /diag can look "clean" even seconds after a real failure.
+// We ALSO persist every error to the DB (fire-and-forget) so /diag always
+// reflects the truth regardless of which isolate handles the request.
 const RECENT_ERRORS: DiagError[] = [];
 function recordError(e: DiagError) {
-  RECENT_ERRORS.unshift({ ...e, at: new Date().toISOString() });
+  const entry = { ...e, at: new Date().toISOString() };
+  RECENT_ERRORS.unshift(entry);
   if (RECENT_ERRORS.length > 5) RECENT_ERRORS.length = 5;
+  supabase
+    .from("bot_errors")
+    .insert({ status: entry.status ?? null, code: entry.code ?? null, message: entry.message.slice(0, 500) })
+    .then(() => {}, () => {}); // best-effort, never block or throw on failure
+}
+
+async function fetchRecentErrorsFromDb(): Promise<DiagError[]> {
+  try {
+    const { data, error } = await supabase
+      .from("bot_errors")
+      .select("created_at, status, code, message")
+      .order("created_at", { ascending: false })
+      .limit(5);
+    if (error || !data) return [];
+    return data.map((r: any) => ({
+      at: r.created_at,
+      status: r.status ?? undefined,
+      code: r.code ?? undefined,
+      message: r.message ?? "",
+    }));
+  } catch {
+    return [];
+  }
 }
 
 function logMissingSecrets() {
@@ -844,7 +905,7 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
     const model = await resolveGeminiModel(true);
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${key}`,
       {
         method: "POST",
@@ -853,7 +914,8 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
           contents: [{ role: "user", parts: [{ text: "ping" }] }],
           generationConfig: { maxOutputTokens: 5 },
         }),
-      }
+      },
+      8000
     );
     if (!res.ok) {
       const t = await res.text();
@@ -910,10 +972,17 @@ async function handleDiag(chatId: number) {
   }
   lines.push("");
   lines.push("<b>שגיאות אחרונות:</b>");
-  if (RECENT_ERRORS.length === 0) {
+  // Merge in-memory (this isolate) + DB-persisted (all isolates) errors so
+  // /diag reflects reality even if the failure happened in a different,
+  // already-recycled function instance than the one answering /diag now.
+  const dbErrors = await fetchRecentErrorsFromDb();
+  const merged = [...RECENT_ERRORS, ...dbErrors]
+    .sort((a, b) => (a.at < b.at ? 1 : -1))
+    .slice(0, 5);
+  if (merged.length === 0) {
     lines.push("(אין)");
   } else {
-    for (const e of RECENT_ERRORS) {
+    for (const e of merged) {
       const when = e.at.replace("T", " ").slice(0, 16);
       const tag = [e.status, e.code].filter(Boolean).join(" ");
       lines.push(`• ${when} ${tag ? `[${tag}] ` : ""}${e.message.replace(/[<>&]/g, "").slice(0, 180)}`);
