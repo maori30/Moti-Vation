@@ -219,10 +219,34 @@ async function resolveGeminiModel(forceRecheck = false): Promise<string> {
 // blocked, force a fresh resolve (skipping the dead one), and retry once more
 // before giving up. This is what stops the bot from getting stuck repeating
 // the same broken model call on every single message.
+// Only Gemini 2.5+/3.x models support "thinking" — sending thinkingConfig to
+// 2.0/1.5 models causes an INVALID_ARGUMENT "unknown field" error. We detect
+// this from the model name so we never risk breaking older fallback models.
+function modelSupportsThinking(model: string): boolean {
+  return /gemini-(2\.5|3(\.\d+)?)/.test(model) || model === "gemini-flash-latest";
+}
+
+// For a short, conversational Telegram bot reply, deep "thinking" adds real
+// latency for basically zero quality gain. Setting a low/zero thinking
+// budget on models that support it is the single biggest lever we have to
+// speed up responses without touching model selection or resolution logic.
+function buildGenerationConfig(model: string, maxOutputTokens: number) {
+  const config: Record<string, unknown> = {
+    temperature: 0.8,
+    topP: 0.9,
+    maxOutputTokens,
+  };
+  if (modelSupportsThinking(model)) {
+    config.thinkingConfig = { thinkingBudget: 0 };
+  }
+  return config;
+}
+
 async function generateContentWithFallback(
   apiKey: string,
-  body: Record<string, unknown>,
-  attempt = 0
+  bodyBase: Record<string, unknown>,
+  attempt = 0,
+  tokenBoost = 0
 ): Promise<{ ok: true; data: any } | { ok: false }> {
   const MAX_ATTEMPTS = 3;
   let model: string;
@@ -233,6 +257,12 @@ async function generateContentWithFallback(
     recordError({ code: "NO_MODEL", message: err instanceof Error ? err.message : String(err) });
     return { ok: false };
   }
+
+  const baseConfig = (bodyBase.generationConfig as Record<string, unknown>) ?? {};
+  const baseMaxTokens = (baseConfig.maxOutputTokens as number) ?? 700;
+  const generationConfig = buildGenerationConfig(model, baseMaxTokens + tokenBoost);
+
+  const body = { ...bodyBase, generationConfig };
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
@@ -245,6 +275,14 @@ async function generateContentWithFallback(
 
   if (res.ok) {
     const data = await res.json();
+    const finishReason = data?.candidates?.[0]?.finishReason;
+    // If the model got cut off by the token cap mid-sentence, silently retry
+    // once with a bigger budget instead of returning a broken/incomplete
+    // reply to the user. This is the main fix for sentences missing words.
+    if (finishReason === "MAX_TOKENS" && attempt + 1 < MAX_ATTEMPTS && tokenBoost < 400) {
+      console.warn(`[gemini] response hit MAX_TOKENS on ${model}, retrying with a larger token budget`);
+      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + 400);
+    }
     return { ok: true, data };
   }
 
@@ -257,13 +295,24 @@ async function generateContentWithFallback(
   console.error(`[gemini] http ${res.status} ${apiCode ?? ""} model=${model} body=${errText.slice(0, 500)}`);
   recordError({ status: res.status, code: apiCode, message: `[${model}] ${errText.slice(0, 280)}` });
 
+  // Guard: if a model rejects thinkingConfig as an unknown field (shouldn't
+  // happen given modelSupportsThinking, but Google's support matrix shifts),
+  // retry once immediately without thinkingConfig instead of blocking the
+  // model entirely.
+  const isBadThinkingParam = res.status === 400 && /thinkingConfig|thinking_config/i.test(errText);
+  if (isBadThinkingParam && attempt + 1 < MAX_ATTEMPTS) {
+    console.warn(`[gemini] model ${model} rejected thinkingConfig, retrying without it`);
+    const { thinkingConfig: _drop, ...rest } = generationConfig as Record<string, unknown>;
+    return generateContentWithFallback(apiKey, { ...bodyBase, generationConfig: rest }, attempt + 1, tokenBoost);
+  }
+
   const isModelDead = res.status === 404 || apiCode === "NOT_FOUND" || res.status === 403 || apiCode === "PERMISSION_DENIED";
   if (isModelDead) {
     BLOCKED_MODELS.add(model);
     if (RESOLVED_GEMINI_MODEL === model) RESOLVED_GEMINI_MODEL = null;
     if (attempt + 1 < MAX_ATTEMPTS) {
       console.warn(`[gemini] model ${model} died mid-flight, retrying with a different model (attempt ${attempt + 2}/${MAX_ATTEMPTS})`);
-      return generateContentWithFallback(apiKey, body, attempt + 1);
+      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost);
     }
   }
 
@@ -554,14 +603,31 @@ function postProcessReply(text: string): string {
     }
   }
 
-  const HARD_CAP = 700;
+  // HARD_CAP is a safety ceiling, not a target length — the real length
+  // control now happens via maxOutputTokens + the MAX_TOKENS auto-retry in
+  // generateContentWithFallback. This block only fires for the rare case of
+  // an unusually long reply, and always prefers a slightly longer cut at a
+  // real sentence boundary over a short cut that chops off words.
+  const HARD_CAP = 900;
   if (out.length > HARD_CAP) {
-    const window = out.slice(0, HARD_CAP + 150);
-    const sentenceEndings = [...window.matchAll(/[.!?׃…]/g)].map((m) => m.index ?? -1);
-    const validEndings = sentenceEndings.filter((i) => i <= HARD_CAP && i > 15);
-    if (validEndings.length > 0) {
-      out = out.slice(0, validEndings[validEndings.length - 1] + 1).trim();
+    // Widen the search window progressively instead of giving up after one
+    // fixed window — this is what previously caused mid-sentence, missing-word
+    // truncations when no punctuation happened to fall in the first window.
+    let sliceEnd = -1;
+    for (const extra of [150, 350, 600]) {
+      const window = out.slice(0, HARD_CAP + extra);
+      const sentenceEndings = [...window.matchAll(/[.!?׃…]/g)].map((m) => m.index ?? -1);
+      const validEndings = sentenceEndings.filter((i) => i > 15);
+      if (validEndings.length > 0) {
+        sliceEnd = validEndings[validEndings.length - 1] + 1;
+        break;
+      }
+    }
+    if (sliceEnd > 0) {
+      out = out.slice(0, sliceEnd).trim();
     } else {
+      // Last resort only: cut at a whitespace boundary, never mid-word, and
+      // never slap a fake period on a clearly unfinished clause.
       let cut = out.lastIndexOf(" ", HARD_CAP);
       if (cut < 15) cut = out.lastIndexOf("\n", HARD_CAP);
       if (cut > 15) out = out.slice(0, cut).trim();
