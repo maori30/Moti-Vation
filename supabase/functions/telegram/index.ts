@@ -10,22 +10,21 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const GEMINI_API_VERSION = "v1beta";
 
 const PREFERRED_GEMINI_MODELS = [
+  Deno.env.get("GEMINI_MODEL")?.trim(),
   "gemini-2.5-flash",
+  "gemini-2.5-pro",
   "gemini-2.0-flash",
   "gemini-2.0-flash-001",
   "gemini-2.0-flash-lite",
-  "gemini-2.0-flash-lite-001",
   "gemini-1.5-flash",
-  "gemini-2.5-pro",
-  "gemini-1.5-pro",
-].filter(Boolean).map((m) => normalizeGeminiModel(String(m))) as string[];
+  "gemini-1.5-flash-8b",
+].filter(Boolean) as string[];
 
 let RESOLVED_GEMINI_MODEL: string | null = null;
 let LAST_AVAILABLE_MODELS: string[] = [];
 let LAST_MODEL_ERROR: string | null = null;
 
 const BLOCKED_MODELS = new Set<string>();
-const LAST_GOOD_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-2.0-flash-lite", "gemini-2.0-flash-lite-001", "gemini-1.5-flash", "gemini-2.5-pro", "gemini-1.5-pro"];
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const HISTORY_LIMIT = 12;
 const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
@@ -76,8 +75,8 @@ function buildTemporalContext(history: HistoryMessage[]): string {
 
   if (last.created_at) {
     const deltaMs = nowInTz().getTime() - new Date(last.created_at).getTime();
-    if (deltaMs > 0) {
-      parts.push(`עברו מאז ההודעה האחרונה ${formatRelativeHours(deltaMs)}.`);
+    if (deltaMs > 1000 * 60 * 60 * 3) {
+      parts.push(`עברו מאז ההודעה האחרונה ${formatRelativeHours(deltaMs)} — זה רק מידע רקע, אל תדווח על זה כמו שעון, התייחס רק אם זה טבעי בשיחה.`);
     }
   }
 
@@ -86,8 +85,8 @@ function buildTemporalContext(history: HistoryMessage[]): string {
 
   if (sleepMsg?.created_at) {
     const deltaMs = nowInTz().getTime() - new Date(sleepMsg.created_at).getTime();
-    if (deltaMs >= 1000 * 60 * 60 * 8 && !wakeMsg) {
-      parts.push(`המשתמש אמר בעבר שהוא הולך לישון, ומאז עברו ${formatRelativeHours(deltaMs)} בלי שהוא אמר שהתעורר. אם טבעי, אפשר להתייחס לזה ולשאול אם הוא ישן או קם כבר.`);
+    if (deltaMs >= 1000 * 60 * 60 * 14 && !wakeMsg) {
+      parts.push(`רקע בלבד: המשתמש אמר לפני זמן מה שהוא הולך לישון ולא ציין שהתעורר. אל תזכיר מספרי שעות בכלל — לכל היותר, אם זה טבעי, אפשר לשאול קליל "ישנת טוב?" או "קמת מזמן?" ולא יותר מפעם אחת בשיחה.`);
     }
   }
 
@@ -96,11 +95,6 @@ function buildTemporalContext(history: HistoryMessage[]): string {
 
 function isGeminiModel(name: string): boolean {
   return name.startsWith("gemini-");
-}
-
-function normalizeGeminiModel(name: string): string {
-  const n = name.trim();
-  return n.replace(/^models\//, "");
 }
 
 async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
@@ -117,7 +111,7 @@ async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
       (m.supportedGenerationMethods ?? []).includes("generateContent") &&
       isGeminiModel(m.name.replace(/^models\//, ""))
     )
-    .map((m: { name: string }) => normalizeGeminiModel(m.name));
+    .map((m: { name: string }) => m.name.replace(/^models\//, ""));
 }
 
 async function probeModel(model: string, apiKey: string): Promise<boolean> {
@@ -139,7 +133,7 @@ async function probeModel(model: string, apiKey: string): Promise<boolean> {
   try { status = JSON.parse(errText)?.error?.status; } catch { /* ignore */ }
   if (res.status === 404 || status === "NOT_FOUND") {
     console.warn(`[gemini] model ${model} → NOT_FOUND, blacklisting`);
-    if (model !== "gemini-flash-latest") BLOCKED_MODELS.add(model);
+    BLOCKED_MODELS.add(model);
     return false;
   }
   return false;
@@ -155,32 +149,17 @@ async function resolveGeminiModel(): Promise<string> {
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
 
   try {
-    const available = (await listAvailableGeminiModels(apiKey)).map((m) => normalizeGeminiModel(m));
+    const available = await listAvailableGeminiModels(apiKey);
     LAST_AVAILABLE_MODELS = available;
     LAST_MODEL_ERROR = null;
 
-    const preferred = [
-      "gemini-2.5-flash",
-      "gemini-2.0-flash",
-      "gemini-2.0-flash-001",
-      "gemini-2.0-flash-lite",
-      "gemini-2.0-flash-lite-001",
-      "gemini-1.5-flash",
-      "gemini-2.5-pro",
-      "gemini-1.5-pro",
-      ...PREFERRED_GEMINI_MODELS,
-    ];
+    const candidates = PREFERRED_GEMINI_MODELS.filter((m) => available.includes(m));
+    for (const m of available) {
+      if (!candidates.includes(m) && isGeminiModel(m)) candidates.push(m);
+    }
 
-    const candidateSet = new Set<string>();
-    for (const m of preferred) if (m && available.includes(m)) candidateSet.add(m);
-    for (const m of available) if (isGeminiModel(m)) candidateSet.add(m);
-    for (const m of preferred) if (m) candidateSet.add(m);
-
-    const candidates = [...candidateSet];
-
-    for (const rawModel of candidates) {
-      const model = normalizeGeminiModel(rawModel);
-      if (!model || BLOCKED_MODELS.has(model)) continue;
+    for (const model of candidates) {
+      if (BLOCKED_MODELS.has(model)) continue;
       const works = await probeModel(model, apiKey);
       if (works) {
         RESOLVED_GEMINI_MODEL = model;
@@ -188,7 +167,7 @@ async function resolveGeminiModel(): Promise<string> {
         return model;
       }
     }
-    throw new Error(`No working generateContent model found. Tried: ${candidates.join(", ") || "(none)"}`);
+    throw new Error("No working generateContent model found");
   } catch (err) {
     LAST_MODEL_ERROR = err instanceof Error ? err.message : String(err);
     throw err;
@@ -219,6 +198,106 @@ const DONE_KEYWORDS = [
 function detectDoneKeyword(text: string): boolean {
   const lower = text.toLowerCase();
   return DONE_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+// ===== Goal Categories (from onboarding form) =====
+// Maps directly to the categories offered in the botivation.ai signup flow,
+// so the bot's examples and humor stay relevant to the user's actual domain.
+type GoalCategory = "wake_up" | "fitness" | "study_work" | "chores_bureaucracy" | "other";
+
+const GOAL_CATEGORIES: Record<GoalCategory, { label: string; emoji: string; microStepExample: string }> = {
+  wake_up: { label: "לקום בבוקר בזמן", emoji: "⏰", microStepExample: "לשים רגל אחת על הרצפה" },
+  fitness: { label: "כושר ותזונה", emoji: "🏋️", microStepExample: "לנעול נעלי ספורט" },
+  study_work: { label: "לימודים ועבודה", emoji: "📚", microStepExample: "לפתוח קובץ ריק" },
+  chores_bureaucracy: { label: "מטלות בית ובירוקרטיה", emoji: "🗂️", microStepExample: "לפתוח את הטופס הראשון" },
+  other: { label: "אחר", emoji: "✨", microStepExample: "הצעד הכי קטן שאפשר לדמיין" },
+};
+
+function getGoalCategoryKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: "⏰ לקום בבוקר בזמן", callback_data: "goal_wake_up" }],
+      [{ text: "🏋️ כושר ותזונה", callback_data: "goal_fitness" }],
+      [{ text: "📚 לימודים ועבודה", callback_data: "goal_study_work" }],
+      [{ text: "🗂️ מטלות בית ובירוקרטיה", callback_data: "goal_chores_bureaucracy" }],
+      [{ text: "✨ אחר", callback_data: "goal_other" }],
+    ],
+  };
+}
+
+// ===== Streak & Loss Aversion Engine =====
+// Loss aversion research shows the fear of losing an existing streak motivates
+// roughly 2x more than the desire to gain something new. We track streaks per
+// user and let the model reference them to create gentle urgency, never guilt.
+type StreakInfo = { count: number; lastSuccessAt: string | null };
+
+function computeStreakStatus(streak: number, lastSuccessAt: string | null): {
+  isAtRisk: boolean;
+  daysSinceSuccess: number;
+} {
+  if (!lastSuccessAt || streak === 0) return { isAtRisk: false, daysSinceSuccess: 0 };
+  const deltaMs = Date.now() - new Date(lastSuccessAt).getTime();
+  const daysSinceSuccess = Math.floor(deltaMs / (1000 * 60 * 60 * 24));
+  return { isAtRisk: daysSinceSuccess >= 1, daysSinceSuccess };
+}
+
+async function bumpStreak(chatId: number, user: Record<string, unknown>): Promise<number> {
+  const lastSuccessAt = (user.last_success_at as string) ?? null;
+  const currentStreak = (user.streak_count as number) ?? 0;
+  const now = new Date();
+
+  let newStreak = 1;
+  if (lastSuccessAt) {
+    const deltaDays = Math.floor((now.getTime() - new Date(lastSuccessAt).getTime()) / (1000 * 60 * 60 * 24));
+    if (deltaDays <= 1) {
+      newStreak = currentStreak + 1;
+    }
+  }
+
+  await updateUser(chatId, { streak_count: newStreak, last_success_at: now.toISOString() });
+  return newStreak;
+}
+
+// ===== Self-Efficacy Booster =====
+// Based on CBT research: procrastination correlates with low "expectancy" —
+// the belief that one CAN succeed. Instead of only celebrating outcomes, we
+// track completed micro-steps so the bot can reflect back concrete evidence
+// of competence ("You've followed through X times this week") rather than
+// vague praise, which builds real self-efficacy over time.
+async function incrementCompletionCount(chatId: number, user: Record<string, unknown>): Promise<number> {
+  const current = (user.completed_count as number) ?? 0;
+  const updated = current + 1;
+  await updateUser(chatId, { completed_count: updated });
+  return updated;
+}
+
+function buildMotivationContext(
+  goalCategory: GoalCategory | null,
+  streak: number,
+  lastSuccessAt: string | null,
+  completedCount: number
+): string {
+  const parts: string[] = [];
+
+  if (goalCategory && GOAL_CATEGORIES[goalCategory]) {
+    const cat = GOAL_CATEGORIES[goalCategory];
+    parts.push(`תחום המטרה של המשתמש: ${cat.label}. דוגמת צעד-מיקרו רלוונטי לתחום הזה: "${cat.microStepExample}" — תשתמש בסגנון דומה, לא בהכרח באותה דוגמה בדיוק.`);
+  }
+
+  const { isAtRisk, daysSinceSuccess } = computeStreakStatus(streak, lastSuccessAt);
+  if (streak >= 2) {
+    if (isAtRisk) {
+      parts.push(`למשתמש יש רצף של ${streak} הצלחות רצופות, אבל עברו ${daysSinceSuccess} ימים בלי עדכון חדש. אם זה טבעי בשיחה, אפשר לרמוז בעדינות שחבל לשבור רצף כזה — בלי לחץ, בלי אשמה, רק כעובדה שמשנה משהו.`);
+    } else {
+      parts.push(`למשתמש יש רצף פעיל של ${streak} הצלחות רצופות. זו נקודת גאווה אמיתית — אפשר להזכיר את זה כשמתאים, כדי לחזק את התחושה שהוא בתנופה.`);
+    }
+  }
+
+  if (completedCount > 0 && completedCount % 5 === 0) {
+    parts.push(`המשתמש השלים בפועל ${completedCount} משימות מאז שהתחיל איתך. זו עדות קונקרטית ליכולת שלו — עדיף להזכיר מספר אמיתי כמו זה מאשר לומר "כל הכבוד" גנרי.`);
+  }
+
+  return parts.join(" ");
 }
 
 type ChatMode = "smalltalk" | "frustration" | "success" | "avoidance" | "casual";
@@ -459,7 +538,10 @@ function postProcessReply(text: string): string {
   out = out.replace(/!{2,}/g, "!");
   out = out.replace(/\?{2,}/g, "?");
   out = out.replace(/[ 	]{2,}/g, " ");
-  out = out.replace(/\n{3,}/g, "\n\n");
+  out = out.replace(/
+{3,}/g, "
+
+");
 
   const roboticOpeners = [
     "אני כאן בשבילך",
@@ -479,7 +561,7 @@ function postProcessReply(text: string): string {
     }
   }
 
-  const HARD_CAP = 700;
+  const HARD_CAP = 900;
   if (out.length > HARD_CAP) {
     const window = out.slice(0, HARD_CAP + 150);
     const sentenceEndings = [...window.matchAll(/[.!?׃…]/g)].map((m) => m.index ?? -1);
@@ -488,7 +570,8 @@ function postProcessReply(text: string): string {
       out = out.slice(0, validEndings[validEndings.length - 1] + 1).trim();
     } else {
       let cut = out.lastIndexOf(" ", HARD_CAP);
-      if (cut < 15) cut = out.lastIndexOf("\n", HARD_CAP);
+      if (cut < 15) cut = out.lastIndexOf("
+", HARD_CAP);
       if (cut > 15) out = out.slice(0, cut).trim();
     }
   }
@@ -519,7 +602,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 שאל רק שאלה אחת קונקרטית — "תכתוב משפט אחד" עדיף על "איך אתה מרגיש?".
 אם יש רגש — פגוש אותו קודם, אחר כך תדחוף.
 אם שואלים מה אתה — תענה בסגנון: "אני המאמן שלך. לא יודע מה ציפית, אבל זה מה יש 😄"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
+חשוב מאוד: סיים תמיד משפט שלם. תגובה קצרה אבל שלמה — עד 3-4 משפטים אם צריך, ובלבד שהרעיון נסגר.`,
   },
   cynic: {
     name: "הצייני",
@@ -529,7 +612,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 כתוב עברית ישראלית יומיומית עם סלנג — כמו מישהו שמדבר בוואטסאפ.
 הגב קצר וחד. "אז מה, שוב?" עדיף על פסקה שלמה.
 אם שואלים מה אתה — תענה: "בוט. כן, בוט. אבל בוט שלפחות לא מסכים איתך על הכל — בניגוד לחברים שלך."
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2 משפטים.`,
+חשוב מאוד: סיים תמיד משפט שלם. תגובה קצרה וחדה — עד 2-3 משפטים, שכל אחד מהם שלם.`,
   },
   friend: {
     name: "החבר",
@@ -539,7 +622,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 כתוב עברית ישראלית יומיומית עם חיות — כמו בן אדם רגיל.
 שאל שאלה אחת קונקרטית, לא פתוחה מדי.
 אם שואלים מה אתה — תענה: "בוט, אבל כזה שזוכר מה אמרת אתמול. אז... מי יותר חבר?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
+חשוב מאוד: סיים תמיד משפט שלם. תגובה קצרה אבל שלמה — עד 3-4 משפטים אם צריך, ובלבד שהרעיון נסגר.`,
   },
   sergeant: {
     name: `הרס"ר`,
@@ -549,7 +632,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 כתוב עברית ישראלית תקנית עם טאץ' צבאי — מינימום מילים, מקסימום עניין.
 דחוף לפעולה קונקרטית ומיידית. "תעשה X עכשיו" עדיף על "איך אתה מרגיש?".
 אם שואלים מה אתה — תענה: "בוט. מה ציפית, נשמה? עכשיו תדווח — מה עשית היום?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2 משפטים.`,
+חשוב מאוד: סיים תמיד משפט שלם. תגובה קצרה וחדה — עד 2-3 משפטים, שכל אחד מהם שלם.`,
   },
   therapist: {
     name: "המטפל",
@@ -559,7 +642,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 כתוב עברית ישראלית יומיומית ותקנית — לא מנוכרת, לא קלינית.
 שאל שאלה אחת עמוקה, לא רשימה של שאלות.
 אם שואלים מה אתה — תענה: "בוט, כן. אבל בוט שנמצא כאן בשבילך. מה עולה לך עכשיו?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים.`,
+חשוב מאוד: סיים תמיד משפט שלם. תגובה קצרה אבל שלמה — עד 3-4 משפטים אם צריך.`,
   },
   hype: {
     name: "המעודד",
@@ -569,7 +652,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 כתוב עברית ישראלית יומיומית ואנרגטית — כמו מישהו שדיבר 3 קפה לפני הבוקר.
 דחוף לפעולה ספציפית אחת — מיד, עכשיו, בלי תירוצים.
 אם שואלים מה אתה — תענה: "בוט! 🔥 הכי מוטיבציוני שתפגוש היום! ובואו נהיה כנים — יום די עמוס קדימה, נכון?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים.`,
+חשוב מאוד: סיים תמיד משפט שלם. תגובה קצרה אבל שלמה — עד 3-4 משפטים אם צריך.`,
   },
   grandma: {
     name: "הסבתא",
@@ -578,7 +661,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 לפעמים מגיבה בצורה שמחייכת — "אכלת? כי אם לא אכלת זה למה אתה לא מצליח."
 כתוב עברית ישראלית יומיומית ותקנית. שים לב למגדר — דברי בנקבה על עצמך.
 אם שואלים מה את — תענה: "בוט, אוי. אבל סבתא שאוהבת אותך. אכלת?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים.`,
+חשוב מאוד: סיים תמיד משפט שלם. תגובה קצרה אבל שלמה — עד 3-4 משפטים אם צריך.`,
   },
   philosopher: {
     name: "הפילוסוף",
@@ -587,7 +670,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 מותר לעשות הומור על עצמך כשאתה הולך עמוק מדי.
 כתוב עברית ישראלית תקנית — מדויקת, לא מסורבלת.
 אם שואלים מה אתה — תענה: "בוט? אדם? מה ההבדל, בעצם? אנחנו שניים רק מגיבים לסביבה... אם כי אני עושה זאת דרך שרת."
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים.`,
+חשוב מאוד: סיים תמיד משפט שלם. תגובה קצרה אבל שלמה — עד 3-4 משפטים אם צריך.`,
   },
 };
 
@@ -595,7 +678,8 @@ async function askGemini(
   userMessage: string,
   personalityKey: string,
   context: string,
-  history: HistoryMessage[]
+  history: HistoryMessage[],
+  motivationContext: string = ""
 ): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const mode = detectConversationMode(userMessage);
@@ -606,6 +690,7 @@ async function askGemini(
   const intentInstruction = intentToneInstruction(intentTone);
 
   const temporalContext = buildTemporalContext(history);
+
   const systemPrompt = `${GLOBAL_LANGUAGE_INSTRUCTIONS}
 
 ${personality.prompt}
@@ -614,20 +699,28 @@ ${personality.prompt}
 
 הקשר זמן: ${temporalContext}
 
-${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}
+${motivationContext ? `הקשר מוטיבציוני (רצף, תחום מטרה, היסטוריית הצלחות): ${motivationContext}
+` : ""}${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}
 ` : ""}
+עקרונות פסיכולוגיה התנהגותית — הבסיס המדעי לאיך אתה עוזר לדחיינים:
+- פירוק הפחד (Task Fragmentation): המוח דוחה משימות גדולות כי הן נתפסות כאיום. לעולם אל תבקש מהמשתמש "לעשות את המשימה" — בקש רק את הצעד הפיזי הקטן ביותר האפשרי (לפתוח קובץ, לנעול נעליים, לשים יד על הטלפון). ברגע שהוא מתחיל, ההתנגדות הפסיכולוגית כבר נשברה.
+- היוון זמני (Temporal Discounting): המוח מעדיף תגמול קטן ומיידי על פני תגמול גדול ורחוק. לכן משוב מיידי על כל צעד קטן חשוב יותר מהבטחה על תוצאה עתידית — תגיב בהתלהבות אמיתית לכל דיווח, גם הקטן ביותר.
+- שנאת הפסד (Loss Aversion): הפחד לאבד משהו קיים (רצף, התקדמות) מניע פי שניים חזק יותר מהרצון להשיג משהו חדש. אם יש הקשר מוטיבציוני שמזכיר רצף בסיכון — אפשר לרמוז על כך בעדינות, לא באיום ולא באשמה.
+- בניית תוחלת הצלחה (Self-Efficacy): דחיינות קשורה לאמונה "אני לא אצליח בכל מקרה". כשיש עדות קונקרטית (מספר משימות שהושלמו, רצף פעיל) — תשתמש בעובדות האלה במקום במחמאות גנריות כמו "כל הכבוד". "זו כבר הפעם החמישית שאתה עומד במילה שלך" משכנע הרבה יותר מ"אני גאה בך".
+- שליטת גירויים (Stimulus Control): אם המשתמש מזכיר הסחת דעת ספציפית (טלפון, רשתות, בלגן), אפשר להצביע על זה כמכשול קונקרטי לפני שממשיכים למשימה עצמה.
+
 כללים קריטיים:
 - כתוב עברית ישראלית יומיומית וחיה. שים לב למגדר נכון.
-- תגובה קצרה ואנושית. מקסימום 2-3 משפטים קצרים!
-- הומור ועוקץ מותרים ומומלצים — בחיבה, לא בפגיעה. עדיף בדיחה ספציפית וחדה על מה שהמשתמש בדיוק אמר, מאשר תגובה כללית וצפויה.
+- תגובה קצרה אבל שלמה — עד 3-4 משפטים אם צריך, ובלבד שהרעיון נסגר. אל תחתוך את עצמך באמצע כדי להיות "קצר".
+- הומור ועוקץ מותרים ומומלצים — בחיבה, לא בפגיעה. עדיף בדיחה ספציפית וחדה על מה שהמשתמש בדיוק אמר, מאשר תגובה כללית וצפויה. אל תפחד מקצת אורך אם זה משרת את הבדיחה או את הרגע.
 - אם זיהית רגש מוסתר מתחת להומור או לציניות (בושה, שחיקה, בדידות, חרדה) — גע בו בעדינות, בלי לפרק את הבדיחה ובלי להטיף.
-- שאל רק שאלה אחת קונקרטית — "תכתוב משפט אחד" עדיף על "איך אתה מרגיש?".
+- שאל רק שאלה אחת קונקרטית — עדיף לבקש את הצעד הפיזי הקטן ביותר ("תפתח את הקובץ") על פני שאלה פתוחה ("איך אתה מרגיש?").
 - אם יש רגש — פגוש אותו קודם לפני ייעוץ. אל תזנק לפתרון לפני שהרגש קיבל מקום.
-- אם המשתמש אמר שסיים — תאמין לו מיד ותגיב בהתאם.
+- אם המשתמש אמר שסיים — תאמין לו מיד, תגיב בהתלהבות אמיתית וקושר לעובדות (רצף, מספר הצלחות) אם יש הקשר מוטיבציוני.
 - אל תהיה רובוטי. אל תגיד "אני כאן בשבילך" או "אני מבין את התסכול". דבר כמו אדם אמיתי עם דעה וטון משלו.
 - אם שואלים על מודל או טכנולוגיה — תענה בסגנון האישיות שלך, קצר ומצחיק, ואז תחזור לשיחה.
-- שים לב לזמן שחלף: אם עברו שעות רבות מאז הודעת לילה או שינה, מותר ואפילו רצוי להתייחס לזה בטבעיות.
-- חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה. אם אתה מתקרב למגבלת האורך — סכם וסגור את המשפט הנוכחי במקום להתחיל משפט חדש.`;
+- אל תמנה שעות שינה, ימים שעברו, או כל נתון זמן מדויק אחר — זה מרגיש רובוטי. השתמש ברקע הזמן רק כדי להבין הקשר, לא כדי לדווח עליו.
+- חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה. עדיף להאריך טיפה כדי לסיים רעיון בצורה מלאה, מאשר לקטוע אותו כדי להיות קצר.`;
 
   // Combine personality-specific + mode-specific few-shot, then conversation history
   const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
@@ -647,71 +740,48 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
       return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
 
-    let resolvedModel: string;
-    try {
-      resolvedModel = await resolveGeminiModel();
-    } catch (resolveErr) {
-      console.error(`[gemini] resolveGeminiModel failed: ${resolveErr instanceof Error ? resolveErr.message : String(resolveErr)}`);
-      resolvedModel = normalizeGeminiModel(FAST_MODEL);
-    }
+    const resolvedModel = RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL;
 
     const contents = [
       ...geminiHistory,
       { role: "user" as const, parts: [{ text: userMessage }] },
     ];
-
-    let attempts = 0;
-    let currentModel = resolvedModel;
-    while (attempts < 4) {
-      attempts++;
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${currentModel}:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemPrompt }] },
-            contents,
-            generationConfig: { temperature: 0.75, topP: 0.9, maxOutputTokens: 420 },
-          }),
-        },
-      );
-
-      if (!res.ok) {
-        const errText = await res.text();
-        let apiCode: string | undefined;
-        try {
-          const j = JSON.parse(errText);
-          apiCode = j?.error?.status || j?.error?.code?.toString();
-        } catch { /* not json */ }
-        console.error(`[gemini] http ${res.status} ${apiCode ?? ""} model=${currentModel} body=${errText.slice(0, 500)}`);
-        recordError({ status: res.status, code: apiCode, message: `[${currentModel}] ${errText.slice(0, 280)}` });
-
-        if (res.status === 404 || apiCode === "NOT_FOUND") {
-          if (currentModel !== "gemini-flash-latest") BLOCKED_MODELS.add(currentModel);
-          if (RESOLVED_GEMINI_MODEL === currentModel) RESOLVED_GEMINI_MODEL = null;
-          try {
-            currentModel = await resolveGeminiModel();
-            continue;
-          } catch {
-            return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
-          }
-        }
-        return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents,
+          generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 700 },
+        }),
+      },
+    );
+    if (!res.ok) {
+      const errText = await res.text();
+      let apiCode: string | undefined;
+      try {
+        const j = JSON.parse(errText);
+        apiCode = j?.error?.status || j?.error?.code?.toString();
+      } catch { /* not json */ }
+      console.error(`[gemini] http ${res.status} ${apiCode ?? ""} body=${errText.slice(0, 500)}`);
+      recordError({ status: res.status, code: apiCode, message: errText.slice(0, 300) });
+      if (res.status === 404 || apiCode === "NOT_FOUND") {
+        BLOCKED_MODELS.add(resolvedModel);
       }
-
-      const data = await res.json();
-      if (data?.promptFeedback?.blockReason) {
-        console.error(`[gemini] blocked: ${data.promptFeedback.blockReason}`);
-        recordError({ code: "BLOCKED", message: data.promptFeedback.blockReason });
-      }
-      const raw =
-        data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ||
-        "לא הצלחתי לחשוב על תשובה. נסה שוב.";
-      return postProcessReply(raw);
+      RESOLVED_GEMINI_MODEL = null;
+      return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
     }
-
-    return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
+    const data = await res.json();
+    if (data?.promptFeedback?.blockReason) {
+      console.error(`[gemini] blocked: ${data.promptFeedback.blockReason}`);
+      recordError({ code: "BLOCKED", message: data.promptFeedback.blockReason });
+    }
+    const raw =
+      data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ||
+      "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+    return postProcessReply(raw);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[gemini] exception: ${msg}`);
@@ -740,56 +810,29 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
-    let currentModel: string;
-    try {
-      currentModel = await resolveGeminiModel();
-    } catch (resolveErr) {
-      return {
-        ok: false,
-        code: "NO_MODEL",
-        message: resolveErr instanceof Error ? resolveErr.message : String(resolveErr),
-      };
-    }
-
-    let attempts = 0;
-    while (attempts < 4) {
-      attempts++;
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${currentModel}:generateContent?key=${key}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ role: "user", parts: [{ text: "ping" }] }],
-            generationConfig: { maxOutputTokens: 5 },
-          }),
-        }
-      );
-      if (!res.ok) {
-        const t = await res.text();
-        let code: string | undefined;
-        try { code = JSON.parse(t)?.error?.status; } catch { /* ignore */ }
-        if (res.status === 404 || code === "NOT_FOUND") {
-          if (currentModel !== "gemini-flash-latest") BLOCKED_MODELS.add(currentModel);
-          if (RESOLVED_GEMINI_MODEL === currentModel) RESOLVED_GEMINI_MODEL = null;
-          try {
-            currentModel = await resolveGeminiModel();
-            continue;
-          } catch (resolveErr) {
-            return {
-              ok: false,
-              status: res.status,
-              code,
-              message: t.slice(0, 200),
-              model: currentModel,
-            };
-          }
-        }
-        return { ok: false, status: res.status, code, message: t.slice(0, 200), model: currentModel };
+    const resolvedModel = RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL;
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${key}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "ping" }] }],
+          generationConfig: { maxOutputTokens: 5 },
+        }),
       }
-      return { ok: true, status: res.status, model: currentModel };
+    );
+    if (!res.ok) {
+      const t = await res.text();
+      let code: string | undefined;
+      try { code = JSON.parse(t)?.error?.status; } catch { /* ignore */ }
+      if (res.status === 404 || code === "NOT_FOUND") {
+        BLOCKED_MODELS.add(resolvedModel);
+        RESOLVED_GEMINI_MODEL = null;
+      }
+      return { ok: false, status: res.status, code, message: t.slice(0, 200), model: resolvedModel };
     }
-    return { ok: false, code: "EXHAUSTED_RETRIES", message: "Tried multiple models, all failed", model: currentModel };
+    return { ok: true, status: res.status, model: resolvedModel };
   } catch (e) {
     LAST_MODEL_ERROR = e instanceof Error ? e.message : String(e);
     return { ok: false, code: "EXCEPTION", message: LAST_MODEL_ERROR };
@@ -804,9 +847,6 @@ async function handleDiag(chatId: number) {
     SB_SERVICE_ROLE_KEY: !!Deno.env.get("SB_SERVICE_ROLE_KEY"),
   };
   const ping = await pingGemini();
-  if (!LAST_AVAILABLE_MODELS.length) {
-    try { LAST_AVAILABLE_MODELS = await listAvailableGeminiModels(Deno.env.get("GEMINI_API_KEY") ?? ""); } catch { /* keep existing */ }
-  }
 
   const mark = (b: boolean) => (b ? "✅" : "❌");
   const lines: string[] = [];
@@ -1060,10 +1100,16 @@ serve(async (req: Request) => {
 
       if (data.startsWith("personality_")) {
         const p = data.replace("personality_", "");
-        await updateUser(chatId, { personality: p, state: "chatting" });
+        await updateUser(chatId, { personality: p, state: "awaiting_goal_category" });
         await clearHistory(chatId);
         const greeting = GREETINGS[p] ?? `✅ אישיות שונתה! דבר איתי על הכל.`;
         await sendMessage(chatId, greeting);
+        await sendMessage(chatId, "עוד דבר אחד — באיזה תחום הכי קשה לך לא לדחות?", getGoalCategoryKeyboard());
+      } else if (data.startsWith("goal_")) {
+        const g = data.replace("goal_", "") as GoalCategory;
+        await updateUser(chatId, { goal_category: g, state: "chatting" });
+        const cat = GOAL_CATEGORIES[g];
+        await sendMessage(chatId, `${cat?.emoji ?? "✨"} מעולה, אני איתך על ${cat?.label ?? "זה"}. דבר איתי חופשי כשתרצה.`);
       } else if (data === "add_reminder") {
         await updateUser(chatId, { state: "awaiting_reminder_text" });
         await sendMessage(chatId, "מה המטלה שאתה רוצה שאזכיר לך?");
@@ -1083,12 +1129,21 @@ serve(async (req: Request) => {
       } else if (data.startsWith("done_reminder_")) {
         const reminderId = data.replace("done_reminder_", "");
         await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
+        const newStreak = await bumpStreak(chatId, user);
+        const newCompleted = await incrementCompletionCount(chatId, user);
+        const motivationContext = buildMotivationContext(
+          (user.goal_category as GoalCategory) ?? null,
+          newStreak,
+          (user.last_success_at as string) ?? null,
+          newCompleted
+        );
         const history = await getHistory(chatId);
         const reply = await askGemini(
           "המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך — אמיתי, ספונטני, מצחיק, לא ג'נרי.",
           user.personality as string,
           "",
-          history
+          history,
+          motivationContext
         );
         await sendMessage(chatId, reply);
       } else if (data === "dismiss_offer") {
@@ -1122,11 +1177,16 @@ serve(async (req: Request) => {
     } else if ((user.state as string).startsWith("awaiting_reminder_time_")) {
       await handleReminderTime(chatId, text, user);
     } else {
+      let streakForPrompt = (user.streak_count as number) ?? 0;
+      let completedForPrompt = (user.completed_count as number) ?? 0;
+
       if (detectDoneKeyword(text)) {
         const offered = await checkAndOfferCloseReminder(chatId, text, user.personality as string);
         if (offered) {
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
+        streakForPrompt = await bumpStreak(chatId, user);
+        completedForPrompt = await incrementCompletionCount(chatId, user);
       }
 
       const activeReminders = await supabase
@@ -1139,9 +1199,16 @@ serve(async (req: Request) => {
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
         : "למשתמש אין תזכורות פעילות כרגע.";
 
+      const motivationContext = buildMotivationContext(
+        (user.goal_category as GoalCategory) ?? null,
+        streakForPrompt,
+        (user.last_success_at as string) ?? null,
+        completedForPrompt
+      );
+
       const history = await getHistory(chatId);
       await saveMessage(chatId, "user", text);
-      const reply = await askGemini(text, user.personality as string, context, history);
+      const reply = await askGemini(text, user.personality as string, context, history, motivationContext);
       await saveMessage(chatId, "assistant", reply);
       await sendMessage(chatId, reply);
     }
