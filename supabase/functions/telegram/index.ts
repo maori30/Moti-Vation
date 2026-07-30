@@ -230,13 +230,13 @@ function modelSupportsThinking(model: string): boolean {
 // latency for basically zero quality gain. Setting a low/zero thinking
 // budget on models that support it is the single biggest lever we have to
 // speed up responses without touching model selection or resolution logic.
-function buildGenerationConfig(model: string, maxOutputTokens: number) {
+function buildGenerationConfig(model: string, maxOutputTokens: number, forceNoThinking = false) {
   const config: Record<string, unknown> = {
     temperature: 0.8,
     topP: 0.9,
     maxOutputTokens,
   };
-  if (modelSupportsThinking(model)) {
+  if (modelSupportsThinking(model) && !forceNoThinking) {
     config.thinkingConfig = { thinkingBudget: 0 };
   }
   return config;
@@ -246,7 +246,8 @@ async function generateContentWithFallback(
   apiKey: string,
   bodyBase: Record<string, unknown>,
   attempt = 0,
-  tokenBoost = 0
+  tokenBoost = 0,
+  forceNoThinking = false
 ): Promise<{ ok: true; data: any } | { ok: false }> {
   const MAX_ATTEMPTS = 3;
   let model: string;
@@ -260,7 +261,7 @@ async function generateContentWithFallback(
 
   const baseConfig = (bodyBase.generationConfig as Record<string, unknown>) ?? {};
   const baseMaxTokens = (baseConfig.maxOutputTokens as number) ?? 700;
-  const generationConfig = buildGenerationConfig(model, baseMaxTokens + tokenBoost);
+  const generationConfig = buildGenerationConfig(model, baseMaxTokens + tokenBoost, forceNoThinking);
 
   const body = { ...bodyBase, generationConfig };
 
@@ -281,7 +282,7 @@ async function generateContentWithFallback(
     // reply to the user. This is the main fix for sentences missing words.
     if (finishReason === "MAX_TOKENS" && attempt + 1 < MAX_ATTEMPTS && tokenBoost < 400) {
       console.warn(`[gemini] response hit MAX_TOKENS on ${model}, retrying with a larger token budget`);
-      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + 400);
+      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + 400, forceNoThinking);
     }
     return { ok: true, data };
   }
@@ -300,10 +301,9 @@ async function generateContentWithFallback(
   // retry once immediately without thinkingConfig instead of blocking the
   // model entirely.
   const isBadThinkingParam = res.status === 400 && /thinkingConfig|thinking_config/i.test(errText);
-  if (isBadThinkingParam && attempt + 1 < MAX_ATTEMPTS) {
+  if (isBadThinkingParam && !forceNoThinking && attempt + 1 < MAX_ATTEMPTS) {
     console.warn(`[gemini] model ${model} rejected thinkingConfig, retrying without it`);
-    const { thinkingConfig: _drop, ...rest } = generationConfig as Record<string, unknown>;
-    return generateContentWithFallback(apiKey, { ...bodyBase, generationConfig: rest }, attempt + 1, tokenBoost);
+    return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, true);
   }
 
   const isModelDead = res.status === 404 || apiCode === "NOT_FOUND" || res.status === 403 || apiCode === "PERMISSION_DENIED";
@@ -312,10 +312,11 @@ async function generateContentWithFallback(
     if (RESOLVED_GEMINI_MODEL === model) RESOLVED_GEMINI_MODEL = null;
     if (attempt + 1 < MAX_ATTEMPTS) {
       console.warn(`[gemini] model ${model} died mid-flight, retrying with a different model (attempt ${attempt + 2}/${MAX_ATTEMPTS})`);
-      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost);
+      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, forceNoThinking);
     }
   }
 
+  console.error(`[gemini] giving up after ${attempt + 1} attempt(s) on model ${model}: HTTP ${res.status} ${apiCode ?? ""}`);
   return { ok: false };
 }
 
