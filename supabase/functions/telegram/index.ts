@@ -55,6 +55,10 @@ let LAST_RESOLVED_AT = 0;
 const MODEL_RECHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 const BLOCKED_MODELS = new Set<string>();
+// Models discovered at runtime to reject thinkingConfig (via a 400 error)
+// are remembered here, so we skip straight to "no thinking" on the FIRST
+// attempt next time instead of wasting a request finding out again.
+const NO_THINKING_SUPPORT: Set<string> = new Set();
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const HISTORY_LIMIT = 12;
 const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
@@ -256,7 +260,7 @@ function buildGenerationConfig(model: string, maxOutputTokens: number, forceNoTh
     topP: 0.9,
     maxOutputTokens,
   };
-  if (modelSupportsThinking(model) && !forceNoThinking) {
+  if (modelSupportsThinking(model) && !forceNoThinking && !NO_THINKING_SUPPORT.has(model)) {
     config.thinkingConfig = { thinkingBudget: 0 };
   }
   return config;
@@ -269,7 +273,7 @@ async function generateContentWithFallback(
   tokenBoost = 0,
   forceNoThinking = false
 ): Promise<{ ok: true; data: any } | { ok: false }> {
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = 4; // enough headroom for: try-with-thinking -> retry-without-thinking -> model-switch -> final attempt
   let model: string;
   try {
     model = await resolveGeminiModel(attempt > 0);
@@ -328,13 +332,17 @@ async function generateContentWithFallback(
   console.error(`[gemini] http ${res.status} ${apiCode ?? ""} model=${model} body=${errText.slice(0, 500)}`);
   recordError({ status: res.status, code: apiCode, message: `[${model}] ${errText.slice(0, 280)}` });
 
-  // Guard: if a model rejects thinkingConfig as an unknown field (shouldn't
-  // happen given modelSupportsThinking, but Google's support matrix shifts),
-  // retry once immediately without thinkingConfig instead of blocking the
-  // model entirely.
-  const isBadThinkingParam = res.status === 400 && /thinkingConfig|thinking_config/i.test(errText);
-  if (isBadThinkingParam && !forceNoThinking && attempt + 1 < MAX_ATTEMPTS) {
-    console.warn(`[gemini] model ${model} rejected thinkingConfig, retrying without it`);
+  // Guard: Google's 400 INVALID_ARGUMENT errors are often generic and do NOT
+  // mention the offending field name (e.g. just "Request contains an invalid
+  // argument"), so we can't reliably detect "thinkingConfig is the problem"
+  // from the error text alone. Instead: ANY 400 while thinkingConfig was sent
+  // is treated as a likely thinkingConfig incompatibility (support for it
+  // varies per model/version and shifts over time) — retry once immediately
+  // without it before giving up.
+  const sentThinkingConfig = !forceNoThinking && modelSupportsThinking(model) && !NO_THINKING_SUPPORT.has(model);
+  if (res.status === 400 && sentThinkingConfig && attempt + 1 < MAX_ATTEMPTS) {
+    console.warn(`[gemini] model ${model} returned 400 with thinkingConfig set, retrying without it and remembering for next time`);
+    NO_THINKING_SUPPORT.add(model);
     return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, true);
   }
 
