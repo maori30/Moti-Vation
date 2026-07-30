@@ -9,9 +9,20 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const GEMINI_API_VERSION = "v1beta";
 
+// Ordered by preference: newest/fastest first, safest fallback last.
+// This list is checked in order — the first model that both EXISTS for this
+// API key AND actually answers a real generateContent probe wins. Google
+// regularly deprecates/restricts older models (e.g. gemini-2.5-flash became
+// unavailable to some API keys with zero warning), so we always keep a
+// broad, recent fallback chain instead of hardcoding a single model.
 const PREFERRED_GEMINI_MODELS = [
   Deno.env.get("GEMINI_MODEL")?.trim(),
+  "gemini-flash-latest",
+  "gemini-3-flash-preview",
+  "gemini-3.5-flash",
+  "gemini-3.1-flash",
   "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-2.5-pro",
   "gemini-2.0-flash",
   "gemini-2.0-flash-001",
@@ -23,6 +34,11 @@ const PREFERRED_GEMINI_MODELS = [
 let RESOLVED_GEMINI_MODEL: string | null = null;
 let LAST_AVAILABLE_MODELS: string[] = [];
 let LAST_MODEL_ERROR: string | null = null;
+// Timestamp of the last successful model resolution. We re-check periodically
+// (not on every single message) so a newly-blocked model gets detected and
+// swapped out automatically within minutes, without probing on every request.
+let LAST_RESOLVED_AT = 0;
+const MODEL_RECHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 const BLOCKED_MODELS = new Set<string>();
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
@@ -139,11 +155,21 @@ async function probeModel(model: string, apiKey: string): Promise<boolean> {
   return false;
 }
 
-async function resolveGeminiModel(): Promise<string> {
-  if (RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL)) {
+// Resolves to a model that is BOTH listed as available for this API key AND
+// verified via a live probe request to actually respond successfully. This
+// is what prevents "stuck on a dead model" failures: instead of trusting a
+// hardcoded name, we walk the preference list in order and stop at the first
+// one that truly works right now.
+async function resolveGeminiModel(forceRecheck = false): Promise<string> {
+  const staleEnough = Date.now() - LAST_RESOLVED_AT > MODEL_RECHECK_INTERVAL_MS;
+  if (
+    RESOLVED_GEMINI_MODEL &&
+    !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) &&
+    !forceRecheck &&
+    !staleEnough
+  ) {
     return RESOLVED_GEMINI_MODEL;
   }
-  RESOLVED_GEMINI_MODEL = null;
 
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
@@ -158,20 +184,90 @@ async function resolveGeminiModel(): Promise<string> {
       if (!candidates.includes(m) && isGeminiModel(m)) candidates.push(m);
     }
 
+    // If the currently-resolved model is still first in line and not blocked,
+    // try it first before probing everything else — avoids unnecessary calls.
+    if (RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) && candidates.includes(RESOLVED_GEMINI_MODEL)) {
+      const stillWorks = await probeModel(RESOLVED_GEMINI_MODEL, apiKey);
+      if (stillWorks) {
+        LAST_RESOLVED_AT = Date.now();
+        return RESOLVED_GEMINI_MODEL;
+      }
+    }
+
     for (const model of candidates) {
       if (BLOCKED_MODELS.has(model)) continue;
       const works = await probeModel(model, apiKey);
       if (works) {
         RESOLVED_GEMINI_MODEL = model;
+        LAST_RESOLVED_AT = Date.now();
         console.log(`[gemini] resolved model: ${model}`);
         return model;
       }
     }
-    throw new Error("No working generateContent model found");
+    RESOLVED_GEMINI_MODEL = null;
+    throw new Error("No working generateContent model found among: " + candidates.join(", "));
   } catch (err) {
     LAST_MODEL_ERROR = err instanceof Error ? err.message : String(err);
+    RESOLVED_GEMINI_MODEL = null;
     throw err;
   }
+}
+
+// Sends a generateContent request, but self-heals if the resolved model
+// suddenly stops working (e.g. Google restricts/deprecates it mid-flight).
+// Flow: resolve best known-good model -> call it -> on 404/NOT_FOUND, mark it
+// blocked, force a fresh resolve (skipping the dead one), and retry once more
+// before giving up. This is what stops the bot from getting stuck repeating
+// the same broken model call on every single message.
+async function generateContentWithFallback(
+  apiKey: string,
+  body: Record<string, unknown>,
+  attempt = 0
+): Promise<{ ok: true; data: any } | { ok: false }> {
+  const MAX_ATTEMPTS = 3;
+  let model: string;
+  try {
+    model = await resolveGeminiModel(attempt > 0);
+  } catch (err) {
+    console.error(`[gemini] could not resolve any working model: ${err instanceof Error ? err.message : String(err)}`);
+    recordError({ code: "NO_MODEL", message: err instanceof Error ? err.message : String(err) });
+    return { ok: false };
+  }
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+
+  if (res.ok) {
+    const data = await res.json();
+    return { ok: true, data };
+  }
+
+  const errText = await res.text();
+  let apiCode: string | undefined;
+  try {
+    const j = JSON.parse(errText);
+    apiCode = j?.error?.status || j?.error?.code?.toString();
+  } catch { /* not json */ }
+  console.error(`[gemini] http ${res.status} ${apiCode ?? ""} model=${model} body=${errText.slice(0, 500)}`);
+  recordError({ status: res.status, code: apiCode, message: `[${model}] ${errText.slice(0, 280)}` });
+
+  const isModelDead = res.status === 404 || apiCode === "NOT_FOUND" || res.status === 403 || apiCode === "PERMISSION_DENIED";
+  if (isModelDead) {
+    BLOCKED_MODELS.add(model);
+    if (RESOLVED_GEMINI_MODEL === model) RESOLVED_GEMINI_MODEL = null;
+    if (attempt + 1 < MAX_ATTEMPTS) {
+      console.warn(`[gemini] model ${model} died mid-flight, retrying with a different model (attempt ${attempt + 2}/${MAX_ATTEMPTS})`);
+      return generateContentWithFallback(apiKey, body, attempt + 1);
+    }
+  }
+
+  return { ok: false };
 }
 
 type DiagError = { at: string; status?: number; code?: string; message: string };
@@ -626,40 +722,21 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
       return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
     }
 
-    const resolvedModel = RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL;
-
     const contents = [
       ...geminiHistory,
       { role: "user" as const, parts: [{ text: userMessage }] },
     ];
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents,
-          generationConfig: { temperature: 0.75, topP: 0.9, maxOutputTokens: 420 },
-        }),
-      },
-    );
-    if (!res.ok) {
-      const errText = await res.text();
-      let apiCode: string | undefined;
-      try {
-        const j = JSON.parse(errText);
-        apiCode = j?.error?.status || j?.error?.code?.toString();
-      } catch { /* not json */ }
-      console.error(`[gemini] http ${res.status} ${apiCode ?? ""} body=${errText.slice(0, 500)}`);
-      recordError({ status: res.status, code: apiCode, message: errText.slice(0, 300) });
-      if (res.status === 404 || apiCode === "NOT_FOUND") {
-        BLOCKED_MODELS.add(resolvedModel);
-      }
-      RESOLVED_GEMINI_MODEL = null;
+
+    const genResult = await generateContentWithFallback(GEMINI_API_KEY, {
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents,
+      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 700 },
+    });
+
+    if (!genResult.ok) {
       return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
     }
-    const data = await res.json();
+    const data = genResult.data;
     if (data?.promptFeedback?.blockReason) {
       console.error(`[gemini] blocked: ${data.promptFeedback.blockReason}`);
       recordError({ code: "BLOCKED", message: data.promptFeedback.blockReason });
@@ -692,13 +769,16 @@ async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
 
+// /diag now actually resolves+probes a real model instead of trusting a
+// cached/stale value, so it reports the truth: either a genuinely working
+// model, or a clear reason why none currently work for this API key.
 async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: string; message?: string; model?: string }> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
   try {
-    const resolvedModel = RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) ? RESOLVED_GEMINI_MODEL : FAST_MODEL;
+    const model = await resolveGeminiModel(true);
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${resolvedModel}:generateContent?key=${key}`,
+      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${key}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -713,12 +793,12 @@ async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: stri
       let code: string | undefined;
       try { code = JSON.parse(t)?.error?.status; } catch { /* ignore */ }
       if (res.status === 404 || code === "NOT_FOUND") {
-        BLOCKED_MODELS.add(resolvedModel);
+        BLOCKED_MODELS.add(model);
         RESOLVED_GEMINI_MODEL = null;
       }
-      return { ok: false, status: res.status, code, message: t.slice(0, 200), model: resolvedModel };
+      return { ok: false, status: res.status, code, message: t.slice(0, 200), model };
     }
-    return { ok: true, status: res.status, model: resolvedModel };
+    return { ok: true, status: res.status, model };
   } catch (e) {
     LAST_MODEL_ERROR = e instanceof Error ? e.message : String(e);
     return { ok: false, code: "EXCEPTION", message: LAST_MODEL_ERROR };
