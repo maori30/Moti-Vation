@@ -29,14 +29,25 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 1500
 // regularly deprecates/restricts older models (e.g. gemini-2.5-flash became
 // unavailable to some API keys with zero warning), so we always keep a
 // broad, recent fallback chain instead of hardcoding a single model.
+// ORDER FIX: gemini-flash-latest was first in line, but live logs proved it
+// silently REJECTS thinkingConfig (see NO_THINKING_SUPPORT note below), so
+// we can never turn its internal "thinking" off. That made it spend its
+// token budget on invisible reasoning before writing any visible reply,
+// causing both the 10-11s response times AND repeated MAX_TOKENS hits seen
+// in production logs — regardless of how high maxOutputTokens was set.
+// gemini-2.5-flash DOES honor thinkingBudget:0 (confirmed by
+// modelSupportsThinking() below), so it's moved to the front: same
+// generation quality, but actually fast because we can disable thinking.
+// gemini-flash-latest stays in the list as a fallback in case 2.5-flash
+// ever becomes unavailable.
 const PREFERRED_GEMINI_MODELS = [
   Deno.env.get("GEMINI_MODEL")?.trim(),
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-flash-latest",
   "gemini-3-flash-preview",
   "gemini-3.5-flash",
   "gemini-3.1-flash",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
   "gemini-2.5-pro",
   "gemini-2.0-flash",
   "gemini-2.0-flash-001",
@@ -317,9 +328,22 @@ async function generateContentWithFallback(
     // If the model got cut off by the token cap mid-sentence, silently retry
     // once with a bigger budget instead of returning a broken/incomplete
     // reply to the user. This is the main fix for sentences missing words.
-    if (finishReason === "MAX_TOKENS" && attempt + 1 < MAX_ATTEMPTS && tokenBoost < 400) {
+    if (finishReason === "MAX_TOKENS" && attempt + 1 < MAX_ATTEMPTS && tokenBoost < 800) {
       console.warn(`[gemini] response hit MAX_TOKENS on ${model}, retrying with a larger token budget`);
       return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + 400, forceNoThinking);
+    }
+    // FIX: if we've exhausted retries but the model DID produce some text
+    // (just got cut off), return it instead of silently discarding it for
+    // the generic "couldn't think of a reply" fallback. postProcessReply
+    // already knows how to cleanly close an unfinished sentence, so a
+    // truncated-but-present reply is much better than losing the answer
+    // entirely — this is what caused the bot to ignore the user's message
+    // ("אחלה מוטי") and reply with a fallback that felt like it understood
+    // nothing.
+    const hasText = !!data?.candidates?.[0]?.content?.parts?.some((p: { text?: string }) => (p.text ?? "").trim().length > 0);
+    if (finishReason === "MAX_TOKENS" && !hasText && attempt + 1 < MAX_ATTEMPTS) {
+      console.warn(`[gemini] MAX_TOKENS with empty output on ${model} (likely all budget spent on internal reasoning), retrying once more with a bigger jump`);
+      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + 800, forceNoThinking);
     }
     return { ok: true, data };
   }
@@ -905,19 +929,18 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
     const genResult = await generateContentWithFallback(GEMINI_API_KEY, {
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents,
-      // CORRECTION: lowering this to 300 caused cut-off sentences again.
-      // Root cause: maxOutputTokens is a shared budget between invisible
-      // "thinking" tokens and the actual visible reply text on models that
-      // support thinking — even with thinkingBudget:0, some Gemini models
-      // still spend a chunk of tokens on internal reasoning before writing
-      // the answer, so a low cap can hit MAX_TOKENS before real text is even
-      // produced. Reverting to a safe budget here does NOT meaningfully slow
-      // responses down — maxOutputTokens is a ceiling, not a target; a 2-3
-      // sentence reply naturally stops itself in ~40-80 tokens regardless of
-      // the cap. The real latency fixes (skipping the redundant model probe,
-      // parallelizing DB calls) remain in place below and are what actually
-      // shortened response time.
-      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 700 },
+      // Token budget tuning: live logs showed replies STILL hitting
+      // MAX_TOKENS at 700, which is expensive — every time that happens,
+      // the bot pays for a full SECOND round-trip to Gemini (the retry-with-
+      // bigger-budget safety net), roughly doubling response time for that
+      // message (9-11s instead of ~4s in the logs). Raising the ceiling here
+      // does NOT make short replies slower — maxOutputTokens only limits how
+      // much the model is ALLOWED to write, not how much it writes; a 2-3
+      // sentence reply still naturally stops itself in ~40-80 tokens. Giving
+      // more headroom up front means the model can finish its sentence in a
+      // SINGLE request instead of needing a second one, which is faster
+      // overall than a low cap + retry.
+      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 1024 },
     });
 
     if (!genResult.ok) {
