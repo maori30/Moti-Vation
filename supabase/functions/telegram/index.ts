@@ -208,28 +208,23 @@ async function resolveGeminiModel(forceRecheck = false): Promise<string> {
       if (!candidates.includes(m) && isGeminiModel(m)) candidates.push(m);
     }
 
-    // If the currently-resolved model is still first in line and not blocked,
-    // try it first before probing everything else — avoids unnecessary calls.
-    if (RESOLVED_GEMINI_MODEL && !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) && candidates.includes(RESOLVED_GEMINI_MODEL)) {
-      const stillWorks = await probeModel(RESOLVED_GEMINI_MODEL, apiKey);
-      if (stillWorks) {
-        LAST_RESOLVED_AT = Date.now();
-        return RESOLVED_GEMINI_MODEL;
-      }
+    // SPEED FIX: we used to send an extra "probe" request (a whole network
+    // round-trip to Gemini) here to verify a model works BEFORE using it.
+    // That doubled latency on every cold start (Supabase isolates recycle
+    // every ~1 min, so this ran on almost every message per the logs).
+    // generateContentWithFallback already self-heals reactively — if a model
+    // is dead it gets a 404, gets blacklisted, and the real call retries with
+    // the next candidate automatically. So we can pick the first non-blocked
+    // candidate optimistically and skip the redundant probe entirely.
+    const pick = candidates.find((m) => !BLOCKED_MODELS.has(m));
+    if (!pick) {
+      RESOLVED_GEMINI_MODEL = null;
+      throw new Error("No candidate model available (all blocked) among: " + candidates.join(", "));
     }
-
-    for (const model of candidates) {
-      if (BLOCKED_MODELS.has(model)) continue;
-      const works = await probeModel(model, apiKey);
-      if (works) {
-        RESOLVED_GEMINI_MODEL = model;
-        LAST_RESOLVED_AT = Date.now();
-        console.log(`[gemini] resolved model: ${model}`);
-        return model;
-      }
-    }
-    RESOLVED_GEMINI_MODEL = null;
-    throw new Error("No working generateContent model found among: " + candidates.join(", "));
+    RESOLVED_GEMINI_MODEL = pick;
+    LAST_RESOLVED_AT = Date.now();
+    console.log(`[gemini] resolved model: ${pick}`);
+    return pick;
   } catch (err) {
     LAST_MODEL_ERROR = err instanceof Error ? err.message : String(err);
     RESOLVED_GEMINI_MODEL = null;
@@ -910,7 +905,13 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
     const genResult = await generateContentWithFallback(GEMINI_API_KEY, {
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents,
-      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 700 },
+      // SPEED FIX: replies are capped at 2-3 short sentences by the prompt,
+      // so 700 tokens was far more headroom than ever needed and let slow
+      // generations run longer than necessary. The existing MAX_TOKENS retry
+      // safety net (see generateContentWithFallback) still kicks in and adds
+      // +400 tokens automatically if a reply ever gets cut off, so this is
+      // safe to lower without risking truncated messages.
+      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 300 },
     });
 
     if (!genResult.ok) {
@@ -1323,21 +1324,36 @@ serve(async (req: Request) => {
         }
       }
 
-      const activeReminders = await supabase
-        .from("reminders")
-        .select("text, time, type")
-        .eq("chat_id", chatId)
-        .eq("active", true);
+      // SPEED FIX: activeReminders + history have no dependency on each
+      // other, so fetch them concurrently instead of one-after-another —
+      // this alone cuts one full Supabase round-trip off every message.
+      // NOTE: saveMessage("user", ...) is intentionally NOT run in parallel
+      // with getHistory — if the insert lands before the select, the current
+      // message could show up twice (once via history, once via the direct
+      // `text` param passed to askGemini), confusing the model's context.
+      const [activeReminders, history] = await Promise.all([
+        supabase
+          .from("reminders")
+          .select("text, time, type")
+          .eq("chat_id", chatId)
+          .eq("active", true),
+        getHistory(chatId),
+      ]);
 
       const context = activeReminders.data?.length
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
         : "למשתמש אין תזכורות פעילות כרגע.";
 
-      const history = await getHistory(chatId);
-      await saveMessage(chatId, "user", text);
+      // Fire-and-forget: saving the user's message doesn't need to block
+      // Gemini generation — Gemini already has the message via `text`.
+      saveMessage(chatId, "user", text).catch((e) => console.error("[db] saveMessage(user) failed:", e));
+
       const reply = await askGemini(text, user.personality as string, context, history);
-      await saveMessage(chatId, "assistant", reply);
+      // Send the Telegram reply immediately; persist the assistant message
+      // in the background — the user shouldn't wait on a DB write to see
+      // the reply they're already looking at.
       await sendMessage(chatId, reply);
+      saveMessage(chatId, "assistant", reply).catch((e) => console.error("[db] saveMessage(assistant) failed:", e));
     }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
