@@ -905,13 +905,19 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
     const genResult = await generateContentWithFallback(GEMINI_API_KEY, {
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents,
-      // SPEED FIX: replies are capped at 2-3 short sentences by the prompt,
-      // so 700 tokens was far more headroom than ever needed and let slow
-      // generations run longer than necessary. The existing MAX_TOKENS retry
-      // safety net (see generateContentWithFallback) still kicks in and adds
-      // +400 tokens automatically if a reply ever gets cut off, so this is
-      // safe to lower without risking truncated messages.
-      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 300 },
+      // CORRECTION: lowering this to 300 caused cut-off sentences again.
+      // Root cause: maxOutputTokens is a shared budget between invisible
+      // "thinking" tokens and the actual visible reply text on models that
+      // support thinking — even with thinkingBudget:0, some Gemini models
+      // still spend a chunk of tokens on internal reasoning before writing
+      // the answer, so a low cap can hit MAX_TOKENS before real text is even
+      // produced. Reverting to a safe budget here does NOT meaningfully slow
+      // responses down — maxOutputTokens is a ceiling, not a target; a 2-3
+      // sentence reply naturally stops itself in ~40-80 tokens regardless of
+      // the cap. The real latency fixes (skipping the redundant model probe,
+      // parallelizing DB calls) remain in place below and are what actually
+      // shortened response time.
+      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 700 },
     });
 
     if (!genResult.ok) {
@@ -1296,10 +1302,19 @@ serve(async (req: Request) => {
     const message = update.message;
     if (!message) return new Response(JSON.stringify({ ok: true }), { status: 200 });
 
+    // TIMING: pure diagnostics, doesn't change any behavior. Logs a
+    // breakdown of where time actually goes for each message, so we can
+    // find the real bottleneck with data instead of guessing.
+    const t0 = Date.now();
+    const timings: Record<string, number> = {};
+    const mark = (label: string, from: number) => { timings[label] = Date.now() - from; };
+
     const chatId = message.chat.id;
     const text = (message.text ?? "").trim();
     const firstName = message.from?.first_name ?? "חבר";
+    const tUser = Date.now();
     const user = await getOrCreateUser(chatId, firstName);
+    mark("getUser", tUser);
 
     if (text === "/start") {
       await handleStart(chatId, firstName);
@@ -1331,6 +1346,7 @@ serve(async (req: Request) => {
       // with getHistory — if the insert lands before the select, the current
       // message could show up twice (once via history, once via the direct
       // `text` param passed to askGemini), confusing the model's context.
+      const tFetch = Date.now();
       const [activeReminders, history] = await Promise.all([
         supabase
           .from("reminders")
@@ -1339,6 +1355,7 @@ serve(async (req: Request) => {
           .eq("active", true),
         getHistory(chatId),
       ]);
+      mark("getRemindersAndHistory", tFetch);
 
       const context = activeReminders.data?.length
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
@@ -1348,12 +1365,20 @@ serve(async (req: Request) => {
       // Gemini generation — Gemini already has the message via `text`.
       saveMessage(chatId, "user", text).catch((e) => console.error("[db] saveMessage(user) failed:", e));
 
+      const tGemini = Date.now();
       const reply = await askGemini(text, user.personality as string, context, history);
+      mark("gemini", tGemini);
+
+      const tSend = Date.now();
       // Send the Telegram reply immediately; persist the assistant message
       // in the background — the user shouldn't wait on a DB write to see
       // the reply they're already looking at.
       await sendMessage(chatId, reply);
+      mark("sendTelegram", tSend);
       saveMessage(chatId, "assistant", reply).catch((e) => console.error("[db] saveMessage(assistant) failed:", e));
+
+      timings.total = Date.now() - t0;
+      console.log(`[timing] ${JSON.stringify(timings)}`);
     }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
