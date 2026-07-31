@@ -1,0 +1,16 @@
+name: Reminder Dispatcher
+
+on:
+  schedule:
+    - cron: '* * * * *'   # runs every 1 minute
+  workflow_dispatch:        # allows manual "Run workflow" button too
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call reminder dispatch endpoint
+        run: |
+          curl -X POST "${{ secrets.SUPABASE_FUNCTION_URL }}?dispatch=reminders" \
+            -H "x-dispatch-secret: ${{ secrets.REMINDER_DISPATCH_SECRET }}" \
+            --fail --silent --show-error
