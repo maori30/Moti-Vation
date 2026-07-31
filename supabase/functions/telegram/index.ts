@@ -1157,10 +1157,101 @@ async function handleMenu(chatId: number) {
 }
 
 
+// Natural-language reminder parser: handles "עוד X דקות/שעות/ימים", "מחר", "מחרתיים", and weekday phrases.
+interface ParsedReminder {
+  dueAt: Date;
+  task: string;
+}
+
+const REMINDER_TRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר/;
+const HEBREW_WEEKDAYS: Record<string, number> = {
+  "ראשון": 0, "שני": 1, "שלישי": 2, "רביעי": 3,
+  "חמישי": 4, "שישי": 5, "שבת": 6,
+};
+
 function detectReminderIntent(text: string): boolean {
   const t = text.toLowerCase();
-  return /תזכיר|תזכורת|רשמתי|עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/.test(t);
+  return REMINDER_TRIGGER.test(t) || /(עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת))/i.test(t);
 }
+
+function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null {
+  const lower = text.trim();
+  let dueAt: Date | null = null;
+  let matchedSpan = "";
+
+  const relMinutes = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה)/);
+  const relHalfHour = lower.match(/(?:עוד|בעוד)\s*חצי\s*שעה/);
+  const relHours = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(שעות|שעה)/);
+  const relDays = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(ימים|יום)/);
+
+  if (relMinutes) {
+    dueAt = new Date(now.getTime() + parseInt(relMinutes[1], 10) * 60_000);
+    matchedSpan = relMinutes[0];
+  } else if (relHalfHour) {
+    dueAt = new Date(now.getTime() + 30 * 60_000);
+    matchedSpan = relHalfHour[0];
+  } else if (relHours) {
+    dueAt = new Date(now.getTime() + parseInt(relHours[1], 10) * 3_600_000);
+    matchedSpan = relHours[0];
+  } else if (relDays) {
+    dueAt = new Date(now.getTime() + parseInt(relDays[1], 10) * 86_400_000);
+    matchedSpan = relDays[0];
+  }
+
+  if (!dueAt) {
+    const dayWord = lower.match(/מחרתיים|מחר|היום/);
+    if (dayWord) {
+      const base = new Date(now);
+      if (dayWord[0] === "מחר") base.setDate(base.getDate() + 1);
+      if (dayWord[0] === "מחרתיים") base.setDate(base.getDate() + 2);
+      const timeMatch = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+      if (timeMatch) {
+        base.setHours(parseInt(timeMatch[1], 10), timeMatch[2] ? parseInt(timeMatch[2], 10) : 0, 0, 0);
+      } else {
+        base.setHours(9, 0, 0, 0);
+      }
+      dueAt = base;
+      matchedSpan = dayWord[0] + (timeMatch ? timeMatch[0] : "");
+    }
+  }
+
+  if (!dueAt) {
+    const weekdayMatch = lower.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
+    if (weekdayMatch) {
+      const targetDow = HEBREW_WEEKDAYS[weekdayMatch[1]];
+      const base = new Date(now);
+      let daysAhead = (targetDow - base.getDay() + 7) % 7;
+      if (daysAhead === 0) daysAhead = 7;
+      base.setDate(base.getDate() + daysAhead);
+      const timeMatch = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+      if (timeMatch) {
+        base.setHours(parseInt(timeMatch[1], 10), timeMatch[2] ? parseInt(timeMatch[2], 10) : 0, 0, 0);
+      } else {
+        base.setHours(9, 0, 0, 0);
+      }
+      dueAt = base;
+      matchedSpan = weekdayMatch[0] + (timeMatch ? timeMatch[0] : "");
+    }
+  }
+
+  if (!dueAt) {
+    const timeOnly = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+    if (timeOnly) {
+      const base = new Date(now);
+      base.setHours(parseInt(timeOnly[1], 10), timeOnly[2] ? parseInt(timeOnly[2], 10) : 0, 0, 0);
+      if (base.getTime() <= now.getTime()) base.setDate(base.getDate() + 1);
+      dueAt = base;
+      matchedSpan = timeOnly[0];
+    }
+  }
+
+  if (!dueAt || !matchedSpan) return null;
+  let task = lower.replace(REMINDER_TRIGGER, "").replace(matchedSpan, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim();
+  if (!task) task = "תזכורת";
+  return { dueAt, task };
+}
+
+
 async function handleReminderText(chatId: number, text: string) {
   await updateUser(chatId, { state: "awaiting_reminder_type", pending_reminder_text: text });
   await sendMessage(chatId, `מעולה! מתי לתזכר אותך על: "${text}"?`, {
