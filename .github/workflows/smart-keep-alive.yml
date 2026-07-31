@@ -1,0 +1,36 @@
+name: Smart Keep-Alive
+on:
+  schedule:
+    - cron: "*/1 * * * *"
+  workflow_dispatch:
+
+jobs:
+  smart-ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check last message activity and ping if recent
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          LAST=$(curl -s "$SUPABASE_URL/rest/v1/messages?select=created_at&order=created_at.desc&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" | grep -o '"created_at":"[^"]*"' | cut -d'"' -f4)
+
+          if [ -z "$LAST" ]; then
+            echo "No messages found, skipping ping."
+            exit 0
+          fi
+
+          LAST_EPOCH=$(date -d "$LAST" +%s)
+          NOW_EPOCH=$(date -u +%s)
+          DIFF=$((NOW_EPOCH - LAST_EPOCH))
+
+          echo "Last message was $DIFF seconds ago."
+
+          if [ "$DIFF" -lt 300 ]; then
+            echo "Conversation active, pinging to keep function warm."
+            curl -s -o /dev/null -w "Ping status: %{http_code}\n" "$SUPABASE_URL/functions/v1/telegram"
+          else
+            echo "No recent activity, skipping ping to save resources."
+          fi
