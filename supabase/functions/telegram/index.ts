@@ -29,25 +29,25 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 1500
 // regularly deprecates/restricts older models (e.g. gemini-2.5-flash became
 // unavailable to some API keys with zero warning), so we always keep a
 // broad, recent fallback chain instead of hardcoding a single model.
-// ORDER FIX: gemini-flash-latest was first in line, but live logs proved it
-// silently REJECTS thinkingConfig (see NO_THINKING_SUPPORT note below), so
-// we can never turn its internal "thinking" off. That made it spend its
-// token budget on invisible reasoning before writing any visible reply,
-// causing both the 10-11s response times AND repeated MAX_TOKENS hits seen
-// in production logs — regardless of how high maxOutputTokens was set.
-// gemini-2.5-flash DOES honor thinkingBudget:0 (confirmed by
-// modelSupportsThinking() below), so it's moved to the front: same
-// generation quality, but actually fast because we can disable thinking.
-// gemini-flash-latest stays in the list as a fallback in case 2.5-flash
-// ever becomes unavailable.
+// ORDER FIX #2 (revert + correction): moving gemini-2.5-flash to the front
+// backfired — live logs show this Google account gets HTTP 404 NOT_FOUND on
+// BOTH gemini-2.5-flash AND gemini-2.5-flash-lite ("no longer available to
+// new users"). That's an account-level restriction, not something our code
+// can fix. Every message was now wasting 2 full failed round-trips to dead
+// models before finally falling back to gemini-flash-latest — which is
+// exactly why gemini went from ~4-6s up to 6-10s after the previous change.
+// gemini-flash-latest is the only fast-tier model this account can actually
+// use, so it goes back to the front. The 2.5-flash entries stay lower in
+// the list (harmless — they'll just get blacklisted instantly if ever
+// probed) in case Google account access changes in the future.
 const PREFERRED_GEMINI_MODELS = [
   Deno.env.get("GEMINI_MODEL")?.trim(),
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
   "gemini-flash-latest",
   "gemini-3-flash-preview",
   "gemini-3.5-flash",
   "gemini-3.1-flash",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-2.5-pro",
   "gemini-2.0-flash",
   "gemini-2.0-flash-001",
@@ -1156,6 +1156,11 @@ async function handleMenu(chatId: number) {
   });
 }
 
+
+function detectReminderIntent(text: string): boolean {
+  const t = text.toLowerCase();
+  return /תזכיר|תזכורת|רשמתי|עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/.test(t);
+}
 async function handleReminderText(chatId: number, text: string) {
   await updateUser(chatId, { state: "awaiting_reminder_type", pending_reminder_text: text });
   await sendMessage(chatId, `מעולה! מתי לתזכר אותך על: "${text}"?`, {
@@ -1358,6 +1363,27 @@ serve(async (req: Request) => {
       if (detectDoneKeyword(text)) {
         const offered = await checkAndOfferCloseReminder(chatId, text, user.personality as string);
         if (offered) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+      }
+
+      if (detectReminderIntent(text)) {
+        const parsed = parseHebrewReminderTime(text, nowInTz());
+        if (parsed) {
+          const { error: insertError } = await supabase.from("reminders").insert({
+            chat_id: chatId,
+            text: parsed.task,
+            type: "once",
+            due_at: parsed.dueAt.toISOString(),
+            active: true,
+          });
+          if (insertError) {
+            console.error(`[reminders] insert failed: ${insertError.message}`);
+            await sendMessage(chatId, "משהו השתבש בשמירת התזכורת. תנסה שוב עוד רגע 🙏");
+            return new Response(JSON.stringify({ ok: true }), { status: 200 });
+          }
+          const timeLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
+          await sendMessage(chatId, `✅ קבעתי! אזכיר לך "${parsed.task}" ב-${timeLabel}.`);
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
       }
