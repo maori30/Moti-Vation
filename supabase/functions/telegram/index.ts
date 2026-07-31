@@ -1156,102 +1156,6 @@ async function handleMenu(chatId: number) {
   });
 }
 
-
-// Natural-language reminder parser: handles "עוד X דקות/שעות/ימים", "מחר", "מחרתיים", and weekday phrases.
-interface ParsedReminder {
-  dueAt: Date;
-  task: string;
-}
-
-const REMINDER_TRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר/;
-const HEBREW_WEEKDAYS: Record<string, number> = {
-  "ראשון": 0, "שני": 1, "שלישי": 2, "רביעי": 3,
-  "חמישי": 4, "שישי": 5, "שבת": 6,
-};
-
-function detectReminderIntent(text: string): boolean {
-  const t = text.toLowerCase();
-  return REMINDER_TRIGGER.test(t) || /(עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת))/i.test(t);
-}
-
-function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null {
-  const lower = text.trim();
-  let dueAt: Date | null = null;
-  let matchedSpan = "";
-
-  const relMinutes = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה)/);
-  const relHalfHour = lower.match(/(?:עוד|בעוד)\s*חצי\s*שעה/);
-  const relHours = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(שעות|שעה)/);
-  const relDays = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(ימים|יום)/);
-
-  if (relMinutes) {
-    dueAt = new Date(now.getTime() + parseInt(relMinutes[1], 10) * 60_000);
-    matchedSpan = relMinutes[0];
-  } else if (relHalfHour) {
-    dueAt = new Date(now.getTime() + 30 * 60_000);
-    matchedSpan = relHalfHour[0];
-  } else if (relHours) {
-    dueAt = new Date(now.getTime() + parseInt(relHours[1], 10) * 3_600_000);
-    matchedSpan = relHours[0];
-  } else if (relDays) {
-    dueAt = new Date(now.getTime() + parseInt(relDays[1], 10) * 86_400_000);
-    matchedSpan = relDays[0];
-  }
-
-  if (!dueAt) {
-    const dayWord = lower.match(/מחרתיים|מחר|היום/);
-    if (dayWord) {
-      const base = new Date(now);
-      if (dayWord[0] === "מחר") base.setDate(base.getDate() + 1);
-      if (dayWord[0] === "מחרתיים") base.setDate(base.getDate() + 2);
-      const timeMatch = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      if (timeMatch) {
-        base.setHours(parseInt(timeMatch[1], 10), timeMatch[2] ? parseInt(timeMatch[2], 10) : 0, 0, 0);
-      } else {
-        base.setHours(9, 0, 0, 0);
-      }
-      dueAt = base;
-      matchedSpan = dayWord[0] + (timeMatch ? timeMatch[0] : "");
-    }
-  }
-
-  if (!dueAt) {
-    const weekdayMatch = lower.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
-    if (weekdayMatch) {
-      const targetDow = HEBREW_WEEKDAYS[weekdayMatch[1]];
-      const base = new Date(now);
-      let daysAhead = (targetDow - base.getDay() + 7) % 7;
-      if (daysAhead === 0) daysAhead = 7;
-      base.setDate(base.getDate() + daysAhead);
-      const timeMatch = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      if (timeMatch) {
-        base.setHours(parseInt(timeMatch[1], 10), timeMatch[2] ? parseInt(timeMatch[2], 10) : 0, 0, 0);
-      } else {
-        base.setHours(9, 0, 0, 0);
-      }
-      dueAt = base;
-      matchedSpan = weekdayMatch[0] + (timeMatch ? timeMatch[0] : "");
-    }
-  }
-
-  if (!dueAt) {
-    const timeOnly = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-    if (timeOnly) {
-      const base = new Date(now);
-      base.setHours(parseInt(timeOnly[1], 10), timeOnly[2] ? parseInt(timeOnly[2], 10) : 0, 0, 0);
-      if (base.getTime() <= now.getTime()) base.setDate(base.getDate() + 1);
-      dueAt = base;
-      matchedSpan = timeOnly[0];
-    }
-  }
-
-  if (!dueAt || !matchedSpan) return null;
-  let task = lower.replace(REMINDER_TRIGGER, "").replace(matchedSpan, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim();
-  if (!task) task = "תזכורת";
-  return { dueAt, task };
-}
-
-
 async function handleReminderText(chatId: number, text: string) {
   await updateUser(chatId, { state: "awaiting_reminder_type", pending_reminder_text: text });
   await sendMessage(chatId, `מעולה! מתי לתזכר אותך על: "${text}"?`, {
@@ -1359,11 +1263,65 @@ async function checkAndOfferCloseReminder(
   return false;
 }
 
+
+const REMINDER_TRIGGER = /תזכיר\s*לי|תזכורת|עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/;
+const HEBREW_WEEKDAYS: Record<string, number> = { ראשון: 0, שני: 1, שלישי: 2, רביעי: 3, חמישי: 4, שישי: 5, שבת: 6 };
+function detectReminderIntent(text: string): boolean { return REMINDER_TRIGGER.test(text); }
+function parseHebrewReminderTime(text: string, now: Date): { dueAt: Date; task: string } | null {
+  const t = text.trim();
+  let dueAt: Date | null = null;
+  let matched = "";
+  const m1 = t.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה)/);
+  const m2 = t.match(/(?:עוד|בעוד)\s*(\d+)\s*(שעות|שעה)/);
+  const m3 = t.match(/(?:עוד|בעוד)\s*(\d+)\s*(ימים|יום)/);
+  const m4 = t.match(/(?:עוד|בעוד)\s*חצי\s*שעה/);
+  if (m1) { dueAt = new Date(now.getTime() + parseInt(m1[1], 10) * 60000); matched = m1[0]; }
+  else if (m4) { dueAt = new Date(now.getTime() + 30 * 60000); matched = m4[0]; }
+  else if (m2) { dueAt = new Date(now.getTime() + parseInt(m2[1], 10) * 3600000); matched = m2[0]; }
+  else if (m3) { dueAt = new Date(now.getTime() + parseInt(m3[1], 10) * 86400000); matched = m3[0]; }
+  if (!dueAt) {
+    const d = t.match(/מחרתיים|מחר|היום/);
+    if (d) {
+      const base = new Date(now);
+      if (d[0] === "מחר") base.setDate(base.getDate() + 1);
+      if (d[0] === "מחרתיים") base.setDate(base.getDate() + 2);
+      const tm = t.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+      if (tm) base.setHours(parseInt(tm[1], 10), tm[2] ? parseInt(tm[2], 10) : 0, 0, 0);
+      else base.setHours(9, 0, 0, 0);
+      dueAt = base; matched = d[0] + (tm ? tm[0] : "");
+    }
+  }
+  if (!dueAt) {
+    const wd = t.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
+    if (wd) {
+      const base = new Date(now);
+      let daysAhead = (HEBREW_WEEKDAYS[wd[1]] - base.getDay() + 7) % 7;
+      if (daysAhead === 0) daysAhead = 7;
+      base.setDate(base.getDate() + daysAhead);
+      const tm = t.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+      if (tm) base.setHours(parseInt(tm[1], 10), tm[2] ? parseInt(tm[2], 10) : 0, 0, 0);
+      else base.setHours(9, 0, 0, 0);
+      dueAt = base; matched = wd[0] + (tm ? tm[0] : "");
+    }
+  }
+  if (!dueAt || !matched) return null;
+  let task = t.replace(REMINDER_TRIGGER, "").replace(matched, "").replace(/^\s+|\s+$/g, "");
+  if (!task) task = "תזכורת";
+  return { dueAt, task };
+}
 serve(async (req: Request) => {
   if (req.method !== "POST") return new Response("OK", { status: 200 });
 
   try {
-    const update = await req.json();
+    const rawBody = await req.text();
+    if (!rawBody || !rawBody.trim()) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    let update: any;
+    try {
+      update = JSON.parse(rawBody);
+    } catch (e) {
+      console.error("Invalid JSON body:", rawBody.slice(0, 300));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
     console.log("Update:", JSON.stringify(update));
 
     if (update.callback_query) {
@@ -1421,6 +1379,27 @@ serve(async (req: Request) => {
     const message = update.message;
     if (!message) return new Response(JSON.stringify({ ok: true }), { status: 200 });
 
+    const text = (message.text ?? "").trim();
+    const reminderIntent = /תזכיר\s*לי|תזכורת|עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/.test(text);
+    if (reminderIntent) {
+      const user = await getOrCreateUser(message.chat.id, message.from?.first_name ?? "חבר");
+      const parsed = parseHebrewReminderTime(text, new Date());
+      if (parsed) {
+        const { error } = await supabase.from("reminders").insert({
+          chat_id: message.chat.id,
+          text: parsed.task,
+          time: parsed.dueAt.toISOString(),
+          type: "once",
+          active: true,
+        });
+        if (!error) {
+          const label = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
+          await sendMessage(message.chat.id, `✅ קבעתי! אזכיר לך "${parsed.task}" ב-${label}.`);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+      }
+    }
+
     // TIMING: pure diagnostics, doesn't change any behavior. Logs a
     // breakdown of where time actually goes for each message, so we can
     // find the real bottleneck with data instead of guessing.
@@ -1429,7 +1408,6 @@ serve(async (req: Request) => {
     const mark = (label: string, from: number) => { timings[label] = Date.now() - from; };
 
     const chatId = message.chat.id;
-    const text = (message.text ?? "").trim();
     const firstName = message.from?.first_name ?? "חבר";
     const tUser = Date.now();
     const user = await getOrCreateUser(chatId, firstName);
@@ -1458,41 +1436,9 @@ serve(async (req: Request) => {
         }
       }
 
-      if (detectReminderIntent(text)) {
-        const parsed = parseHebrewReminderTime(text, nowInTz());
-        if (parsed) {
-          const { error: insertError } = await supabase.from("reminders").insert({
-            chat_id: chatId,
-            text: parsed.task,
-            type: "once",
-            due_at: parsed.dueAt.toISOString(),
-            active: true,
-          });
-          if (insertError) {
-            console.error(`[reminders] insert failed: ${insertError.message}`);
-            await sendMessage(chatId, "משהו השתבש בשמירת התזכורת. תנסה שוב עוד רגע 🙏");
-            return new Response(JSON.stringify({ ok: true }), { status: 200 });
-          }
-          const timeLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
-          await sendMessage(chatId, `✅ קבעתי! אזכיר לך "${parsed.task}" ב-${timeLabel}.`);
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        }
-      }
-
-      // SPEED FIX: activeReminders + history have no dependency on each
-      // other, so fetch them concurrently instead of one-after-another —
-      // this alone cuts one full Supabase round-trip off every message.
-      // NOTE: saveMessage("user", ...) is intentionally NOT run in parallel
-      // with getHistory — if the insert lands before the select, the current
-      // message could show up twice (once via history, once via the direct
-      // `text` param passed to askGemini), confusing the model's context.
       const tFetch = Date.now();
       const [activeReminders, history] = await Promise.all([
-        supabase
-          .from("reminders")
-          .select("text, time, type")
-          .eq("chat_id", chatId)
-          .eq("active", true),
+        supabase.from("reminders").select("text, time, type").eq("chat_id", chatId).eq("active", true),
         getHistory(chatId),
       ]);
       mark("getRemindersAndHistory", tFetch);
@@ -1501,8 +1447,6 @@ serve(async (req: Request) => {
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
         : "למשתמש אין תזכורות פעילות כרגע.";
 
-      // Fire-and-forget: saving the user's message doesn't need to block
-      // Gemini generation — Gemini already has the message via `text`.
       saveMessage(chatId, "user", text).catch((e) => console.error("[db] saveMessage(user) failed:", e));
 
       const tGemini = Date.now();
@@ -1510,9 +1454,6 @@ serve(async (req: Request) => {
       mark("gemini", tGemini);
 
       const tSend = Date.now();
-      // Send the Telegram reply immediately; persist the assistant message
-      // in the background — the user shouldn't wait on a DB write to see
-      // the reply they're already looking at.
       await sendMessage(chatId, reply);
       mark("sendTelegram", tSend);
       saveMessage(chatId, "assistant", reply).catch((e) => console.error("[db] saveMessage(assistant) failed:", e));
