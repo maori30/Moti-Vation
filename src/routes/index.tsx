@@ -85,20 +85,41 @@ function Index() {
 
           <div className="relative space-y-3">
             <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-b from-white to-white/70 bg-clip-text text-transparent">
-              מוטי חי בטלגרם
+              מוטי — 8 אישיויות, מטרה אחת: שתזוז
             </h1>
             <p className="text-white/80 leading-relaxed">
-              זה לא אתר. זה בוט. סמל קשוח, ציני וסרקסטי שרודף אחריך בטלגרם עד שתסגור את המשימות שלך.
+              בוחרים מי ידחוף אותך — רס"ר, ציניקן, מאמן, חבר, מטפל, מעודד, סבתא או פילוסוף. שולחים מה דוחים, ומקבלים תזכורות בשעות ובימים שאתה בוחר, עד שזה נסגר.
             </p>
+          </div>
+
+          {/* Personalities */}
+          <div className="relative flex flex-wrap justify-center gap-2">
+            {[
+              ["🪖", 'הרס"ר'],
+              ["😈", "הצייני"],
+              ["🧠", "המאמן"],
+              ["🤗", "החבר"],
+              ["🛋️", "המטפל"],
+              ["🔥", "המעודד"],
+              ["👵", "הסבתא"],
+              ["🧐", "הפילוסוף"],
+            ].map(([emoji, name]) => (
+              <span
+                key={name}
+                className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs text-white/85 backdrop-blur-xl"
+              >
+                {emoji} {name}
+              </span>
+            ))}
           </div>
 
           {/* Steps glass panel */}
           <div className="relative rounded-2xl border border-white/15 bg-white/5 backdrop-blur-xl p-5 text-right space-y-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.15)]">
             <h2 className="text-xs uppercase tracking-widest text-white/60 font-normal">איך מתחילים</h2>
             <ol className="space-y-2 text-white/90 list-decimal pr-5 marker:text-sky-300">
-              <li>לחץ על הכפתור ופתח את מוטי בטלגרם.</li>
-              <li>שלח /start וספר לו מה אתה דוחה.</li>
-              <li>תתכונן — הוא לא יעזוב אותך עד שתסגור.</li>
+              <li>לוחצים על הכפתור ופותחים את מוטי בטלגרם.</li>
+              <li>שולחים /start ובוחרים את האישיות שמתאימה לך היום.</li>
+              <li>אומרים מה דוחים ומתי להזכיר — והוא לוקח מכאן.</li>
             </ol>
           </div>
 
@@ -116,11 +137,11 @@ function Index() {
             <svg viewBox="0 0 24 24" className="h-6 w-6" fill="white" aria-hidden>
               <path d="M9.036 15.803 8.86 19.3c.36 0 .518-.155.708-.34l1.7-1.63 3.523 2.58c.646.357 1.11.17 1.28-.598l2.32-10.87c.203-.955-.345-1.329-.973-1.096L4.36 11.46c-.93.362-.916.881-.16 1.116l3.42 1.067 7.943-5.007c.374-.243.715-.108.435.135z"/>
             </svg>
-            פתח את מוטי בטלגרם
+            יאללה, בוא נתחיל בטלגרם
           </a>
 
           <p className="relative text-xs text-white/50">
-            חינם. בלי הרשמה. בלי בולשיט.
+            חינם, בלי הרשמה, 30 שניות ואתה בפנים.
           </p>
 
           <p className="relative text-sm text-white/60 pt-4 border-t border-white/10">
