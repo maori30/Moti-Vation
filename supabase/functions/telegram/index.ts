@@ -1305,7 +1305,37 @@ function parseHebrewReminderTime(text: string, now: Date): { dueAt: Date; task: 
     }
   }
   if (!dueAt || !matched) return null;
-  let task = t.replace(REMINDER_TRIGGER, "").replace(matched, "").replace(/^\s+|\s+$/g, "");
+
+  // Remove the time phrase and the reminder-trigger phrase from the text,
+  // but instead of concatenating whatever remains on both sides (which
+  // wrongly stitched together words from BEFORE the trigger with words
+  // from AFTER the time phrase), we split on those removed spans and keep
+  // only the longest surviving contiguous chunk. This handles free-form
+  // Hebrew where the trigger word sits in the middle of the sentence,
+  // e.g. "בסדר תעשה תזכורת עוד 3 דקות לאכול" -> task should be "לאכול",
+  // not "בסדר תעשה לאכול".
+  const FILLER_PREFIXES = /^(בסדר|טוב|אוקיי|אוקי|תעשה|תעשי|שתזכיר לי|תזכיר לי|תזכורת|של|גם|ו)\s+/;
+  const FILLER_SUFFIXES = /\s+(בבקשה|תודה)$/;
+
+  let working = t;
+  const timeIdx = working.indexOf(matched);
+  if (timeIdx !== -1) working = working.slice(0, timeIdx) + "\u0000" + working.slice(timeIdx + matched.length);
+
+  const triggerMatch = working.match(REMINDER_TRIGGER);
+  if (triggerMatch && triggerMatch.index !== undefined) {
+    working = working.slice(0, triggerMatch.index) + "\u0000" + working.slice(triggerMatch.index + triggerMatch[0].length);
+  }
+
+  const segments = working
+    .split("\u0000")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  let task = segments.length
+    ? segments.reduce((longest, cur) => (cur.length > longest.length ? cur : longest), "")
+    : "";
+
+  task = task.replace(FILLER_PREFIXES, "").replace(FILLER_SUFFIXES, "").trim();
   if (!task) task = "תזכורת";
   return { dueAt, task };
 }
