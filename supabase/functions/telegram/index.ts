@@ -1306,16 +1306,14 @@ function parseHebrewReminderTime(text: string, now: Date): { dueAt: Date; task: 
   }
   if (!dueAt || !matched) return null;
 
-  // Remove the time phrase and the reminder-trigger phrase from the text,
-  // but instead of concatenating whatever remains on both sides (which
-  // wrongly stitched together words from BEFORE the trigger with words
-  // from AFTER the time phrase), we split on those removed spans and keep
-  // only the longest surviving contiguous chunk. This handles free-form
-  // Hebrew where the trigger word sits in the middle of the sentence,
-  // e.g. "בסדר תעשה תזכורת עוד 3 דקות לאכול" -> task should be "לאכול",
-  // not "בסדר תעשה לאכול".
-  const FILLER_PREFIXES = /^(בסדר|טוב|אוקיי|אוקי|תעשה|תעשי|שתזכיר לי|תזכיר לי|תזכורת|של|גם|ו)\s+/;
-  const FILLER_SUFFIXES = /\s+(בבקשה|תודה)$/;
+  // Split on the removed trigger-phrase and time-phrase spans, clean filler
+  // words from EACH resulting segment individually first (repeatedly, in
+  // case of multiple filler words like "בסדר תעשה"), THEN pick the longest
+  // *meaningful* segment. Previously filler-stripping ran once on the
+  // already-chosen segment, so "בסדר תעשה" (long, but pure filler) beat out
+  // a short real task like "לשתות" before cleanup ever got a chance to run.
+  const FILLER_WORDS = /^(בסדר|טוב|אוקיי|אוקי|תעשה|תעשי|תעשו|שתזכיר לי|שתזכירי לי|תזכיר לי|תזכירי לי|תזכורת|של|גם|ו|נא|אפשר|בבקשה)\s+/;
+  const FILLER_SUFFIX = /\s+(בבקשה|תודה|טוב|בסדר)$/;
 
   let working = t;
   const timeIdx = working.indexOf(matched);
@@ -1326,17 +1324,25 @@ function parseHebrewReminderTime(text: string, now: Date): { dueAt: Date; task: 
     working = working.slice(0, triggerMatch.index) + "\u0000" + working.slice(triggerMatch.index + triggerMatch[0].length);
   }
 
+  const cleanSegment = (s: string): string => {
+    let seg = s.trim();
+    let prev: string;
+    do {
+      prev = seg;
+      seg = seg.replace(FILLER_WORDS, "").replace(FILLER_SUFFIX, "").trim();
+    } while (seg !== prev && seg.length > 0);
+    return seg;
+  };
+
   const segments = working
     .split("\u0000")
-    .map((s) => s.trim())
+    .map((s) => cleanSegment(s))
     .filter((s) => s.length > 0);
 
-  let task = segments.length
+  const task = segments.length
     ? segments.reduce((longest, cur) => (cur.length > longest.length ? cur : longest), "")
-    : "";
+    : "תזכורת";
 
-  task = task.replace(FILLER_PREFIXES, "").replace(FILLER_SUFFIXES, "").trim();
-  if (!task) task = "תזכורת";
   return { dueAt, task };
 }
 serve(async (req: Request) => {
