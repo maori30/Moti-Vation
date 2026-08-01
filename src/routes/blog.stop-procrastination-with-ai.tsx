@@ -3,7 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 const URL = "https://moti-vation.lovable.app/blog/stop-procrastination-with-ai";
 const TITLE = "איך להפסיק לדחות עם AI: מדריך למי שסיים לשקר לעצמו";
 const DESC =
-  "מדריך מעשי איך להשתמש ב-AI ובבוט אחריותיות (כמו מוטי בוואטסאפ) כדי לשבור דחיינות, לבנות הרגלים ולסגור משימות.";
+  "מדריך מעשי איך להשתמש ב-AI ובבוט אחריותיות בטלגרם (מוטי) כדי לשבור דחיינות, לבנות הרגלים ולסגור משימות.";
 
 export const Route = createFileRoute("/blog/stop-procrastination-with-ai")({
   head: () => ({
@@ -83,27 +83,44 @@ function Post() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-2xl font-bold">למה בוט מציק עובד טוב יותר</h2>
+          <h2 className="text-2xl font-bold">למה בוט שמזכיר לך עובד טוב יותר</h2>
           <p className="text-gray-200">
-            מחקרים על שינוי הרגלים מראים שאנשים שיש להם accountability partner
-            מסיימים משימות בשיעור גבוה משמעותית. הבעיה: חברים ובני זוג לא זמינים
-            24/7 ולא רוצים להציק לך. בוט AI כן.
+            כשיש מישהו שבודק אם עשית – הסיכוי שתעשה עולה. הבעיה: חברים ובני זוג
+            לא זמינים 24/7 ולא באמת רוצים להציק לך. בוט כן.
           </p>
           <p className="text-gray-200">
-            <strong>מוטי</strong> נבנה בדיוק על העיקרון הזה: בוט וואטסאפ עם
-            אישיות של סמל קשוח, ציני, שרודף אחריך עד שאתה סוגר את המשימה. לא
-            נעים – זו הפואנטה. אי-נעימות קטנה בהודעה שווה שעות של דחיינות
-            שנחסכות.
+            <strong>מוטי</strong> נבנה בדיוק על העיקרון הזה – בוט טלגרם עם 8
+            אישיויות שאתה בוחר ביניהן: הרס"ר שדוחף בלי רחמים, הצייני עם הסרקזם,
+            המאמן, החבר, המטפל, המעודד, הסבתא והפילוסוף. אותה מטרה, טון אחר –
+            כי לכל אחד עובד משהו אחר, ובימים שונים עובד משהו אחר.
+          </p>
+        </section>
+
+        <section className="space-y-3">
+          <h2 className="text-2xl font-bold">איזו אישיות מתאימה לך?</h2>
+          <ul className="list-disc pr-5 space-y-2 text-gray-200">
+            <li><strong>🪖 הרס"ר</strong> – כשאתה צריך שמישהו יצעק ולא ישאל איך אתה מרגיש.</li>
+            <li><strong>😈 הצייני</strong> – סרקזם יבש שמפרק לך את התירוצים.</li>
+            <li><strong>🧠 המאמן</strong> – מפרק משימות לצעדים והולך איתך שלב-שלב.</li>
+            <li><strong>🤗 החבר</strong> – טון קליל, בלי לחץ, אבל לא שוכח.</li>
+            <li><strong>🛋️ המטפל</strong> – כשהדחיינות היא באמת חרדה ולא עצלנות.</li>
+            <li><strong>🔥 המעודד</strong> – התלהבות מוגזמת שמזיזה אותך מהכיסא.</li>
+            <li><strong>👵 הסבתא</strong> – חמימות עם אשמה קטנה במקומות הנכונים.</li>
+            <li><strong>🧐 הפילוסוף</strong> – שאלות שגורמות לך להבין למה אתה בורח.</li>
+          </ul>
+          <p className="text-gray-200">
+            אפשר להחליף בכל רגע עם <code>/personality</code>.
           </p>
         </section>
 
         <section className="space-y-3">
           <h2 className="text-2xl font-bold">איך להתחיל בפועל</h2>
           <ol className="list-decimal pr-5 space-y-2 text-gray-200">
+            <li>פתח את מוטי בטלגרם ושלח /start.</li>
+            <li>בחר אישיות שמתאימה לך עכשיו.</li>
             <li>בחר משימה אחת שאתה דוחה שבועיים.</li>
             <li>פרק אותה לצעד ראשון קטן – 10 דקות לכל היותר.</li>
-            <li>שלח את זה לבוט אחריותיות עם שעה מדויקת.</li>
-            <li>תן לו רשות להציק. באמת להציק.</li>
+            <li>תגיד לו מתי להזכיר – שעה, יום בשבוע, או "תציק לי עד שאעשה".</li>
             <li>אחרי שסגרת – משימה חדשה. אותו נוהל.</li>
           </ol>
         </section>
@@ -117,20 +134,21 @@ function Post() {
           </p>
           <h3 className="text-xl font-semibold">מה אם אני מתעצבן מהבוט?</h3>
           <p className="text-gray-200">
-            מצוין. עצבן = תגובה רגשית = פעולה. עדיף מלהיות אדיש ולא לעשות כלום.
+            אז מחליפים אישיות. אם הרס"ר יותר מדי – עוברים לחבר או למאמן. הרעיון
+            הוא למצוא את הטון שגורם לך לזוז, לא להיאבק בבוט.
           </p>
         </section>
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-5 text-center space-y-3">
           <h2 className="text-2xl font-bold">מוכן לנסות?</h2>
-          <p className="text-gray-300">מוטי מחכה בוואטסאפ. שלח "היי" ותתחיל.</p>
+          <p className="text-gray-300">מוטי מחכה בטלגרם. שלח /start ותבחר מי ידחוף אותך.</p>
           <a
-            href="https://wa.me/972555030605?text=היי%20מוטי"
+            href="https://t.me/MotivationTheBot"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-2 rounded-full bg-[#25d366] px-8 py-4 text-lg font-bold text-[#0b141a] shadow-lg transition-transform hover:scale-105 active:scale-95"
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-[#29b6f6] px-8 py-4 text-lg font-bold text-[#06131f] shadow-lg transition-transform hover:scale-105 active:scale-95"
           >
-            💬 דברו עם מוטי
+            ✈️ פתח את מוטי בטלגרם
           </a>
         </section>
       </article>
