@@ -61,12 +61,10 @@ function Index() {
           {/* glass highlight */}
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-0 rounded-[2rem]"
+            className="pointer-events-none absolute inset-0 rounded-[2rem] overflow-hidden"
             style={{
               background:
-                "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0) 40%)",
-              maskImage:
-                "linear-gradient(180deg, black 0%, transparent 60%)",
+                "linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0) 55%)",
             }}
           />
 
@@ -96,7 +94,7 @@ function Index() {
           <div className="relative flex flex-wrap justify-center gap-2">
             {[
               ["🪖", 'הרס"ר'],
-              ["😈", "הצייני"],
+              ["😈", "ציני"],
               ["🧠", "המאמן"],
               ["🤗", "החבר"],
               ["🛋️", "המטפל"],
