@@ -62,7 +62,7 @@ function Post() {
         </header>
 
         <section className="space-y-3">
-          <h2 className="text-2xl font-bold">למה בכלל דוחים?</h2>
+          <h2 className="text-xl sm:text-2xl font-bold">למה בכלל דוחים?</h2>
           <p className="text-gray-200">
             המוח מעדיף רווח מיידי על פני רווח עתידי. משימה גדולה בלי תזכורת
             ובלי מישהו שיבדוק – שווה בפועל לאפס. אתה יודע שאתה צריך לעשות,
@@ -71,7 +71,7 @@ function Post() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-2xl font-bold">3 דרכים ש-AI שובר דחיינות</h2>
+          <h2 className="text-xl sm:text-2xl font-bold">3 דרכים ש-AI שובר דחיינות</h2>
           <ol className="list-decimal pr-5 space-y-2 text-gray-200">
             <li>
               <strong>פירוק אוטומטי של משימות:</strong> אומרים לבוט "אני צריך
@@ -90,7 +90,7 @@ function Post() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-2xl font-bold">למה בוט שמזכיר לך עובד טוב יותר</h2>
+          <h2 className="text-xl sm:text-2xl font-bold">למה בוט שמזכיר לך עובד טוב יותר</h2>
           <p className="text-gray-200">
             כשיש מישהו שבודק אם עשית – הסיכוי שתעשה עולה. הבעיה: חברים ובני זוג
             לא זמינים 24/7 ולא באמת רוצים להציק לך. בוט כן.
@@ -104,7 +104,7 @@ function Post() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-2xl font-bold">איזו אישיות מתאימה לך?</h2>
+          <h2 className="text-xl sm:text-2xl font-bold">איזו אישיות מתאימה לך?</h2>
           <ul className="list-disc pr-5 space-y-2 text-gray-200">
             <li><strong>🪖 הרס"ר</strong> – כשאתה צריך שמישהו יצעק ולא ישאל איך אתה מרגיש.</li>
             <li><strong>😈 הציני</strong> – סרקזם יבש שמפרק לך את התירוצים.</li>
@@ -121,7 +121,7 @@ function Post() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-2xl font-bold">איך להתחיל בפועל</h2>
+          <h2 className="text-xl sm:text-2xl font-bold">איך להתחיל בפועל</h2>
           <ol className="list-decimal pr-5 space-y-2 text-gray-200">
             <li>פתח את מוטי בטלגרם ושלח /start.</li>
             <li>בחר אישיות שמתאימה לך עכשיו.</li>
@@ -133,7 +133,7 @@ function Post() {
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-2xl font-bold">שאלות נפוצות</h2>
+          <h2 className="text-xl sm:text-2xl font-bold">שאלות נפוצות</h2>
           <h3 className="text-xl font-semibold">זה לא סתם עוד אפליקציית תזכורות?</h3>
           <p className="text-gray-200">
             תזכורת רגילה אומרת "היי, המשימה שלך". בוט AI אומר "מה נסגר, למה
@@ -147,7 +147,7 @@ function Post() {
         </section>
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-5 text-center space-y-3">
-          <h2 className="text-2xl font-bold">מוכן לנסות?</h2>
+          <h2 className="text-xl sm:text-2xl font-bold">מוכן לנסות?</h2>
           <p className="text-gray-300">מוטי מחכה בטלגרם. שלח /start ותבחר מי ידחוף אותך.</p>
           <a
             href="https://t.me/MotivationTheBot"
