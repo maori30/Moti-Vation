@@ -40,13 +40,20 @@ export const Route = createFileRoute("/blog/stop-procrastination-with-ai")({
 
 function Post() {
   return (
-    <main dir="rtl" className="min-h-screen bg-[#0b141a] text-white px-6 py-12">
-      <article className="mx-auto max-w-3xl space-y-6 leading-relaxed">
+    <main
+      dir="rtl"
+      className="min-h-screen text-white px-5 py-10 sm:px-6 sm:py-12"
+      style={{
+        background:
+          "radial-gradient(900px 500px at 20% 0%, #16305c 0%, transparent 60%), linear-gradient(180deg, #050914 0%, #0a0f1f 100%)",
+      }}
+    >
+      <article className="mx-auto max-w-3xl min-w-0 space-y-6 leading-relaxed">
         <nav className="text-sm text-gray-400">
           <Link to="/" className="hover:text-white">← חזרה לדף הבית</Link>
         </nav>
         <header className="space-y-3">
-          <h1 className="text-3xl font-bold">{TITLE}</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold leading-tight break-words">{TITLE}</h1>
           <p className="text-gray-300">
             דחיינות זו לא בעיה של אופי – זו בעיה של מערכת. AI פותר את זה בכך
             שהוא הופך אחריותיות למשהו שקורה אוטומטית, בלי להסתמך על כוח הרצון
