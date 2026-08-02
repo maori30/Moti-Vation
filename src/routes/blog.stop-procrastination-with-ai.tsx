@@ -100,7 +100,7 @@ function Post() {
           <h2 className="text-2xl font-bold">איזו אישיות מתאימה לך?</h2>
           <ul className="list-disc pr-5 space-y-2 text-gray-200">
             <li><strong>🪖 הרס"ר</strong> – כשאתה צריך שמישהו יצעק ולא ישאל איך אתה מרגיש.</li>
-            <li><strong>😈 ציני</strong> – סרקזם יבש שמפרק לך את התירוצים.</li>
+            <li><strong>😈 הציני</strong> – סרקזם יבש שמפרק לך את התירוצים.</li>
             <li><strong>🧠 המאמן</strong> – מפרק משימות לצעדים והולך איתך שלב-שלב.</li>
             <li><strong>🤗 החבר</strong> – טון קליל, בלי לחץ, אבל לא שוכח.</li>
             <li><strong>🛋️ המטפל</strong> – כשהדחיינות היא באמת חרדה ולא עצלנות.</li>
