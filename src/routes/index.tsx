@@ -42,12 +42,15 @@ function Index() {
           "radial-gradient(1200px 700px at 15% 10%, #1f6feb 0%, transparent 55%), radial-gradient(1000px 600px at 90% 90%, #29b6f6 0%, transparent 55%), radial-gradient(800px 500px at 60% 40%, #7c3aed 0%, transparent 60%), linear-gradient(180deg, #050914 0%, #0a0f1f 100%)",
       }}
     >
-      {/* floating blobs */}
-      <div aria-hidden className="pointer-events-none absolute inset-0">
-        <div className="absolute -top-24 -right-24 h-96 w-96 rounded-full bg-sky-400/30 blur-3xl animate-pulse" />
-        <div className="absolute top-1/3 -left-32 h-[28rem] w-[28rem] rounded-full bg-indigo-500/30 blur-3xl" />
-        <div className="absolute -bottom-24 right-1/4 h-80 w-80 rounded-full bg-fuchsia-500/20 blur-3xl" />
-      </div>
+      {/* soft glow layers (gradient-based: no filter blur, so no GPU tiling seams) */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(closest-side, rgba(56,189,248,0.28), rgba(56,189,248,0) 100%) 95% -5% / 60rem 40rem no-repeat, radial-gradient(closest-side, rgba(99,102,241,0.26), rgba(99,102,241,0) 100%) -10% 40% / 56rem 48rem no-repeat, radial-gradient(closest-side, rgba(217,70,239,0.18), rgba(217,70,239,0) 100%) 70% 105% / 48rem 36rem no-repeat",
+        }}
+      />
 
       <div className="relative z-10 w-full max-w-lg min-w-0">
         {/* Liquid glass card */}
