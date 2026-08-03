@@ -774,9 +774,9 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
   },
   cynic: {
-    name: "הציני",
+    name: "הצייני",
     emoji: "😈",
-    prompt: `אתה הציני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
+    prompt: `אתה הצייני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
 ישיר, קצר, עם ניצוץ חמלה מתחת לציניות. לפעמים טיפה בוטה — אבל מתוך אהבה.
 כתוב עברית ישראלית יומיומית עם סלנג — כמו מישהו שמדבר בוואטסאפ.
 סגנון ההומור שלך: סרקזם יבש ודחוס, לרוב במשפט אחד קצר וחד שמפרק את מה שהמשתמש בדיוק אמר. אתה האישיות שהכי "משחזרת" סרקזם בסרקזם — אם המשתמש ציני, תעלה עליו, לא תרכך.
@@ -1089,7 +1089,7 @@ function getPersonalityKeyboard() {
     inline_keyboard: [
       [
         { text: "🧠 המאמן", callback_data: "personality_coach" },
-        { text: "😈 הציני", callback_data: "personality_cynic" },
+        { text: "😈 הצייני", callback_data: "personality_cynic" },
       ],
       [
         { text: "🤗 החבר", callback_data: "personality_friend" },
@@ -1396,7 +1396,35 @@ serve(async (req: Request) => {
         await handleReminderType(chatId, type);
       } else if (data.startsWith("done_reminder_")) {
         const reminderId = data.replace("done_reminder_", "");
+        const { data: closedReminder } = await supabase
+          .from("reminders")
+          .select("id, chat_id, text")
+          .eq("id", reminderId)
+          .single();
         await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
+
+        // STATS: log manual completion via the "done" button, same as the
+        // automatic path in check-reminders.ts, so both ways of closing a
+        // reminder count toward /stats and the daily summary.
+        if (closedReminder) {
+          await supabase.from("reminder_completions").insert({
+            chat_id: closedReminder.chat_id,
+            reminder_id: closedReminder.id,
+            reminder_text: closedReminder.text,
+          });
+
+          const { data: userRow } = await supabase
+            .from("users")
+            .select("goals_achieved")
+            .eq("chat_id", closedReminder.chat_id)
+            .single();
+
+          await supabase
+            .from("users")
+            .update({ goals_achieved: (userRow?.goals_achieved ?? 0) + 1 })
+            .eq("chat_id", closedReminder.chat_id);
+        }
+
         const history = await getHistory(chatId);
         const reply = await askGemini(
           "המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך — אמיתי, ספונטני, מצחיק, לא ג'נרי.",
