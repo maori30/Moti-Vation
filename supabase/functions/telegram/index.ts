@@ -893,7 +893,7 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
     const genResult = await generateContentWithFallback(GEMINI_API_KEY, {
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents,
-      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 1024 },
+      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 400 },
     });
 
     if (!genResult.ok) {
@@ -1072,6 +1072,15 @@ async function sendMessage(chatId: number, text: string, keyboard?: object) {
 
 async function saveMessage(chatId: number, role: string, content: string) {
   await supabase.from("messages").insert({ chat_id: chatId, role, content });
+}
+
+function sendTyping(chatId: number) {
+  // fire-and-forget: makes the bot feel instant while it thinks
+  return fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendChatAction`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, action: "typing" }),
+  }).catch(() => {});
 }
 
 async function getHistory(chatId: number): Promise<HistoryMessage[]> {
