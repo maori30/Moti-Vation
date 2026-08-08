@@ -9,43 +9,23 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
 import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
-import { Route as ApiChatRouteImport } from './routes/api/chat'
-import { Route as ApiSendReminderRouteImport } from './routes/api/send-reminder'
-import { Route as ApiTelegramRouteImport } from './routes/api/telegram'
-import { Route as ApiWhatsappRouteImport } from './routes/api/whatsapp'
+import { Route as IndexRouteImport } from './routes/index'
 import { Route as BlogStopProcrastinationWithAiRouteImport } from './routes/blog.stop-procrastination-with-ai'
+import { Route as ApiWhatsappRouteImport } from './routes/api/whatsapp'
+import { Route as ApiTelegramRouteImport } from './routes/api/telegram'
+import { Route as ApiSendReminderRouteImport } from './routes/api/send-reminder'
+import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiPublicHooksTickRemindersRouteImport } from './routes/api/public/hooks/tick-reminders'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
   id: '/sitemap.xml',
   path: '/sitemap.xml',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiChatRoute = ApiChatRouteImport.update({
-  id: '/api/chat',
-  path: '/api/chat',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiSendReminderRoute = ApiSendReminderRouteImport.update({
-  id: '/api/send-reminder',
-  path: '/api/send-reminder',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiTelegramRoute = ApiTelegramRouteImport.update({
-  id: '/api/telegram',
-  path: '/api/telegram',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiWhatsappRoute = ApiWhatsappRouteImport.update({
-  id: '/api/whatsapp',
-  path: '/api/whatsapp',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const BlogStopProcrastinationWithAiRoute =
@@ -54,6 +34,26 @@ const BlogStopProcrastinationWithAiRoute =
     path: '/blog/stop-procrastination-with-ai',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiWhatsappRoute = ApiWhatsappRouteImport.update({
+  id: '/api/whatsapp',
+  path: '/api/whatsapp',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTelegramRoute = ApiTelegramRouteImport.update({
+  id: '/api/telegram',
+  path: '/api/telegram',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiSendReminderRoute = ApiSendReminderRouteImport.update({
+  id: '/api/send-reminder',
+  path: '/api/send-reminder',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiChatRoute = ApiChatRouteImport.update({
+  id: '/api/chat',
+  path: '/api/chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicHooksTickRemindersRoute =
   ApiPublicHooksTickRemindersRouteImport.update({
     id: '/api/public/hooks/tick-reminders',
@@ -138,13 +138,6 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/sitemap.xml': {
       id: '/sitemap.xml'
       path: '/sitemap.xml'
@@ -152,25 +145,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SitemapDotxmlRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/chat': {
-      id: '/api/chat'
-      path: '/api/chat'
-      fullPath: '/api/chat'
-      preLoaderRoute: typeof ApiChatRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/send-reminder': {
-      id: '/api/send-reminder'
-      path: '/api/send-reminder'
-      fullPath: '/api/send-reminder'
-      preLoaderRoute: typeof ApiSendReminderRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/telegram': {
-      id: '/api/telegram'
-      path: '/api/telegram'
-      fullPath: '/api/telegram'
-      preLoaderRoute: typeof ApiTelegramRouteImport
+    '/blog/stop-procrastination-with-ai': {
+      id: '/blog/stop-procrastination-with-ai'
+      path: '/blog/stop-procrastination-with-ai'
+      fullPath: '/blog/stop-procrastination-with-ai'
+      preLoaderRoute: typeof BlogStopProcrastinationWithAiRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/whatsapp': {
@@ -180,11 +166,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiWhatsappRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/blog/stop-procrastination-with-ai': {
-      id: '/blog/stop-procrastination-with-ai'
-      path: '/blog/stop-procrastination-with-ai'
-      fullPath: '/blog/stop-procrastination-with-ai'
-      preLoaderRoute: typeof BlogStopProcrastinationWithAiRouteImport
+    '/api/telegram': {
+      id: '/api/telegram'
+      path: '/api/telegram'
+      fullPath: '/api/telegram'
+      preLoaderRoute: typeof ApiTelegramRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/send-reminder': {
+      id: '/api/send-reminder'
+      path: '/api/send-reminder'
+      fullPath: '/api/send-reminder'
+      preLoaderRoute: typeof ApiSendReminderRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/chat': {
+      id: '/api/chat'
+      path: '/api/chat'
+      fullPath: '/api/chat'
+      preLoaderRoute: typeof ApiChatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/hooks/tick-reminders': {
