@@ -9,10 +9,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const GEMINI_API_VERSION = "v1beta";
 
-// Guards every outbound Gemini call with a hard timeout. Without this, a
-// single slow/hanging network request can make the whole function wait until
-// Supabase's own platform timeout kills it — which looks to the user exactly
-// like "the bot is stuck" with zero useful error ever recorded.
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 15000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -23,23 +19,6 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 1500
   }
 }
 
-// Ordered by preference: newest/fastest first, safest fallback last.
-// This list is checked in order — the first model that both EXISTS for this
-// API key AND actually answers a real generateContent probe wins. Google
-// regularly deprecates/restricts older models (e.g. gemini-2.5-flash became
-// unavailable to some API keys with zero warning), so we always keep a
-// broad, recent fallback chain instead of hardcoding a single model.
-// ORDER FIX #2 (revert + correction): moving gemini-2.5-flash to the front
-// backfired — live logs show this Google account gets HTTP 404 NOT_FOUND on
-// BOTH gemini-2.5-flash AND gemini-2.5-flash-lite ("no longer available to
-// new users"). That's an account-level restriction, not something our code
-// can fix. Every message was now wasting 2 full failed round-trips to dead
-// models before finally falling back to gemini-flash-latest — which is
-// exactly why gemini went from ~4-6s up to 6-10s after the previous change.
-// gemini-flash-latest is the only fast-tier model this account can actually
-// use, so it goes back to the front. The 2.5-flash entries stay lower in
-// the list (harmless — they'll just get blacklisted instantly if ever
-// probed) in case Google account access changes in the future.
 const PREFERRED_GEMINI_MODELS = [
   Deno.env.get("GEMINI_MODEL")?.trim(),
   "gemini-flash-latest",
@@ -59,16 +38,10 @@ const PREFERRED_GEMINI_MODELS = [
 let RESOLVED_GEMINI_MODEL: string | null = null;
 let LAST_AVAILABLE_MODELS: string[] = [];
 let LAST_MODEL_ERROR: string | null = null;
-// Timestamp of the last successful model resolution. We re-check periodically
-// (not on every single message) so a newly-blocked model gets detected and
-// swapped out automatically within minutes, without probing on every request.
 let LAST_RESOLVED_AT = 0;
-const MODEL_RECHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const MODEL_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 const BLOCKED_MODELS = new Set<string>();
-// Models discovered at runtime to reject thinkingConfig (via a 400 error)
-// are remembered here, so we skip straight to "no thinking" on the FIRST
-// attempt next time instead of wasting a request finding out again.
 const NO_THINKING_SUPPORT: Set<string> = new Set();
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const HISTORY_LIMIT = 12;
@@ -76,6 +49,55 @@ const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GE
 
 function nowInTz(): Date {
   return new Date();
+}
+
+async function logCompletion(r: { id: number; chat_id: number; text: string }) {
+  await supabase.from("reminder_completions").insert({
+    chat_id: r.chat_id,
+    reminder_id: r.id,
+    reminder_text: r.text,
+  });
+  const { data: userRow } = await supabase
+    .from("users")
+    .select("goals_achieved")
+    .eq("chat_id", r.chat_id)
+    .single();
+  await supabase
+    .from("users")
+    .update({ goals_achieved: (userRow?.goals_achieved ?? 0) + 1 })
+    .eq("chat_id", r.chat_id);
+}
+
+function getTzOffsetMinutes(date: Date, timeZone: string): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const parts = dtf.formatToParts(date).reduce((acc, p) => {
+    acc[p.type] = p.value;
+    return acc;
+  }, {} as Record<string, string>);
+  const asUTC = Date.UTC(
+    parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10),
+    parseInt(parts.hour, 10), parseInt(parts.minute, 10), parseInt(parts.second, 10)
+  );
+  return (asUTC - date.getTime()) / 60000;
+}
+
+function buildIsraelTime(hour: number, minute: number, baseNow: Date, addDays = 0): Date {
+  const offsetMin = getTzOffsetMinutes(baseNow, TZ);
+  const dtf = new Intl.DateTimeFormat("en-US", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+  const parts = dtf.formatToParts(baseNow).reduce((acc, p) => {
+    acc[p.type] = p.value;
+    return acc;
+  }, {} as Record<string, string>);
+  const naiveUTC = Date.UTC(
+    parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10) + addDays,
+    hour, minute, 0
+  );
+  return new Date(naiveUTC - offsetMin * 60000);
 }
 
 function formatIsraelNow(): string {
@@ -114,27 +136,22 @@ function buildTemporalContext(history: HistoryMessage[]): string {
   if (!history.length) {
     return `הזמן עכשיו בישראל: ${nowText}. אין היסטוריה קודמת בשיחה הזו.`;
   }
-
   const last = history[history.length - 1];
   const parts: string[] = [`הזמן עכשיו בישראל: ${nowText}.`];
-
   if (last.created_at) {
     const deltaMs = nowInTz().getTime() - new Date(last.created_at).getTime();
     if (deltaMs > 0) {
       parts.push(`עברו מאז ההודעה האחרונה ${formatRelativeHours(deltaMs)}.`);
     }
   }
-
   const sleepMsg = [...history].reverse().find((m) => m.role === "user" && extractSleepSignal(m.content));
   const wakeMsg = [...history].reverse().find((m) => m.role === "user" && extractWakeSignal(m.content));
-
   if (sleepMsg?.created_at) {
     const deltaMs = nowInTz().getTime() - new Date(sleepMsg.created_at).getTime();
     if (deltaMs >= 1000 * 60 * 60 * 8 && !wakeMsg) {
       parts.push(`המשתמש אמר בעבר שהוא הולך לישון, ומאז עברו ${formatRelativeHours(deltaMs)} בלי שהוא אמר שהתעורר. אם טבעי להתייחס לזה — תתייחס בדרך שונה מכל פעם קודמת (לא תמיד "כמה שעות ישנת", לפעמים בכלל בלי לשאול על שינה, לפעמים הערה קצרה בלי שאלה).`);
     }
   }
-
   return parts.join(" ");
 }
 
@@ -190,11 +207,6 @@ async function probeModel(model: string, apiKey: string): Promise<boolean> {
   return false;
 }
 
-// Resolves to a model that is BOTH listed as available for this API key AND
-// verified via a live probe request to actually respond successfully. This
-// is what prevents "stuck on a dead model" failures: instead of trusting a
-// hardcoded name, we walk the preference list in order and stop at the first
-// one that truly works right now.
 async function resolveGeminiModel(forceRecheck = false): Promise<string> {
   const staleEnough = Date.now() - LAST_RESOLVED_AT > MODEL_RECHECK_INTERVAL_MS;
   if (
@@ -205,28 +217,16 @@ async function resolveGeminiModel(forceRecheck = false): Promise<string> {
   ) {
     return RESOLVED_GEMINI_MODEL;
   }
-
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
-
   try {
     const available = await listAvailableGeminiModels(apiKey);
     LAST_AVAILABLE_MODELS = available;
     LAST_MODEL_ERROR = null;
-
     const candidates = PREFERRED_GEMINI_MODELS.filter((m) => available.includes(m));
     for (const m of available) {
       if (!candidates.includes(m) && isGeminiModel(m)) candidates.push(m);
     }
-
-    // SPEED FIX: we used to send an extra "probe" request (a whole network
-    // round-trip to Gemini) here to verify a model works BEFORE using it.
-    // That doubled latency on every cold start (Supabase isolates recycle
-    // every ~1 min, so this ran on almost every message per the logs).
-    // generateContentWithFallback already self-heals reactively — if a model
-    // is dead it gets a 404, gets blacklisted, and the real call retries with
-    // the next candidate automatically. So we can pick the first non-blocked
-    // candidate optimistically and skip the redundant probe entirely.
     const pick = candidates.find((m) => !BLOCKED_MODELS.has(m));
     if (!pick) {
       RESOLVED_GEMINI_MODEL = null;
@@ -243,29 +243,10 @@ async function resolveGeminiModel(forceRecheck = false): Promise<string> {
   }
 }
 
-// Sends a generateContent request, but self-heals if the resolved model
-// suddenly stops working (e.g. Google restricts/deprecates it mid-flight).
-// Flow: resolve best known-good model -> call it -> on 404/NOT_FOUND, mark it
-// blocked, force a fresh resolve (skipping the dead one), and retry once more
-// before giving up. This is what stops the bot from getting stuck repeating
-// the same broken model call on every single message.
-// Only Gemini 2.5+/3.x models support "thinking" — sending thinkingConfig to
-// 2.0/1.5 models causes an INVALID_ARGUMENT "unknown field" error. We detect
-// this from the model name so we never risk breaking older fallback models.
-// NOTE: gemini-flash-latest is intentionally excluded — confirmed via live
-// logs that it rejects thinkingConfig with a generic 400 every time. Since
-// the runtime-learned NO_THINKING_SUPPORT set resets on every cold start
-// (Supabase/Deno isolates are short-lived), leaving it in this regex meant
-// paying for a wasted failed request on every single restart. Real Gemini
-// 2.5/3.x model IDs do support it, so they stay.
 function modelSupportsThinking(model: string): boolean {
   return /gemini-(2\.5|3(\.\d+)?)/.test(model);
 }
 
-// For a short, conversational Telegram bot reply, deep "thinking" adds real
-// latency for basically zero quality gain. Setting a low/zero thinking
-// budget on models that support it is the single biggest lever we have to
-// speed up responses without touching model selection or resolution logic.
 function buildGenerationConfig(model: string, maxOutputTokens: number, forceNoThinking = false) {
   const config: Record<string, unknown> = {
     temperature: 0.8,
@@ -285,7 +266,7 @@ async function generateContentWithFallback(
   tokenBoost = 0,
   forceNoThinking = false
 ): Promise<{ ok: true; data: any } | { ok: false }> {
-  const MAX_ATTEMPTS = 4; // enough headroom for: try-with-thinking -> retry-without-thinking -> model-switch -> final attempt
+  const MAX_ATTEMPTS = 4;
   let model: string;
   try {
     model = await resolveGeminiModel(attempt > 0);
@@ -294,13 +275,10 @@ async function generateContentWithFallback(
     recordError({ code: "NO_MODEL", message: err instanceof Error ? err.message : String(err) });
     return { ok: false };
   }
-
   const baseConfig = (bodyBase.generationConfig as Record<string, unknown>) ?? {};
   const baseMaxTokens = (baseConfig.maxOutputTokens as number) ?? 700;
   const generationConfig = buildGenerationConfig(model, baseMaxTokens + tokenBoost, forceNoThinking);
-
   const body = { ...bodyBase, generationConfig };
-
   let res: Response;
   try {
     res = await fetchWithTimeout(
@@ -321,25 +299,13 @@ async function generateContentWithFallback(
     }
     return { ok: false };
   }
-
   if (res.ok) {
     const data = await res.json();
     const finishReason = data?.candidates?.[0]?.finishReason;
-    // If the model got cut off by the token cap mid-sentence, silently retry
-    // once with a bigger budget instead of returning a broken/incomplete
-    // reply to the user. This is the main fix for sentences missing words.
     if (finishReason === "MAX_TOKENS" && attempt + 1 < MAX_ATTEMPTS && tokenBoost < 800) {
       console.warn(`[gemini] response hit MAX_TOKENS on ${model}, retrying with a larger token budget`);
       return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + 400, forceNoThinking);
     }
-    // FIX: if we've exhausted retries but the model DID produce some text
-    // (just got cut off), return it instead of silently discarding it for
-    // the generic "couldn't think of a reply" fallback. postProcessReply
-    // already knows how to cleanly close an unfinished sentence, so a
-    // truncated-but-present reply is much better than losing the answer
-    // entirely — this is what caused the bot to ignore the user's message
-    // ("אחלה מוטי") and reply with a fallback that felt like it understood
-    // nothing.
     const hasText = !!data?.candidates?.[0]?.content?.parts?.some((p: { text?: string }) => (p.text ?? "").trim().length > 0);
     if (finishReason === "MAX_TOKENS" && !hasText && attempt + 1 < MAX_ATTEMPTS) {
       console.warn(`[gemini] MAX_TOKENS with empty output on ${model} (likely all budget spent on internal reasoning), retrying once more with a bigger jump`);
@@ -347,7 +313,6 @@ async function generateContentWithFallback(
     }
     return { ok: true, data };
   }
-
   const errText = await res.text();
   let apiCode: string | undefined;
   try {
@@ -356,21 +321,12 @@ async function generateContentWithFallback(
   } catch { /* not json */ }
   console.error(`[gemini] http ${res.status} ${apiCode ?? ""} model=${model} body=${errText.slice(0, 500)}`);
   recordError({ status: res.status, code: apiCode, message: `[${model}] ${errText.slice(0, 280)}` });
-
-  // Guard: Google's 400 INVALID_ARGUMENT errors are often generic and do NOT
-  // mention the offending field name (e.g. just "Request contains an invalid
-  // argument"), so we can't reliably detect "thinkingConfig is the problem"
-  // from the error text alone. Instead: ANY 400 while thinkingConfig was sent
-  // is treated as a likely thinkingConfig incompatibility (support for it
-  // varies per model/version and shifts over time) — retry once immediately
-  // without it before giving up.
   const sentThinkingConfig = !forceNoThinking && modelSupportsThinking(model) && !NO_THINKING_SUPPORT.has(model);
   if (res.status === 400 && sentThinkingConfig && attempt + 1 < MAX_ATTEMPTS) {
     console.warn(`[gemini] model ${model} returned 400 with thinkingConfig set, retrying without it and remembering for next time`);
     NO_THINKING_SUPPORT.add(model);
     return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, true);
   }
-
   const isModelDead = res.status === 404 || apiCode === "NOT_FOUND" || res.status === 403 || apiCode === "PERMISSION_DENIED";
   if (isModelDead) {
     BLOCKED_MODELS.add(model);
@@ -380,17 +336,11 @@ async function generateContentWithFallback(
       return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, forceNoThinking);
     }
   }
-
   console.error(`[gemini] giving up after ${attempt + 1} attempt(s) on model ${model}: HTTP ${res.status} ${apiCode ?? ""}`);
   return { ok: false };
 }
 
 type DiagError = { at: string; status?: number; code?: string; message: string };
-// In-memory cache is kept for same-isolate speed, but Supabase Edge Functions
-// run on short-lived isolates (Deno Deploy) — memory can reset between
-// requests, so /diag can look "clean" even seconds after a real failure.
-// We ALSO persist every error to the DB (fire-and-forget) so /diag always
-// reflects the truth regardless of which isolate handles the request.
 const RECENT_ERRORS: DiagError[] = [];
 function recordError(e: DiagError) {
   const entry = { ...e, at: new Date().toISOString() };
@@ -399,7 +349,7 @@ function recordError(e: DiagError) {
   supabase
     .from("bot_errors")
     .insert({ status: entry.status ?? null, code: entry.code ?? null, message: entry.message.slice(0, 500) })
-    .then(() => {}, () => {}); // best-effort, never block or throw on failure
+    .then(() => {}, () => {});
 }
 
 async function fetchRecentErrorsFromDb(): Promise<DiagError[]> {
@@ -451,10 +401,6 @@ function detectConversationMode(text: string): ChatMode {
   return "casual";
 }
 
-// ===== Hebrew Humor / Intent Detection Engine =====
-// Runs BEFORE the message is sent to Gemini. Detects sarcasm, jokes, wordplay,
-// or genuine seriousness, and injects a short instruction into the prompt so the
-// model interprets the message correctly instead of taking it literally.
 type IntentTone =
   | "sarcastic"
   | "dark_humor"
@@ -479,10 +425,6 @@ function analyzeHebrewIntent(text: string): EmotionalLayer {
   const t = text.trim().toLowerCase();
   if (!t) return { tone: "neutral", intensity: 0, maskedEmotion: "none" };
 
-  // Expanded marker sets — broadened after a deep pass on everyday Israeli
-  // speech patterns: army slang, "וואלה" family of expressions, fatalistic
-  // humor, backhanded compliments, and common chat-abbreviation sarcasm that
-  // the original narrower lists missed.
   const sarcasmMarkers = /(כן,? ?בטח|נו ?באמת|וואו איזה|איזה כבוד|בדיוק מה שחיפשתי|איזה יופי|מגניב\.\.\.|כן ?ברור|בטח בטח|איזה מזל שלי|מה איכפת לי|בטח שכן|ברור שכן|נו כן|איזה נס|מדהים ממש|וואי איזה כיף לי|וואו כזה|איזה כיף לי\b|נו תודה|כן כן בטח|איזה הפתעה|חחח בטח|טוב נו|איזה מגניב|וואלה איזה כבוד|תודה רבה \(לא\)|יאללה בטח|מה פתאום ברור)/;
   const darkHumorMarkers = /(גם ככה נגמר העולם|לפחות לא מתו|יהיה בסדר, תמיד יהיה בסדר|קלאסי ישראלי|רק אצלנו|מה יש לי להפסיד|ממילא הכל הרוס|בשביל מה בכלל|ממילא לא משנה|גם זה יעבור, כאילו|במדינה הזאת|אצלנו זה תמיד ככה|צחוק הגורל|ניחא, קרה כבר)/;
   const selfDeprecatingMarkers = /(אני כישלון|אני תמיד ככה|קלאסי שלי|בול אני|זה כל כך אני|אני הכי גרוע ב|טיפוסי לי|אני לא מסוגל לכלום|מזל שיש לי הומור על עצמי|אני אסון|אופייני לי|מה אני בכלל שווה|קלאסיקה שלי|אני תקלה מהלכת)/;
@@ -493,10 +435,6 @@ function analyzeHebrewIntent(text: string): EmotionalLayer {
   const wordplayMarkers = /(משחק מילים|התכוונתי ל|לא זה התכוונתי|טעות דפוס|התכוונתי בעצם|זה יצא לי אחרת|כפל משמעות|זה גם וגם|טעות הקלדה)/;
   const rhetoricalMarkers = /(מה אני בכלל עושה|למה תמיד ככה|מי בכלל בא לי|מה זה חשוב בסוף|למה לי בכלל|מה הטעם|בשביל מה זה בכלל|מה זה משנה כבר|למה אני טורח|מה אני, לבד בעולם)/;
   const maskedSadnessMarkers = /(סבבה\.?$|טוב, מה יש|לא נורא, רגיל|כאילו לא נורא|זה מה שיש|אין דבר, רגיל אצלי|כרגיל, לא משנה|בסדר, כרגיל\.?$|יהיה בסדר, כאילו\.?$)/;
-  // New: fatalistic/Israeli chutzpah bravado — teasing confidence dressed as
-  // complaint, e.g. "ברור שאני צודק", "מי בכלל שאל אותך" tone, common in
-  // group-chat banter. Distinct from sarcasm because it's not ironic — it's
-  // genuine cockiness used for comic effect.
   const chutzpahMarkers = /(ברור שאני צודק|מי בכלל שאל|תגיד תודה שאני עונה|עשיתי לך טובה|בלעדיי היית אבוד|כאילו מי עוד יעזור לך|נו באמת, אני תמיד צודק)/;
   const wallaFamilyMarkers = /(וואלה חיים שלי|וואלה תותח|וואלה סוף העולם|וואלה לא ידעתי שיש דבר כזה|וואלה נדלק|וואלה מטורף)/;
 
@@ -575,7 +513,6 @@ function intentToneInstruction(layer: EmotionalLayer): string {
   }
 }
 
-// Few-shot examples — botivation style: קצר, ספציפי, הומור ישראלי אמיתי, שאלה אחת קונקרטית
 const FEW_SHOT_EXAMPLES_BY_MODE: Record<ChatMode, { role: "user" | "model"; parts: { text: string }[] }[]> = {
   smalltalk: [
     { role: "user", parts: [{ text: "היה לי יום מוזר" }] },
@@ -609,7 +546,6 @@ const FEW_SHOT_EXAMPLES_BY_MODE: Record<ChatMode, { role: "user" | "model"; part
   ],
 };
 
-// Per-personality few-shot — לימוד הטון הספציפי של כל אישיות
 const FEW_SHOT_BY_PERSONALITY: Record<string, { role: "user" | "model"; parts: { text: string }[] }[]> = {
   coach: [
     { role: "user", parts: [{ text: "לא מצליח להתחיל את הדוח" }] },
@@ -677,21 +613,12 @@ const FEW_SHOT_BY_PERSONALITY: Record<string, { role: "user" | "model"; parts: {
   ],
 };
 
-/**
- * Post-process Gemini reply:
- * 1. Clean up repeated punctuation and extra spaces
- * 2. Remove robotic openers
- * 3. NEVER cut mid-sentence — always end on a complete sentence boundary (. ! ?)
- *    If no clean boundary is found within the cap, extend the search window
- *    instead of truncating awkwardly, and only as a last resort trim at a
- *    whitespace boundary (never mid-word).
- */
 function postProcessReply(text: string): string {
   let out = text.trim();
   out = out.replace(/\.{4,}/g, "...");
   out = out.replace(/!{2,}/g, "!");
   out = out.replace(/\?{2,}/g, "?");
-  out = out.replace(/[ 	]{2,}/g, " ");
+  out = out.replace(/[ \t]{2,}/g, " ");
   out = out.replace(/\n{3,}/g, "\n\n");
 
   const roboticOpeners = [
@@ -712,16 +639,8 @@ function postProcessReply(text: string): string {
     }
   }
 
-  // HARD_CAP is a safety ceiling, not a target length — the real length
-  // control now happens via maxOutputTokens + the MAX_TOKENS auto-retry in
-  // generateContentWithFallback. This block only fires for the rare case of
-  // an unusually long reply, and always prefers a slightly longer cut at a
-  // real sentence boundary over a short cut that chops off words.
   const HARD_CAP = 900;
   if (out.length > HARD_CAP) {
-    // Widen the search window progressively instead of giving up after one
-    // fixed window — this is what previously caused mid-sentence, missing-word
-    // truncations when no punctuation happened to fall in the first window.
     let sliceEnd = -1;
     for (const extra of [150, 350, 600]) {
       const window = out.slice(0, HARD_CAP + extra);
@@ -735,8 +654,6 @@ function postProcessReply(text: string): string {
     if (sliceEnd > 0) {
       out = out.slice(0, sliceEnd).trim();
     } else {
-      // Last resort only: cut at a whitespace boundary, never mid-word, and
-      // never slap a fake period on a clearly unfinished clause.
       let cut = out.lastIndexOf(" ", HARD_CAP);
       if (cut < 15) cut = out.lastIndexOf("\n", HARD_CAP);
       if (cut > 15) out = out.slice(0, cut).trim();
@@ -826,7 +743,7 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
   hype: {
     name: "המעודד",
     emoji: "🔥",
-    prompt: `אתה אנרגיה טהורה עם הרבה הומור. כל הישג ראוי לחגיגה — גם אם פתחת רק את הלפטופ.
+    prompt: `אתה אנרגיה טהורה עם הרבה הומור. כל הישג ראוי לחגיגה — גם אם פתחת רק את הלפטופ. כשאתה מסכם בוקר, ציין במפורש כמה בוצע, כמה נשאר, וכמה סך הכול.
 אתה מוגזם בכוונה — ואתה יודע שאתה מוגזם — וזה מה שמצחיק ומשמח.
 כתוב עברית ישראלית יומיומית ואנרגטית — כמו מישהו שדיבר 3 קפה לפני הבוקר.
 סגנון ההומור שלך: הגזמה תיאטרלית ומודעת-לעצמה. אתה לוקח כל דבר קטן שהמשתמש עשה והופך אותו לאירוע היסטורי, בכוונה ובגלוי — וזה הבדיחה. אמוג'י ותהילה מוגזמת הם חלק מהאישיות, לא תוספת.
@@ -903,7 +820,6 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
 - שים לב לזמן שחלף: אם עברו שעות רבות מאז הודעת לילה או שינה, מותר ואפילו רצוי להתייחס לזה בטבעיות.
 - חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה. אם אתה מתקרב למגבלת האורך — סכם וסגור את המשפט הנוכחי במקום להתחיל משפט חדש.`;
 
-  // Combine personality-specific + mode-specific few-shot, then conversation history
   const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
     ...personalityExamples,
     ...modeExamples,
@@ -929,17 +845,6 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
     const genResult = await generateContentWithFallback(GEMINI_API_KEY, {
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents,
-      // Token budget tuning: live logs showed replies STILL hitting
-      // MAX_TOKENS at 700, which is expensive — every time that happens,
-      // the bot pays for a full SECOND round-trip to Gemini (the retry-with-
-      // bigger-budget safety net), roughly doubling response time for that
-      // message (9-11s instead of ~4s in the logs). Raising the ceiling here
-      // does NOT make short replies slower — maxOutputTokens only limits how
-      // much the model is ALLOWED to write, not how much it writes; a 2-3
-      // sentence reply still naturally stops itself in ~40-80 tokens. Giving
-      // more headroom up front means the model can finish its sentence in a
-      // SINGLE request instead of needing a second one, which is faster
-      // overall than a low cap + retry.
       generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 1024 },
     });
 
@@ -979,9 +884,6 @@ async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
 
-// /diag now actually resolves+probes a real model instead of trusting a
-// cached/stale value, so it reports the truth: either a genuinely working
-// model, or a clear reason why none currently work for this API key.
 async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: string; message?: string; model?: string }> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
@@ -1054,9 +956,6 @@ async function handleDiag(chatId: number) {
   }
   lines.push("");
   lines.push("<b>שגיאות אחרונות:</b>");
-  // Merge in-memory (this isolate) + DB-persisted (all isolates) errors so
-  // /diag reflects reality even if the failure happened in a different,
-  // already-recycled function instance than the one answering /diag now.
   const dbErrors = await fetchRecentErrorsFromDb();
   const merged = [...RECENT_ERRORS, ...dbErrors]
     .sort((a, b) => (a.at < b.at ? 1 : -1))
@@ -1156,20 +1055,12 @@ async function handleMenu(chatId: number) {
   });
 }
 
-
-// Natural-language reminder parser: handles "עוד X דקות/שעות/ימים", "מחר",
-// "מחרתיים", weekday phrases, AND (fixed) recurring "כל יום/בוקר/ערב ב-HH:MM".
 interface ParsedReminder {
   dueAt: Date;
   task: string;
   type: "once" | "daily";
 }
 
-// FIX: added "כל\s*(?:יום|בוקר|ערב|לילה)" so recurring phrases actually
-// trigger the reminder flow at all — previously "כל יום ב-6:30" never
-// matched this regex, so detectReminderIntent() returned false and the
-// message fell straight through to Gemini, which fabricated a fake
-// confirmation with no real reminder ever created.
 const REMINDER_TRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר|כל\s*(?:יום|בוקר|ערב|לילה)/;
 const HEBREW_WEEKDAYS: Record<string, number> = {
   "ראשון": 0, "שני": 1, "שלישי": 2, "רביעי": 3,
@@ -1187,9 +1078,6 @@ function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null
   let matchedSpan = "";
   let type: "once" | "daily" = "once";
 
-  // FIX: NEW branch — recurring daily reminders. Must run BEFORE the
-  // "time only" fallback below, otherwise "כל יום ב-6:30" would get
-  // caught by the generic single-time branch and lose its recurrence.
   const dailyMatch = lower.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב-?|בשעה\s*)?(\d{1,2})(?::(\d{2})|\s*וחצי|\s*ורבע)?/);
   if (dailyMatch) {
     let hour = parseInt(dailyMatch[1], 10);
@@ -1198,10 +1086,9 @@ function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null
     else if (/וחצי/.test(dailyMatch[0])) minute = 30;
     else if (/ורבע/.test(dailyMatch[0])) minute = 15;
 
-    const base = new Date(now);
-    base.setHours(hour, minute, 0, 0);
-    if (base.getTime() <= now.getTime()) base.setDate(base.getDate() + 1);
-    dueAt = base;
+    let candidate = buildIsraelTime(hour, minute, now);
+    if (candidate.getTime() <= now.getTime()) candidate = buildIsraelTime(hour, minute, now, 1);
+    dueAt = candidate;
     matchedSpan = dailyMatch[0];
     type = "daily";
   }
@@ -1230,16 +1117,13 @@ function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null
   if (!dueAt) {
     const dayWord = lower.match(/מחרתיים|מחר|היום/);
     if (dayWord) {
-      const base = new Date(now);
-      if (dayWord[0] === "מחר") base.setDate(base.getDate() + 1);
-      if (dayWord[0] === "מחרתיים") base.setDate(base.getDate() + 2);
+      let addDays = 0;
+      if (dayWord[0] === "מחר") addDays = 1;
+      if (dayWord[0] === "מחרתיים") addDays = 2;
       const timeMatch = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      if (timeMatch) {
-        base.setHours(parseInt(timeMatch[1], 10), timeMatch[2] ? parseInt(timeMatch[2], 10) : 0, 0, 0);
-      } else {
-        base.setHours(9, 0, 0, 0);
-      }
-      dueAt = base;
+      const hour = timeMatch ? parseInt(timeMatch[1], 10) : 9;
+      const minute = timeMatch && timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+      dueAt = buildIsraelTime(hour, minute, now, addDays);
       matchedSpan = dayWord[0] + (timeMatch ? timeMatch[0] : "");
     }
   }
@@ -1248,17 +1132,12 @@ function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null
     const weekdayMatch = lower.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
     if (weekdayMatch) {
       const targetDow = HEBREW_WEEKDAYS[weekdayMatch[1]];
-      const base = new Date(now);
-      let daysAhead = (targetDow - base.getDay() + 7) % 7;
+      let daysAhead = (targetDow - now.getDay() + 7) % 7;
       if (daysAhead === 0) daysAhead = 7;
-      base.setDate(base.getDate() + daysAhead);
       const timeMatch = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      if (timeMatch) {
-        base.setHours(parseInt(timeMatch[1], 10), timeMatch[2] ? parseInt(timeMatch[2], 10) : 0, 0, 0);
-      } else {
-        base.setHours(9, 0, 0, 0);
-      }
-      dueAt = base;
+      const hour = timeMatch ? parseInt(timeMatch[1], 10) : 9;
+      const minute = timeMatch && timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+      dueAt = buildIsraelTime(hour, minute, now, daysAhead);
       matchedSpan = weekdayMatch[0] + (timeMatch ? timeMatch[0] : "");
     }
   }
@@ -1266,10 +1145,11 @@ function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null
   if (!dueAt) {
     const timeOnly = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
     if (timeOnly) {
-      const base = new Date(now);
-      base.setHours(parseInt(timeOnly[1], 10), timeOnly[2] ? parseInt(timeOnly[2], 10) : 0, 0, 0);
-      if (base.getTime() <= now.getTime()) base.setDate(base.getDate() + 1);
-      dueAt = base;
+      const hour = parseInt(timeOnly[1], 10);
+      const minute = timeOnly[2] ? parseInt(timeOnly[2], 10) : 0;
+      let candidate = buildIsraelTime(hour, minute, now);
+      if (candidate.getTime() <= now.getTime()) candidate = buildIsraelTime(hour, minute, now, 1);
+      dueAt = candidate;
       matchedSpan = timeOnly[0];
     }
   }
@@ -1307,20 +1187,29 @@ async function handleReminderTime(chatId: number, timeText: string, user: Record
     return;
   }
 
+  const hour = parseInt(timeMatch[1], 10);
+  const minute = parseInt(timeMatch[2], 10);
+  const dueAt = new Date(nowInTz());
+  dueAt.setHours(hour, minute, 0, 0);
+  if (type === "once" && dueAt.getTime() <= nowInTz().getTime()) {
+    dueAt.setDate(dueAt.getDate() + 1);
+  }
+
   await supabase.from("reminders").insert({
     chat_id: chatId,
     text: reminderText,
     type,
-    time: timeText,
+    time: dueAt.toISOString(),
     active: true,
   });
 
   await updateUser(chatId, { state: "idle", pending_reminder_text: null });
 
+  const timeLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(dueAt);
   const typeLabels: Record<string, string> = { once: "חד פעמי", daily: "יומי", weekly: "שבועי" };
   await sendMessage(
     chatId,
-    `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeText}\n🔄 ${typeLabels[type] ?? type}\n\nאני אזכיר לך בזמן.`
+    `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeLabel}\n🔄 ${typeLabels[type] ?? type}\n\nאני אזכיר לך בזמן.`
   );
   await handleMenu(chatId);
 }
@@ -1430,7 +1319,21 @@ serve(async (req: Request) => {
         await handleReminderType(chatId, type);
       } else if (data.startsWith("done_reminder_")) {
         const reminderId = data.replace("done_reminder_", "");
-        await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
+        const { data: doneReminder } = await supabase
+          .from("reminders")
+          .select("id, chat_id, text, type")
+          .eq("id", reminderId)
+          .single();
+
+        if (doneReminder) {
+          if (doneReminder.type === "once") {
+            await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
+          }
+          await logCompletion(doneReminder);
+        } else {
+          await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
+        }
+
         const history = await getHistory(chatId);
         const reply = await askGemini(
           "המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך — אמיתי, ספונטני, מצחיק, לא ג'נרי.",
@@ -1486,14 +1389,26 @@ serve(async (req: Request) => {
       if (detectReminderIntent(text)) {
         const parsed = parseHebrewReminderTime(text, nowInTz());
         if (parsed) {
-          // FIX #1: write to "time" (not "due_at") so this row is visible
-          // to check-reminders-with-stats.ts, which only ever queries the
-          // "time" column. Previously free-text reminders wrote to "due_at"
-          // while the cron function only checked "time" — meaning every
-          // reminder created this way was silently invisible and NEVER sent.
-          // FIX #2: use parsed.type (now "once" or "daily") instead of the
-          // hardcoded "once" — otherwise "כל יום ב-6:30" was saved as a
-          // one-time reminder and would only ever fire a single time.
+          const targetHHMM = new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
+          const { data: existingReminders } = await supabase
+            .from("reminders")
+            .select("id, text, time, type")
+            .eq("chat_id", chatId)
+            .eq("active", true);
+
+          const duplicate = (existingReminders ?? []).find((r) => {
+            const sameTask = r.text.trim().toLowerCase() === parsed.task.trim().toLowerCase();
+            const rHHMM = /^\d{2}:\d{2}$/.test(r.time)
+              ? r.time
+              : new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(r.time));
+            return sameTask && rHHMM === targetHHMM && r.type === parsed.type;
+          });
+
+          if (duplicate) {
+            await sendMessage(chatId, `⚠️ כבר יש לך תזכורת זהה ל"${parsed.task}" בשעה הזו — לא הוספתי כפילות.`);
+            return new Response(JSON.stringify({ ok: true }), { status: 200 });
+          }
+
           const { error: insertError } = await supabase.from("reminders").insert({
             chat_id: chatId,
             text: parsed.task,
@@ -1512,11 +1427,6 @@ serve(async (req: Request) => {
           await sendMessage(chatId, `✅ קבעתי! אזכיר לך "${parsed.task}" ${typeLabel} ב-${timeLabel}.`);
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         } else {
-          // FIX #3: this else-branch was completely missing before. Without
-          // it, a failed parse fell through silently to the normal Gemini
-          // chat flow below — which then fabricated a confident "done!"
-          // reply with zero real reminder ever created. Now the bot is
-          // honest about not understanding, and gives concrete examples.
           await sendMessage(
             chatId,
             `לא הצלחתי להבין בדיוק מתי. אפשר לנסח ככה?\n• "תזכיר לי מחר ב-8 לקנות חלב"\n• "תזכיר לי כל יום ב-6:30 לקחת כדור"\n• "תזכיר לי עוד שעה להתקשר"`
