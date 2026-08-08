@@ -86,7 +86,7 @@ function Index() {
 
           <div className="relative space-y-3">
             <h1 className="text-[1.75rem] leading-tight sm:text-4xl font-bold tracking-tight bg-linear-to-b from-white to-white/70 bg-clip-text text-transparent">
-              מוטי — 8 אישיויות, מטרה אחת: שתזוז
+              מוטי — 10 אישיויות, מטרה אחת: שתזוז
             </h1>
             <p className="text-sm sm:text-base text-white/80 leading-relaxed">
               בוחרים מי ידחוף אותך — רס"ר, ציני, מאמן, חבר, מטפל, מעודד, סבתא, פילוסוף, פראייר או השכן מלמעלה. שולחים מה דוחים, ומקבלים תזכורות בשעות ובימים שאתה בוחר, עד שזה נסגר.
