@@ -1085,6 +1085,13 @@ function sendTyping(chatId: number) {
   }).catch(() => {});
 }
 
+// Telegram clears the typing bubble after ~5s, so refresh it until we reply.
+function startTyping(chatId: number): () => void {
+  sendTyping(chatId);
+  const timer = setInterval(() => sendTyping(chatId), 4000);
+  return () => clearInterval(timer);
+}
+
 async function getHistory(chatId: number): Promise<HistoryMessage[]> {
   const { data } = await supabase
     .from("messages")
