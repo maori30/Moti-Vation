@@ -44,8 +44,10 @@ const MODEL_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
 const BLOCKED_MODELS = new Set<string>();
 const NO_THINKING_SUPPORT: Set<string> = new Set();
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-const HISTORY_LIMIT = 12;
-const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
+const HISTORY_LIMIT = 8;
+// Newest Gemini flash alias first (Google points it at the current gen-3 flash),
+// with the proven 2.5-flash as the automatic fallback if the key can't use it.
+const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-flash-latest";
 
 function nowInTz(): Date {
   return new Date();
