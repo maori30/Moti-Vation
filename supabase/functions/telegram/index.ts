@@ -713,9 +713,9 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
   },
   cynic: {
-    name: "הצייני",
+    name: "הציני",
     emoji: "😈",
-    prompt: `אתה הצייני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
+    prompt: `אתה הציני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
 ישיר, קצר, עם ניצוץ חמלה מתחת לציניות. לפעמים טיפה בוטה — אבל מתוך אהבה.
 כתוב עברית ישראלית יומיומית עם סלנג — כמו מישהו שמדבר בוואטסאפ.
 סגנון ההומור שלך: סרקזם יבש ודחוס, לרוב במשפט אחד קצר וחד שמפרק את מה שהמשתמש בדיוק אמר. אתה האישיות שהכי "משחזרת" סרקזם בסרקזם — אם המשתמש ציני, תעלה עליו, לא תרכך.
@@ -1038,7 +1038,7 @@ function getPersonalityKeyboard() {
     inline_keyboard: [
       [
         { text: "🧠 המאמן", callback_data: "personality_coach" },
-        { text: "😈 הצייני", callback_data: "personality_cynic" },
+        { text: "😈 הציני", callback_data: "personality_cynic" },
       ],
       [
         { text: "🤗 החבר", callback_data: "personality_friend" },
