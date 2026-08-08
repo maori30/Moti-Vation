@@ -1499,6 +1499,7 @@ serve(async (req: Request) => {
       }
 
       const tFetch = Date.now();
+      sendTyping(chatId);
       const [activeReminders, history] = await Promise.all([
         supabase
           .from("reminders")
