@@ -1431,6 +1431,9 @@ serve(async (req: Request) => {
     const chatId = message.chat.id;
     const text = (message.text ?? "").trim();
     const firstName = message.from?.first_name ?? "חבר";
+    // Show "typing…" immediately, before any DB/model work.
+    const stopTyping = startTyping(chatId);
+    try {
     const tUser = Date.now();
     const user = await getOrCreateUser(chatId, firstName);
     mark("getUser", tUser);
@@ -1508,7 +1511,6 @@ serve(async (req: Request) => {
       }
 
       const tFetch = Date.now();
-      sendTyping(chatId);
       const [activeReminders, history] = await Promise.all([
         supabase
           .from("reminders")
@@ -1536,6 +1538,9 @@ serve(async (req: Request) => {
 
       timings.total = Date.now() - t0;
       console.log(`[timing] ${JSON.stringify(timings)}`);
+    }
+    } finally {
+      stopTyping();
     }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
