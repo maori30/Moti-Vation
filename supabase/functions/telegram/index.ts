@@ -44,8 +44,10 @@ const MODEL_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
 const BLOCKED_MODELS = new Set<string>();
 const NO_THINKING_SUPPORT: Set<string> = new Set();
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-const HISTORY_LIMIT = 12;
-const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
+const HISTORY_LIMIT = 8;
+// Newest Gemini flash alias first (Google points it at the current gen-3 flash),
+// with the proven 2.5-flash as the automatic fallback if the key can't use it.
+const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-flash-latest";
 
 function nowInTz(): Date {
   return new Date();
@@ -1083,6 +1085,13 @@ function sendTyping(chatId: number) {
   }).catch(() => {});
 }
 
+// Telegram clears the typing bubble after ~5s, so refresh it until we reply.
+function startTyping(chatId: number): () => void {
+  sendTyping(chatId);
+  const timer = setInterval(() => sendTyping(chatId), 4000);
+  return () => clearInterval(timer);
+}
+
 async function getHistory(chatId: number): Promise<HistoryMessage[]> {
   const { data } = await supabase
     .from("messages")
@@ -1422,6 +1431,9 @@ serve(async (req: Request) => {
     const chatId = message.chat.id;
     const text = (message.text ?? "").trim();
     const firstName = message.from?.first_name ?? "חבר";
+    // Show "typing…" immediately, before any DB/model work.
+    const stopTyping = startTyping(chatId);
+    try {
     const tUser = Date.now();
     const user = await getOrCreateUser(chatId, firstName);
     mark("getUser", tUser);
@@ -1499,7 +1511,6 @@ serve(async (req: Request) => {
       }
 
       const tFetch = Date.now();
-      sendTyping(chatId);
       const [activeReminders, history] = await Promise.all([
         supabase
           .from("reminders")
@@ -1527,6 +1538,9 @@ serve(async (req: Request) => {
 
       timings.total = Date.now() - t0;
       console.log(`[timing] ${JSON.stringify(timings)}`);
+    }
+    } finally {
+      stopTyping();
     }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
