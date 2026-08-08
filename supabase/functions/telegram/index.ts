@@ -208,17 +208,23 @@ async function probeModel(model: string, apiKey: string): Promise<boolean> {
 }
 
 async function resolveGeminiModel(forceRecheck = false): Promise<string> {
-  const staleEnough = Date.now() - LAST_RESOLVED_AT > MODEL_RECHECK_INTERVAL_MS;
   if (
     RESOLVED_GEMINI_MODEL &&
     !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) &&
-    !forceRecheck &&
-    !staleEnough
+    !forceRecheck
   ) {
     return RESOLVED_GEMINI_MODEL;
   }
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
+  // Fast path: skip the extra models.list round-trip and use the preferred fast
+  // model directly. If it turns out to be unavailable, the caller blacklists it
+  // and retries with forceRecheck, which falls through to the discovery below.
+  if (!forceRecheck && !BLOCKED_MODELS.has(FAST_MODEL)) {
+    RESOLVED_GEMINI_MODEL = FAST_MODEL;
+    LAST_RESOLVED_AT = Date.now();
+    return FAST_MODEL;
+  }
   try {
     const available = await listAvailableGeminiModels(apiKey);
     LAST_AVAILABLE_MODELS = available;
