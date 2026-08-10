@@ -44,10 +44,8 @@ const MODEL_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
 const BLOCKED_MODELS = new Set<string>();
 const NO_THINKING_SUPPORT: Set<string> = new Set();
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-const HISTORY_LIMIT = 8;
-// Newest Gemini flash alias first (Google points it at the current gen-3 flash),
-// with the proven 2.5-flash as the automatic fallback if the key can't use it.
-const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-flash-latest";
+const HISTORY_LIMIT = 12;
+const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
 
 function nowInTz(): Date {
   return new Date();
@@ -210,23 +208,17 @@ async function probeModel(model: string, apiKey: string): Promise<boolean> {
 }
 
 async function resolveGeminiModel(forceRecheck = false): Promise<string> {
+  const staleEnough = Date.now() - LAST_RESOLVED_AT > MODEL_RECHECK_INTERVAL_MS;
   if (
     RESOLVED_GEMINI_MODEL &&
     !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) &&
-    !forceRecheck
+    !forceRecheck &&
+    !staleEnough
   ) {
     return RESOLVED_GEMINI_MODEL;
   }
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
-  // Fast path: skip the extra models.list round-trip and use the preferred fast
-  // model directly. If it turns out to be unavailable, the caller blacklists it
-  // and retries with forceRecheck, which falls through to the discovery below.
-  if (!forceRecheck && !BLOCKED_MODELS.has(FAST_MODEL)) {
-    RESOLVED_GEMINI_MODEL = FAST_MODEL;
-    LAST_RESOLVED_AT = Date.now();
-    return FAST_MODEL;
-  }
   try {
     const available = await listAvailableGeminiModels(apiKey);
     LAST_AVAILABLE_MODELS = available;
@@ -715,9 +707,9 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
 חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
   },
   cynic: {
-    name: "הציני",
+    name: "הצייני",
     emoji: "😈",
-    prompt: `אתה הציני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
+    prompt: `אתה הצייני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
 ישיר, קצר, עם ניצוץ חמלה מתחת לציניות. לפעמים טיפה בוטה — אבל מתוך אהבה.
 כתוב עברית ישראלית יומיומית עם סלנג — כמו מישהו שמדבר בוואטסאפ.
 סגנון ההומור שלך: סרקזם יבש ודחוס, לרוב במשפט אחד קצר וחד שמפרק את מה שהמשתמש בדיוק אמר. אתה האישיות שהכי "משחזרת" סרקזם בסרקזם — אם המשתמש ציני, תעלה עליו, לא תרכך.
@@ -895,7 +887,7 @@ ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${inte
     const genResult = await generateContentWithFallback(GEMINI_API_KEY, {
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents,
-      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 400 },
+      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 1024 },
     });
 
     if (!genResult.ok) {
@@ -1040,7 +1032,7 @@ function getPersonalityKeyboard() {
     inline_keyboard: [
       [
         { text: "🧠 המאמן", callback_data: "personality_coach" },
-        { text: "😈 הציני", callback_data: "personality_cynic" },
+        { text: "😈 הצייני", callback_data: "personality_cynic" },
       ],
       [
         { text: "🤗 החבר", callback_data: "personality_friend" },
@@ -1074,22 +1066,6 @@ async function sendMessage(chatId: number, text: string, keyboard?: object) {
 
 async function saveMessage(chatId: number, role: string, content: string) {
   await supabase.from("messages").insert({ chat_id: chatId, role, content });
-}
-
-function sendTyping(chatId: number) {
-  // fire-and-forget: makes the bot feel instant while it thinks
-  return fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendChatAction`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-  }).catch(() => {});
-}
-
-// Telegram clears the typing bubble after ~5s, so refresh it until we reply.
-function startTyping(chatId: number): () => void {
-  sendTyping(chatId);
-  const timer = setInterval(() => sendTyping(chatId), 4000);
-  return () => clearInterval(timer);
 }
 
 async function getHistory(chatId: number): Promise<HistoryMessage[]> {
@@ -1431,9 +1407,6 @@ serve(async (req: Request) => {
     const chatId = message.chat.id;
     const text = (message.text ?? "").trim();
     const firstName = message.from?.first_name ?? "חבר";
-    // Show "typing…" immediately, before any DB/model work.
-    const stopTyping = startTyping(chatId);
-    try {
     const tUser = Date.now();
     const user = await getOrCreateUser(chatId, firstName);
     mark("getUser", tUser);
@@ -1538,9 +1511,6 @@ serve(async (req: Request) => {
 
       timings.total = Date.now() - t0;
       console.log(`[timing] ${JSON.stringify(timings)}`);
-    }
-    } finally {
-      stopTyping();
     }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
