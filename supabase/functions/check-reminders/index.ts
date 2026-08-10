@@ -27,30 +27,14 @@ async function sendTelegramMessage(chatId: number, text: string): Promise<boolea
 
 // FIX #7 (REMOVED HERE, MOVED TO index.ts "done_reminder_" HANDLER):
 // logCompletion() used to run automatically every time a reminder was SENT,
-// for both "once" and recurring types. That means completion stats
-// (reminder_completions + goals_achieved) tracked "the bot pinged the user",
-// not "the user actually did the task". For a daily reminder this silently
-// inflated goals_achieved by +1 EVERY SINGLE DAY forever, even if the user
-// never touched it — which is exactly why morning-summary counts looked
-// wrong. Real completion should only be logged when the user explicitly
-// confirms via the "✅ סיימתי" button in index.ts. This file no longer logs
-// completions at all — it only sends reminders and reschedules them.
+// for both "once" and recurring types. Real completion is now only logged
+// when the user explicitly confirms via the "✅ סיימתי" button in index.ts.
+// This file only sends reminders and reschedules them.
 
-// FIX #8: previously the recurring reschedule was computed as
-//   now + 24h (or +7d), in raw milliseconds.
-// Two problems with that:
-//  (a) DRIFT — if a cron run is a few minutes late (very common), each
-//      day's "next time" keeps drifting later, since it's based on `now`
-//      instead of the reminder's own scheduled `time`. Over weeks a 06:30
-//      reminder can silently creep to 07:00, 07:30, etc.
-//  (b) DST — adding a fixed 86_400_000 ms does NOT equal "24 real hours in
-//      Israel local time" across a DST transition (Israel's clocks shift by
-//      1 hour in spring/autumn). A daily 06:30 reminder would jump to 05:30
-//      or 07:30 local time right after the DST switch.
-// The fix: reschedule from the reminder's OWN previous `time`, and rebuild
-// the next occurrence from Israel wall-clock hour/minute (not from a fixed
-// ms offset), so the local time-of-day always stays exactly what the user
-// asked for.
+// FIX #8: recurring reschedule is computed from the reminder's OWN previous
+// `time` and rebuilt from Israel wall-clock hour/minute (not a fixed ms
+// offset), so drift and DST jumps don't shift the local time-of-day.
+
 function getTzOffsetMinutes(date: Date, timeZone: string): number {
   const dtf = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -81,12 +65,75 @@ function nextOccurrence(prevTime: Date, daysToAdd: number): Date {
   return new Date(nextLocalNaive - newOffsetMin * 60000);
 }
 
+// FIX #10: reminder messages used to be a robotic hardcoded template
+// ("⏰ תזכורת: <task>") regardless of the user's chosen personality.
+// Now each personality has its own set of natural, colon-free phrasings,
+// and one is picked at random per send so it doesn't feel repetitive.
+const REMINDER_TEMPLATES: Record<string, ((task: string) => string)[]> = {
+  coach: [
+    (t) => `הגיע הזמן — ${t}. קדימה, אתה יודע שאתה יכול 💪`,
+    (t) => `לא שוכחים דברים כאלה — ${t}, עכשיו!`,
+    (t) => `זה הרגע. ${t}. תעשה את זה ותדווח לי אחר כך.`,
+  ],
+  cynic: [
+    (t) => `אז, ${t}? כן, זה עכשיו. זוז.`,
+    (t) => `הבטחת לעצמך ${t}. עכשיו זה הזמן להוכיח שלא שיקרת.`,
+    (t) => `${t}. לא, זה לא ייעלם אם תתעלם ממני.`,
+  ],
+  friend: [
+    (t) => `היי, רק מזכיר בחיבה — ${t} 😊`,
+    (t) => `אחי, זוכר ש${t}? עכשיו הזמן המושלם.`,
+    (t) => `קטן עליך — ${t}, ותחזור לספר לי 🤗`,
+  ],
+  sergeant: [
+    (t) => `דיווח: ${t}. בצע מיידית.`,
+    (t) => `זמן פג. ${t} עכשיו.`,
+    (t) => `${t}. אין תירוצים, יש ביצוע.`,
+  ],
+  therapist: [
+    (t) => `רגע קטן לעצמך — ${t}, בלי לחץ, פשוט עכשיו.`,
+    (t) => `זה הזמן ל${t}. איך מרגיש לעצור לרגע ולעשות את זה?`,
+    (t) => `${t}. תן לזה מקום, בלי להילחץ.`,
+  ],
+  hype: [
+    (t) => `יאללה!! 🔥 הגיע הרגע ל${t}!!`,
+    (t) => `בוקר טוב אלוף! זמן ל${t} — קדימה תראה להם!! 🚀`,
+    (t) => `וואו וואו וואו, ${t} מחכה לך — יאללה תעשה את זה! 🔥`,
+  ],
+  grandma: [
+    (t) => `מותק, אל תשכח ${t}, טוב לך.`,
+    (t) => `נו, ${t}? סבתא אומרת שעכשיו הזמן.`,
+    (t) => `תעשה לי טובה ו${t}, זה בשבילך.`,
+  ],
+  philosopher: [
+    (t) => `הרגע הזה נועד בדיוק בשביל ${t} — מה אתה מחכה?`,
+    (t) => `${t}. הזמן חולף בין כה וכה, אז שיהיה עם משמעות.`,
+    (t) => `אולי זה הרגע לשאול: מתי אם לא עכשיו ל${t}?`,
+  ],
+  frayer: [
+    (t) => `תכל'ס, ${t} זה תשואה קטנה שרק מחכה שתיקח אותה.`,
+    (t) => `עסקה פשוטה: ${t} עכשיו, בלי ויכוחים.`,
+    (t) => `אתה משאיר כסף על השולחן אם לא עושה ${t} עכשיו.`,
+  ],
+  neighbor: [
+    (t) => `היי שכן, אני כבר עשיתי הכל היום — אולי גם אתה תספיק ${t}? 😏`,
+    (t) => `רק מציין — ${t} מחכה לך. אני? כבר הספקתי.`,
+    (t) => `${t}, שכן. אל תיתן לי לעקוף אותך גם בזה.`,
+  ],
+};
+
+const DEFAULT_TEMPLATES = REMINDER_TEMPLATES.cynic;
+
+function buildReminderMessage(personality: string, task: string): string {
+  const templates = REMINDER_TEMPLATES[personality] ?? DEFAULT_TEMPLATES;
+  const pick = templates[Math.floor(Math.random() * templates.length)];
+  return pick(task);
+}
+
 Deno.serve(async (_req: Request) => {
   try {
     const nowIso = new Date().toISOString();
 
-    // FIX #9: now also selecting "time" itself — needed as the base for
-    // nextOccurrence() instead of "now" (see FIX #8).
     const { data: dueReminders, error } = await supabase
       .from("reminders")
       .select("id, chat_id, text, type, time")
@@ -102,12 +149,28 @@ Deno.serve(async (_req: Request) => {
       return new Response(JSON.stringify({ ok: true, sent: 0 }), { status: 200 });
     }
 
+    // FIX #11: batch-fetch personalities for all chat_ids involved, so each
+    // reminder can be phrased in the user's chosen style instead of a
+    // one-size-fits-all robotic line.
+    const chatIds = [...new Set(dueReminders.map((r) => r.chat_id))];
+    const { data: usersData } = await supabase
+      .from("users")
+      .select("chat_id, personality")
+      .in("chat_id", chatIds);
+
+    const personalityByChat = new Map<number, string>();
+    for (const u of usersData ?? []) {
+      personalityByChat.set(u.chat_id, u.personality ?? "cynic");
+    }
+
     let sent = 0;
     let failed = 0;
 
     for (const r of dueReminders) {
       try {
-        const delivered = await sendTelegramMessage(r.chat_id, `⏰ תזכורת: ${r.text}`);
+        const personality = personalityByChat.get(r.chat_id) ?? "cynic";
+        const message = buildReminderMessage(personality, r.text);
+        const delivered = await sendTelegramMessage(r.chat_id, message);
 
         if (!delivered) {
           failed++;
