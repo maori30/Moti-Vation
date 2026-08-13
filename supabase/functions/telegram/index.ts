@@ -847,7 +847,8 @@ async function askGemini(
   userMessage: string,
   personalityKey: string,
   context: string,
-  history: HistoryMessage[]
+  history: HistoryMessage[],
+  brainLayers: string[] = []
 ): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const mode = detectConversationMode(userMessage);
@@ -858,6 +859,7 @@ async function askGemini(
   const intentInstruction = intentToneInstruction(intentTone);
 
   const temporalContext = buildTemporalContext(history);
+  const brainBlock = brainLayers.filter((l) => l && l.trim().length > 0).join("\n\n");
   const systemPrompt = `${GLOBAL_LANGUAGE_INSTRUCTIONS}
 
 ${personality.prompt}
@@ -866,6 +868,9 @@ ${personality.prompt}
 
 הקשר זמן: ${temporalContext}
 
+${brainBlock ? `${brainBlock}
+
+` : ""}
 ${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}
 ` : ""}
 כללים קריטיים:
