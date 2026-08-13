@@ -652,7 +652,7 @@ const FEW_SHOT_BY_PERSONALITY: Record<string, { role: "user" | "model"; parts: {
 };
 
 function postProcessReply(text: string): string {
-  let out = text.trim();
+  let out = naturalize(text.trim());
   out = out.replace(/\.{4,}/g, "...");
   out = out.replace(/!{2,}/g, "!");
   out = out.replace(/\?{2,}/g, "?");
