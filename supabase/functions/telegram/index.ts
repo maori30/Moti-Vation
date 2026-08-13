@@ -1504,16 +1504,82 @@ serve(async (req: Request) => {
     } else if ((user.state as string).startsWith("awaiting_reminder_time_")) {
       await handleReminderTime(chatId, text, user);
     } else {
+      // ---- Personality / tone switching on demand -------------
+      const switchReq = detectSwitchRequest(text);
+      if (switchReq?.type === "personality" && PERSONALITIES[switchReq.key]) {
+        if (switchReq.scope === "permanent") {
+          await updateUser(chatId, { personality: switchReq.key, temp_personality: null, temp_personality_until: null });
+          user.personality = switchReq.key;
+        } else {
+          await updateUser(chatId, {
+            temp_personality: switchReq.key,
+            temp_personality_until: new Date(Date.now() + 2 * 3600_000).toISOString(),
+          });
+          user.temp_personality = switchReq.key;
+        }
+      } else if (switchReq?.type === "tone") {
+        await updateUser(chatId, { tone_override: switchReq.tone });
+        user.tone_override = switchReq.tone;
+      }
+
+      // Active personality = temporary one while it lasts, otherwise the saved one.
+      const tempAlive =
+        user.temp_personality &&
+        user.temp_personality_until &&
+        new Date(user.temp_personality_until as string).getTime() > Date.now();
+      const activePersonality = (tempAlive ? user.temp_personality : user.personality) as string;
+
       if (detectDoneKeyword(text)) {
-        const offered = await checkAndOfferCloseReminder(chatId, text, user.personality as string);
+        const offered = await checkAndOfferCloseReminder(chatId, text, activePersonality);
         if (offered) {
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
       }
 
       if (detectReminderIntent(text)) {
+        const hints = parseSmartHints(text);
         const parsed = parseHebrewReminderTime(text, nowInTz());
+
+        // Anchor-based reminder ("לפני שאני יוצא מהבית") with no explicit clock time:
+        // use a remembered habit time, or ask once and remember the answer.
+        if (!parsed && hints.anchor) {
+          const memKey = anchorMemoryKeyFor(hints.anchor);
+          const mems = await fetchMemories(supabase, chatId);
+          const known = memKey ? mems.find((m) => m.mem_key === memKey) : undefined;
+          const knownTime = known?.value.match(/(\d{1,2}):(\d{2})/);
+          if (knownTime) {
+            const base = nowInTz();
+            const lead = hints.leadMinutes ?? 20;
+            let due = buildIsraelTime(Number(knownTime[1]), Number(knownTime[2]), base);
+            due = new Date(due.getTime() - lead * 60_000);
+            if (due.getTime() <= Date.now()) due = new Date(due.getTime() + 24 * 3600_000);
+            const task = text.replace(REMINDER_TRIGGER, "").trim() || "המשימה";
+            await supabase.from("reminders").insert({
+              chat_id: chatId,
+              text: task,
+              type: "once",
+              time: due.toISOString(),
+              active: true,
+              anchor: hints.anchor,
+              lead_minutes: hints.leadMinutes ?? null,
+              confirm_needed: hints.confirmNeeded ?? false,
+            });
+            const label = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(due);
+            await sendMessage(chatId, `סגור — לפי מה שאני יודע עליך, אזכיר לך ב-${label}. אם השעה השתנתה, תגיד לי.`);
+          } else {
+            await updateUser(chatId, { state: "awaiting_reminder_text" });
+            await sendMessage(
+              chatId,
+              `בשמחה, רק חסר לי פרט אחד: ${anchorQuestion(hints.anchor)}\n(תענה בשעה, ואני אזכור את זה להבא)`
+            );
+          }
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+
         if (parsed) {
+          const dueAt = hints.leadMinutes
+            ? new Date(parsed.dueAt.getTime() - hints.leadMinutes * 60_000)
+            : parsed.dueAt;
           const targetHHMM = new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
           const { data: existingReminders } = await supabase
             .from("reminders")
@@ -1538,8 +1604,11 @@ serve(async (req: Request) => {
             chat_id: chatId,
             text: parsed.task,
             type: parsed.type,
-            time: parsed.dueAt.toISOString(),
+            time: dueAt.toISOString(),
             active: true,
+            lead_minutes: hints.leadMinutes ?? null,
+            anchor: hints.anchor ?? null,
+            confirm_needed: hints.confirmNeeded ?? false,
           });
           if (insertError) {
             console.error(`[reminders] insert failed: ${insertError.message}`);
@@ -1547,9 +1616,14 @@ serve(async (req: Request) => {
             return new Response(JSON.stringify({ ok: true }), { status: 200 });
           }
 
-          const timeLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
+          const timeLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(dueAt);
           const typeLabel = parsed.type === "daily" ? "כל יום" : "פעם אחת";
-          await sendMessage(chatId, `✅ קבעתי! אזכיר לך "${parsed.task}" ${typeLabel} ב-${timeLabel}.`);
+          const streakNow = similarityStreak(text, await getHistory(chatId));
+          const ack =
+            streakNow >= 3
+              ? `הבנתי, הבנתי 😄 "${parsed.task}" ${typeLabel} ב-${timeLabel}. הפעם אני באמת מזכיר.`
+              : `✅ קבעתי! אזכיר לך "${parsed.task}" ${typeLabel} ב-${timeLabel}.`;
+          await sendMessage(chatId, hints.confirmNeeded ? `${ack}\nואם לא תסמן שביצעת — אני חוזר אליך.` : ack);
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         } else {
           await sendMessage(
@@ -1561,24 +1635,63 @@ serve(async (req: Request) => {
       }
 
       const tFetch = Date.now();
-      const [activeReminders, history] = await Promise.all([
+      const [activeReminders, history, memories] = await Promise.all([
         supabase
           .from("reminders")
           .select("text, time, type")
           .eq("chat_id", chatId)
           .eq("active", true),
         getHistory(chatId),
+        fetchMemories(supabase, chatId),
       ]);
-      mark("getRemindersAndHistory", tFetch);
+      mark("getContext", tFetch);
 
       const context = activeReminders.data?.length
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
         : "למשתמש אין תזכורות פעילות כרגע.";
 
+      // ---- mood + humor + context layers ---------------------
+      const mode = detectConversationMode(text);
+      const intent = analyzeHebrewIntent(text);
+      const streak = similarityStreak(text, history);
+      const lastMsgAt = user.last_message_at ? new Date(user.last_message_at as string).getTime() : Date.now();
+      const mood: Mood = pickMood(activePersonality, {
+        mode,
+        hourLocal: localHour(),
+        repeatStreak: streak,
+        gapMinutes: Math.max(0, (Date.now() - lastMsgAt) / 60_000),
+        prevMood: (user.mood as string) ?? null,
+      });
+      const humor = humorPolicy({
+        text,
+        mode,
+        tone: intent.tone,
+        intensity: intent.intensity,
+        mood,
+        userHumorLevel: typeof user.humor_level === "number" ? (user.humor_level as number) : 0.5,
+      });
+
+      const brainLayers = [
+        memoryContext(memories),
+        coreferenceInstruction(text, history),
+        moodInstruction(mood, streak),
+        humor.instruction,
+        toneOverrideInstruction(user.tone_override as string | null),
+        followUpNudge(text),
+        "פילטר טבעיות (בדוק את עצמך לפני שליחה): האם זה נשמע כמו הודעת וואטסאפ מבן אדם? אם יצא לך משפט כמו \"בהחלט! אשמח לסייע לך בנושא זה\" — תמחק ותכתוב במקום \"כן, ברור. מה אתה צריך?\".",
+      ];
+
+      updateUser(chatId, {
+        mood,
+        mood_updated_at: new Date().toISOString(),
+        last_message_at: new Date().toISOString(),
+        repeat_streak: streak,
+      }).catch((e) => console.error("[db] mood update failed:", e));
+
       saveMessage(chatId, "user", text).catch((e) => console.error("[db] saveMessage(user) failed:", e));
 
       const tGemini = Date.now();
-      const reply = await askGemini(text, user.personality as string, context, history);
+      const reply = await askGemini(text, activePersonality, context, history, brainLayers);
       mark("gemini", tGemini);
 
       const tSend = Date.now();
@@ -1586,8 +1699,11 @@ serve(async (req: Request) => {
       mark("sendTelegram", tSend);
       saveMessage(chatId, "assistant", reply).catch((e) => console.error("[db] saveMessage(assistant) failed:", e));
 
+      // Memory layer runs after the reply — it decides what is worth keeping.
+      runMemoryPipeline(chatId, text, reply, history, memories).catch(() => {});
+
       timings.total = Date.now() - t0;
-      console.log(`[timing] ${JSON.stringify(timings)}`);
+      console.log(`[timing] ${JSON.stringify(timings)} mood=${moodLabel(mood)} humor=${humor.level} streak=${streak} p=${activePersonality}`);
     }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
