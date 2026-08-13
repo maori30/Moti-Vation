@@ -1476,8 +1476,6 @@ serve(async (req: Request) => {
           .update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null })
           .eq("id", reminderId);
         await sendMessage(chatId, "אוקיי, 15 דקות. אבל אני חוזר, שלא תתבלבל 😏");
-      } else if (data === "__unused_dismiss") {
-        await sendMessage(chatId, "אוקיי, ממשיכים 👍");
       }
 
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
