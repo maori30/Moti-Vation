@@ -949,6 +949,67 @@ async function getOrCreateUser(chatId: number, firstName: string) {
   return newUser;
 }
 
+// --- brain glue ------------------------------------------------
+async function callModelRaw(payload: Record<string, unknown>) {
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) return { ok: false };
+  return await generateContentWithFallback(key, payload as never);
+}
+
+// Runs after the reply is already sent — never blocks the user.
+async function runMemoryPipeline(
+  chatId: number,
+  userText: string,
+  replyText: string,
+  history: HistoryMessage[],
+  known: Memory[]
+) {
+  try {
+    const res = await runExtraction(callModelRaw, { userText, replyText, history, known });
+    await upsertMemories(supabase, chatId, res.memories);
+    await forgetMemories(supabase, chatId, res.forget);
+    await scheduleFollowUps(supabase, chatId, res.followUps);
+    if (res.memories.length || res.followUps.length) {
+      console.log(`[memory] saved=${res.memories.length} forgot=${res.forget.length} followups=${res.followUps.length}`);
+    }
+  } catch (e) {
+    console.error("[memory] pipeline failed:", e instanceof Error ? e.message : String(e));
+  }
+}
+
+// "פעם חמישית שהוא מבקש אותו דבר" detection, so the mood can react.
+function similarityStreak(text: string, history: HistoryMessage[]): number {
+  const words = (s: string) => new Set(s.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+  const cur = words(text);
+  if (cur.size === 0) return 0;
+  let streak = 0;
+  const userMsgs = history.filter((m) => m.role === "user").reverse();
+  for (const m of userMsgs) {
+    const prev = words(m.content);
+    const shared = [...cur].filter((w) => prev.has(w)).length;
+    if (shared / cur.size >= 0.4) streak++;
+    else break;
+  }
+  return streak;
+}
+
+function localHour(): number {
+  return Number(
+    new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hour12: false }).format(new Date())
+  );
+}
+
+async function legacyGetOrCreateUser(chatId: number, firstName: string) {
+  const { data } = await supabase.from("users").select("*").eq("chat_id", chatId).single();
+  if (data) return data;
+  const { data: newUser } = await supabase
+    .from("users")
+    .insert({ chat_id: chatId, first_name: firstName, personality: "cynic", state: "idle" })
+    .select()
+    .single();
+  return newUser;
+}
+
 async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
