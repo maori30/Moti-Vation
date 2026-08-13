@@ -999,17 +999,6 @@ function localHour(): number {
   );
 }
 
-async function legacyGetOrCreateUser(chatId: number, firstName: string) {
-  const { data } = await supabase.from("users").select("*").eq("chat_id", chatId).single();
-  if (data) return data;
-  const { data: newUser } = await supabase
-    .from("users")
-    .insert({ chat_id: chatId, first_name: firstName, personality: "cynic", state: "idle" })
-    .select()
-    .single();
-  return newUser;
-}
-
 async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
