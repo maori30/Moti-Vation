@@ -1499,6 +1499,26 @@ serve(async (req: Request) => {
       await handleListReminders(chatId);
     } else if (text === "/personality") {
       await sendMessage(chatId, "בחר אישיות:", getPersonalityKeyboard());
+    } else if ((user.state as string).startsWith("awaiting_anchor_")) {
+      const anchor = (user.state as string).replace("awaiting_anchor_", "");
+      const m = text.match(/(\d{1,2})[:.]?(\d{2})?/);
+      if (!m) {
+        await sendMessage(chatId, "לא הבנתי את השעה. תכתוב משהו כמו 8:30 או 18:00.");
+      } else {
+        const hh = Number(m[1]);
+        const mm = Number(m[2] ?? "00");
+        const memKey = anchorMemoryKeyFor(anchor);
+        if (memKey) {
+          await upsertMemories(supabase, chatId, [
+            { kind: "habit", mem_key: memKey, value: `${anchorQuestion(anchor).replace("?", "")}: ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`, confidence: 0.9 },
+          ]);
+        }
+        await updateUser(chatId, { state: "chatting" });
+        await sendMessage(
+          chatId,
+          `רשמתי — ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}. מעכשיו אני לא צריך לשאול את זה שוב. תגיד לי מה להזכיר לך ואני מסדר את הזמן לבד.`
+        );
+      }
     } else if (user.state === "awaiting_reminder_text") {
       await handleReminderText(chatId, text);
     } else if ((user.state as string).startsWith("awaiting_reminder_time_")) {
