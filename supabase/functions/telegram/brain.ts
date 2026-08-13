@@ -126,7 +126,7 @@ const MOOD_BEHAVIOR: Record<Mood, string> = {
 // Each personality drifts inside its own emotional range.
 const PERSONALITY_MOODS: Record<string, Mood[]> = {
   coach:        ["energetic", "serious", "warm", "calm", "mildly_frustrated"],
-  cynic:        ["funny", "mildly_frustrated", "deadpanish" as Mood, "calm", "busy"].filter(Boolean) as Mood[],
+  cynic:        ["funny", "mildly_frustrated", "calm", "busy"],
   friend:       ["warm", "funny", "calm", "energetic"],
   sergeant:     ["energetic", "mildly_frustrated", "busy", "serious"],
   therapist:    ["calm", "warm", "serious"],
