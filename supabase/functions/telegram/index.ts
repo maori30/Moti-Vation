@@ -1469,6 +1469,15 @@ serve(async (req: Request) => {
         await sendMessage(chatId, reply);
       } else if (data === "dismiss_offer") {
         await sendMessage(chatId, "אוקיי, ממשיכים 👍");
+      } else if (data.startsWith("snooze_")) {
+        const reminderId = data.replace("snooze_", "");
+        await supabase
+          .from("reminders")
+          .update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null })
+          .eq("id", reminderId);
+        await sendMessage(chatId, "אוקיי, 15 דקות. אבל אני חוזר, שלא תתבלבל 😏");
+      } else if (data === "__unused_dismiss") {
+        await sendMessage(chatId, "אוקיי, ממשיכים 👍");
       }
 
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
