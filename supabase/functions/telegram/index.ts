@@ -1077,7 +1077,7 @@ async function handleDiag(chatId: number) {
   lines.push("<b>שגיאות אחרונות:</b>");
   const dbErrors = await fetchRecentErrorsFromDb();
   const merged = [...RECENT_ERRORS, ...dbErrors]
-    .sort((a, b) => (a.at < b.at ? 1 : -1))
+    .sort((a, b) => ((a.at ?? "") < (b.at ?? "") ? 1 : -1))
     .slice(0, 5);
   if (merged.length === 0) {
     lines.push("(אין)");
