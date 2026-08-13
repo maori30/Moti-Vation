@@ -362,7 +362,7 @@ async function generateContentWithFallback(
   return { ok: false };
 }
 
-type DiagError = { at: string; status?: number; code?: string; message: string };
+type DiagError = { at?: string; status?: number; code?: string; message: string };
 const RECENT_ERRORS: DiagError[] = [];
 function recordError(e: DiagError) {
   const entry = { ...e, at: new Date().toISOString() };
