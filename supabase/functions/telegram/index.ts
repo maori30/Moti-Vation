@@ -1506,6 +1506,28 @@ serve(async (req: Request) => {
       await handleListReminders(chatId);
     } else if (text === "/personality") {
       await sendMessage(chatId, "בחר אישיות:", getPersonalityKeyboard());
+    } else if (text === "/memory" || text === "/זיכרון") {
+      const mems = await fetchMemories(supabase, chatId);
+      if (mems.length === 0) {
+        await sendMessage(chatId, "עדיין לא אספתי עליך כלום. תספר לי משהו ואני אזכור את מה ששווה לזכור.");
+      } else {
+        const lines = mems.map((m) => `• ${m.value}`).join("\n");
+        await sendMessage(chatId, `מה שאני זוכר עליך:\n${lines}\n\nרוצה שאשכח משהו? שלח /forget ואת המילה.`);
+      }
+    } else if (text.startsWith("/forget")) {
+      const term = text.replace("/forget", "").trim();
+      const mems = await fetchMemories(supabase, chatId);
+      const targets = term
+        ? mems.filter((m) => m.value.includes(term) || m.mem_key.includes(term)).map((m) => m.mem_key)
+        : [];
+      if (!term) {
+        await sendMessage(chatId, "מה לשכוח? לדוגמה: /forget אימון");
+      } else if (targets.length === 0) {
+        await sendMessage(chatId, "לא מצאתי כזה דבר בזיכרון.");
+      } else {
+        await forgetMemories(supabase, chatId, targets);
+        await sendMessage(chatId, `נמחק מהזיכרון (${targets.length}). לא היה ולא נברא.`);
+      }
     } else if ((user.state as string).startsWith("awaiting_anchor_")) {
       const anchor = (user.state as string).replace("awaiting_anchor_", "");
       const m = text.match(/(\d{1,2})[:.]?(\d{2})?/);
