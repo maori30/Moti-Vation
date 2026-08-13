@@ -1587,7 +1587,7 @@ serve(async (req: Request) => {
             const label = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(due);
             await sendMessage(chatId, `סגור — לפי מה שאני יודע עליך, אזכיר לך ב-${label}. אם השעה השתנתה, תגיד לי.`);
           } else {
-            await updateUser(chatId, { state: "awaiting_reminder_text" });
+            await updateUser(chatId, { state: `awaiting_anchor_${hints.anchor}` });
             await sendMessage(
               chatId,
               `בשמחה, רק חסר לי פרט אחד: ${anchorQuestion(hints.anchor)}\n(תענה בשעה, ואני אזכור את זה להבא)`
