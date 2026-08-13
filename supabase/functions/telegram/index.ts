@@ -1083,7 +1083,7 @@ async function handleDiag(chatId: number) {
     lines.push("(אין)");
   } else {
     for (const e of merged) {
-      const when = e.at.replace("T", " ").slice(0, 16);
+      const when = (e.at ?? "").replace("T", " ").slice(0, 16);
       const tag = [e.status, e.code].filter(Boolean).join(" ");
       lines.push(`• ${when} ${tag ? `[${tag}] ` : ""}${e.message.replace(/[<>&]/g, "").slice(0, 180)}`);
     }
