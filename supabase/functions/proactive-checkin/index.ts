@@ -29,6 +29,45 @@ const TOPICS: { keywords: RegExp; prompts: string[] }[] = [
 const GENERIC_PROMPTS = ["היי, מה נשמע? יש משהו שאתה דוחה כבר יותר מדי זמן? 👀", "לא שמעתי ממך כבר יומיים... נעלמת, או שפשוט אין לך תזכורות דחופות?", "בדיקת שפיות: אתה עדיין בחיים? תגיד לי שלא שכחת גם אותי 😂", "רגע של כנות — יש עוד דבר אחד שאתה דוחה שלא סיפרת לי עליו?"];
 function pickRandom<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
 
+// Follow-ups the bot promised itself to come back to ("נו, איך היה המבחן?").
+async function sendDueFollowUps(): Promise<number> {
+  const { data, error } = await supabase
+    .from("follow_ups")
+    .select("id, chat_id, question")
+    .is("sent_at", null)
+    .eq("cancelled", false)
+    .lte("due_at", new Date().toISOString())
+    .limit(20);
+  if (error) { console.error("[proactive] follow_ups query failed:", error.message); return 0; }
+  let sent = 0;
+  for (const f of data ?? []) {
+    if (await sendTelegramMessage(f.chat_id, f.question)) {
+      await supabase.from("follow_ups").update({ sent_at: new Date().toISOString() }).eq("id", f.id);
+      sent++;
+    }
+  }
+  return sent;
+}
+
+// Memory-based nudge: bring back an old project/goal the user mentioned.
+async function findMemoryPrompt(chatId: number): Promise<string | null> {
+  const { data } = await supabase
+    .from("user_memories")
+    .select("kind, value, created_at")
+    .eq("chat_id", chatId)
+    .in("kind", ["project", "request"])
+    .order("created_at", { ascending: true })
+    .limit(5);
+  const old = (data ?? []).filter((m) => Date.now() - new Date(m.created_at).getTime() > 4 * 24 * 3600_000);
+  if (old.length === 0) return null;
+  const pick = pickRandom(old);
+  return pickRandom([
+    `רגע, לפני כמה זמן אמרת: "${pick.value}". מה נסגר עם זה?`,
+    `זכור לי ש"${pick.value}"? נו. התקדמת, או שזה בקטגוריית "מחר"? 😏`,
+    `סתם מזכיר בשקט: "${pick.value}". עדיין רלוונטי?`,
+  ]);
+}
+
 async function findStaleTopicPrompt(chatId: number): Promise<string | null> {
   const { data: recentMessages } = await supabase.from("messages").select("content, role, created_at").eq("chat_id", chatId).eq("role", "user").order("created_at", { ascending: false }).limit(30);
   if (!recentMessages?.length) return null;
@@ -41,15 +80,21 @@ async function findStaleTopicPrompt(chatId: number): Promise<string | null> {
 Deno.serve(async (_req: Request) => {
   try {
     if (isQuietHoursNow()) return new Response(JSON.stringify({ ok: true, skipped: "quiet_hours" }), { status: 200 });
+    const followUpsSent = await sendDueFollowUps();
     const { data: users, error } = await supabase.from("users").select("chat_id, last_proactive_at");
     if (error) return new Response(JSON.stringify({ ok: false, error: error.message }), { status: 200 });
     let sent = 0; const now = new Date();
     for (const u of users ?? []) {
       if (u.last_proactive_at && (now.getTime() - new Date(u.last_proactive_at).getTime()) / 3600000 < 20) continue;
-      const topicPrompt = await findStaleTopicPrompt(u.chat_id);
-      const prompt = topicPrompt && Math.random() < 0.7 ? topicPrompt : pickRandom(GENERIC_PROMPTS);
+      const memoryPrompt = await findMemoryPrompt(u.chat_id);
+      const topicPrompt = memoryPrompt ? null : await findStaleTopicPrompt(u.chat_id);
+      const prompt = memoryPrompt
+        ? memoryPrompt
+        : topicPrompt && Math.random() < 0.7
+          ? topicPrompt
+          : pickRandom(GENERIC_PROMPTS);
       if (await sendTelegramMessage(u.chat_id, prompt)) { await supabase.from("users").update({ last_proactive_at: now.toISOString() }).eq("chat_id", u.chat_id); sent++; }
     }
-    return new Response(JSON.stringify({ ok: true, sent }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, sent, followUpsSent }), { status: 200 });
   } catch (err) { console.error("[proactive-checkin] fatal:", err); return new Response(JSON.stringify({ ok: false }), { status: 200 }); }
 });
