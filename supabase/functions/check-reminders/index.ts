@@ -6,12 +6,14 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-async function sendTelegramMessage(chatId: number, text: string): Promise<boolean> {
+async function sendTelegramMessage(chatId: number, text: string, keyboard?: object): Promise<boolean> {
   try {
+    const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
+    if (keyboard) body.reply_markup = keyboard;
     const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const errText = await res.text();
@@ -136,7 +138,7 @@ Deno.serve(async (_req: Request) => {
 
     const { data: dueReminders, error } = await supabase
       .from("reminders")
-      .select("id, chat_id, text, type, time")
+      .select("id, chat_id, text, type, time, confirm_needed, nudge_sent_at")
       .eq("active", true)
       .lte("time", nowIso);
 
@@ -169,15 +171,35 @@ Deno.serve(async (_req: Request) => {
     for (const r of dueReminders) {
       try {
         const personality = personalityByChat.get(r.chat_id) ?? "cynic";
-        const message = buildReminderMessage(personality, r.text);
-        const delivered = await sendTelegramMessage(r.chat_id, message);
+        const needsConfirm = r.confirm_needed === true;
+        const isSecondNudge = needsConfirm && !!r.nudge_sent_at;
+        const base = buildReminderMessage(personality, r.text);
+        const message = isSecondNudge ? `שוב אני. לא סימנת שביצעת — ${base}` : base;
+        const keyboard = needsConfirm
+          ? {
+              inline_keyboard: [[
+                { text: "✅ סיימתי", callback_data: `done_reminder_${r.id}` },
+                { text: "⏰ עוד 15 דק'", callback_data: `snooze_${r.id}` },
+              ]],
+            }
+          : undefined;
+        const delivered = await sendTelegramMessage(r.chat_id, message, keyboard);
 
         if (!delivered) {
           failed++;
           continue;
         }
 
-        if (r.type === "once") {
+        if (r.type === "once" && needsConfirm && !isSecondNudge) {
+          // Nudge again in 20 minutes unless the user confirms in the meantime.
+          await supabase
+            .from("reminders")
+            .update({
+              nudge_sent_at: new Date().toISOString(),
+              time: new Date(Date.now() + 20 * 60_000).toISOString(),
+            })
+            .eq("id", r.id);
+        } else if (r.type === "once") {
           await supabase.from("reminders").update({ active: false }).eq("id", r.id);
         } else {
           const daysToAdd = r.type === "weekly" ? 7 : 1;
