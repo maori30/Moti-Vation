@@ -77,6 +77,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { name: "google-site-verification", content: "Qg8egTHrV4FTjE4kiEVrNWlcK2prSV9xEMZv_Qx1RY4" },
       { title: "מוטי – בוט המוטיבציה שיושב לך על הווריד" },
       {
         name: "description",
