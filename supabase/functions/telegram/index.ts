@@ -22,6 +22,28 @@ import {
   type Memory,
   type Mood,
 } from "./brain.ts";
+import {
+  blendInstruction,
+  currentBlend,
+  decisionEngine,
+  detectGoalStatement,
+  evolveBlend,
+  fetchGoals,
+  fetchProfile,
+  goalContext,
+  isLaugh,
+  isShortReply,
+  learnFromBehavior,
+  linkedReasoning,
+  logBehavior,
+  pacing as computePacing,
+  profileContext,
+  runProfileExtraction,
+  saveProfile,
+  selfCorrectionLayer,
+  upsertGoals,
+  type Profile,
+} from "./profile.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
