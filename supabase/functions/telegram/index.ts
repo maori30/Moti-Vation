@@ -1480,7 +1480,7 @@ serve(async (req: Request) => {
         const reminderId = data.replace("done_reminder_", "");
         const { data: doneReminder } = await supabase
           .from("reminders")
-          .select("id, chat_id, text, type")
+          .select("id, chat_id, text, type, time")
           .eq("id", reminderId)
           .single();
 
