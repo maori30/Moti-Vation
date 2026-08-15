@@ -1544,12 +1544,25 @@ serve(async (req: Request) => {
     } else if (text === "/personality") {
       await sendMessage(chatId, "בחר אישיות:", getPersonalityKeyboard());
     } else if (text === "/memory" || text === "/זיכרון") {
+      const prof = await fetchProfile(supabase, chatId);
+      const openGoals = await fetchGoals(supabase, chatId);
       const mems = await fetchMemories(supabase, chatId);
       if (mems.length === 0) {
         await sendMessage(chatId, "עדיין לא אספתי עליך כלום. תספר לי משהו ואני אזכור את מה ששווה לזכור.");
       } else {
         const lines = mems.map((m) => `• ${m.value}`).join("\n");
-        await sendMessage(chatId, `מה שאני זוכר עליך:\n${lines}\n\nרוצה שאשכח משהו? שלח /forget ואת המילה.`);
+        const profLines = [
+          prof.topics.length ? `נושאים: ${prof.topics.join(", ")}` : "",
+          prof.habits.length ? `הרגלים: ${prof.habits.join(", ")}` : "",
+          prof.procrastinates.length ? `נוטה לדחות: ${prof.procrastinates.join(", ")}` : "",
+          prof.active_hours.length ? `שעות פעילות: ${prof.active_hours.map((h) => `${h}:00`).join(", ")}` : "",
+          `רמת הומור שהתאמתי לך: ${Math.round((prof.humor_level ?? 0.5) * 100)}%`,
+          openGoals.length ? `מטרות פתוחות: ${openGoals.map((g) => g.title).join(", ")}` : "",
+        ].filter(Boolean).join("\n");
+        await sendMessage(
+          chatId,
+          `מה שאני זוכר עליך:\n${lines}\n\n📊 פרופיל:\n${profLines}\n\nרוצה שאשכח משהו? שלח /forget ואת המילה.`
+        );
       }
     } else if (text.startsWith("/forget")) {
       const term = text.replace("/forget", "").trim();
