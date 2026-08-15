@@ -1025,6 +1025,18 @@ async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
 
+// Hour-of-day label for behaviour learning ("do 09:00 reminders work on him?").
+function reminderHour(time: unknown): string | null {
+  if (typeof time !== "string" || !time) return null;
+  const hhmm = time.match(/^(\d{1,2}):(\d{2})$/);
+  if (hhmm) return String(Number(hhmm[1]));
+  const d = new Date(time);
+  if (isNaN(d.getTime())) return null;
+  return String(
+    Number(new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hour12: false }).format(d))
+  );
+}
+
 async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: string; message?: string; model?: string }> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
