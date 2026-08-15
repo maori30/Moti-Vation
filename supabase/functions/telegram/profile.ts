@@ -383,7 +383,7 @@ export function evolveBlend(
   blend: Record<string, number>,
   signals: { laughed: boolean; serious: boolean; shortMode: boolean }
 ): Record<string, number> {
-  const next = { core: 0, friendly: 0, serious: 0, silly: 0, ...blend };
+  const next: Record<string, number> = { core: 0, friendly: 0, serious: 0, silly: 0, ...blend };
   const step = 0.02;
   if (signals.laughed) {
     next.silly += step;
