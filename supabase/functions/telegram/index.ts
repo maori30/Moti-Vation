@@ -1477,6 +1477,7 @@ serve(async (req: Request) => {
             await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
           }
           await logCompletion(doneReminder);
+          await logBehavior(supabase, chatId, "reminder_done", { hour: reminderHour(doneReminder.time) });
         } else {
           await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
         }
@@ -1493,6 +1494,8 @@ serve(async (req: Request) => {
         await sendMessage(chatId, "אוקיי, ממשיכים 👍");
       } else if (data.startsWith("snooze_")) {
         const reminderId = data.replace("snooze_", "");
+        const { data: snoozed } = await supabase.from("reminders").select("time").eq("id", reminderId).maybeSingle();
+        await logBehavior(supabase, chatId, "reminder_snoozed", { hour: reminderHour(snoozed?.time) });
         await supabase
           .from("reminders")
           .update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null })
