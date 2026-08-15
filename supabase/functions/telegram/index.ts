@@ -1706,7 +1706,7 @@ serve(async (req: Request) => {
       }
 
       const tFetch = Date.now();
-      const [activeReminders, history, memories] = await Promise.all([
+      const [activeReminders, history, memories, profile, goals] = await Promise.all([
         supabase
           .from("reminders")
           .select("text, time, type")
@@ -1714,8 +1714,52 @@ serve(async (req: Request) => {
           .eq("active", true),
         getHistory(chatId),
         fetchMemories(supabase, chatId),
+        fetchProfile(supabase, chatId),
+        fetchGoals(supabase, chatId),
       ]);
       mark("getContext", tFetch);
+
+      const lastBotReply =
+        [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+      const pace = computePacing(text, lastBotReply, profile);
+
+      // Behaviour signals (learning happens after the reply, never blocks).
+      const behaviourAfter = async (replyText: string) => {
+        await logBehavior(supabase, chatId, "message", { len: text.length });
+        if (isLaugh(text)) await logBehavior(supabase, chatId, "laughed", {});
+        if (isShortReply(text)) await logBehavior(supabase, chatId, "short_reply", {});
+        if (isShortReply(text) && lastBotReply.length > 180)
+          await logBehavior(supabase, chatId, "ignored_long", {});
+        await learnFromBehavior(supabase, chatId, profile);
+        const blendNext = evolveBlend(currentBlend(profile, activePersonality), {
+          laughed: isLaugh(text),
+          serious: /דחוף|רציני|לא מצחיק|באמת/.test(text),
+          shortMode: pace.kind !== "normal",
+        });
+        await saveProfile(supabase, chatId, {
+          blend: { ...(profile.blend ?? {}), [activePersonality]: blendNext } as Profile["blend"],
+        });
+        if (pace.kind === "normal") {
+          const res = await runProfileExtraction(callModelRaw, {
+            userText: text,
+            replyText,
+            history,
+            profile,
+          });
+          if (Object.keys(res.patch).length) await saveProfile(supabase, chatId, res.patch);
+          await upsertGoals(supabase, chatId, res.goals);
+        }
+      };
+
+      // 4. Knowing when NOT to open a conversation: micro-reply, no model call.
+      if (pace.instantReply) {
+        await sendMessage(chatId, pace.instantReply);
+        saveMessage(chatId, "user", text).catch(() => {});
+        saveMessage(chatId, "assistant", pace.instantReply).catch(() => {});
+        updateUser(chatId, { last_message_at: new Date().toISOString() }).catch(() => {});
+        behaviourAfter(pace.instantReply).catch(() => {});
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
 
       const context = activeReminders.data?.length
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
@@ -1739,16 +1783,38 @@ serve(async (req: Request) => {
         tone: intent.tone,
         intensity: intent.intensity,
         mood,
-        userHumorLevel: typeof user.humor_level === "number" ? (user.humor_level as number) : 0.5,
+        userHumorLevel: profile.humor_level ?? (typeof user.humor_level === "number" ? (user.humor_level as number) : 0.5),
+      });
+
+      const decision = decisionEngine({
+        text,
+        pacing: pace,
+        hasMemory: memories.length > 0,
+        hasGoals: goals.length > 0,
+        humorLevel: profile.humor_level ?? 0.5,
+        mood: moodLabel(mood),
       });
 
       const brainLayers = [
         memoryContext(memories),
+        profileContext(profile),
+        goalContext(goals),
+        blendInstruction(
+          PERSONALITIES[activePersonality]?.name ?? "מוטי",
+          currentBlend(profile, activePersonality)
+        ),
         coreferenceInstruction(text, history),
         moodInstruction(mood, streak),
         humor.instruction,
         toneOverrideInstruction(user.tone_override as string | null),
         followUpNudge(text),
+        linkedReasoning(text, memories, goals, profile),
+        selfCorrectionLayer(text, memories, goals),
+        pace.instruction,
+        detectGoalStatement(text)
+          ? "המשתמש בדיוק הצהיר על מטרה ארוכת טווח. תאשר אותה בטון שלך במשפט אחד, ואם חסר דדליין — תשאל עד מתי."
+          : "",
+        decision.layer,
         "פילטר טבעיות (בדוק את עצמך לפני שליחה): האם זה נשמע כמו הודעת וואטסאפ מבן אדם? אם יצא לך משפט כמו \"בהחלט! אשמח לסייע לך בנושא זה\" — תמחק ותכתוב במקום \"כן, ברור. מה אתה צריך?\".",
       ];
 
@@ -1772,6 +1838,7 @@ serve(async (req: Request) => {
 
       // Memory layer runs after the reply — it decides what is worth keeping.
       runMemoryPipeline(chatId, text, reply, history, memories).catch(() => {});
+      behaviourAfter(reply).catch(() => {});
 
       timings.total = Date.now() - t0;
       console.log(`[timing] ${JSON.stringify(timings)} mood=${moodLabel(mood)} humor=${humor.level} streak=${streak} p=${activePersonality}`);
