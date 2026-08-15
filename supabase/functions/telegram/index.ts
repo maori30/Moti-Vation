@@ -22,6 +22,28 @@ import {
   type Memory,
   type Mood,
 } from "./brain.ts";
+import {
+  blendInstruction,
+  currentBlend,
+  decisionEngine,
+  detectGoalStatement,
+  evolveBlend,
+  fetchGoals,
+  fetchProfile,
+  goalContext,
+  isLaugh,
+  isShortReply,
+  learnFromBehavior,
+  linkedReasoning,
+  logBehavior,
+  pacing as computePacing,
+  profileContext,
+  runProfileExtraction,
+  saveProfile,
+  selfCorrectionLayer,
+  upsertGoals,
+  type Profile,
+} from "./profile.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -1003,6 +1025,18 @@ async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
 
+// Hour-of-day label for behaviour learning ("do 09:00 reminders work on him?").
+function reminderHour(time: unknown): string | null {
+  if (typeof time !== "string" || !time) return null;
+  const hhmm = time.match(/^(\d{1,2}):(\d{2})$/);
+  if (hhmm) return String(Number(hhmm[1]));
+  const d = new Date(time);
+  if (isNaN(d.getTime())) return null;
+  return String(
+    Number(new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hour12: false }).format(d))
+  );
+}
+
 async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: string; message?: string; model?: string }> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
@@ -1446,7 +1480,7 @@ serve(async (req: Request) => {
         const reminderId = data.replace("done_reminder_", "");
         const { data: doneReminder } = await supabase
           .from("reminders")
-          .select("id, chat_id, text, type")
+          .select("id, chat_id, text, type, time")
           .eq("id", reminderId)
           .single();
 
@@ -1455,6 +1489,7 @@ serve(async (req: Request) => {
             await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
           }
           await logCompletion(doneReminder);
+          await logBehavior(supabase, chatId, "reminder_done", { hour: reminderHour(doneReminder.time) });
         } else {
           await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
         }
@@ -1471,6 +1506,8 @@ serve(async (req: Request) => {
         await sendMessage(chatId, "אוקיי, ממשיכים 👍");
       } else if (data.startsWith("snooze_")) {
         const reminderId = data.replace("snooze_", "");
+        const { data: snoozed } = await supabase.from("reminders").select("time").eq("id", reminderId).maybeSingle();
+        await logBehavior(supabase, chatId, "reminder_snoozed", { hour: reminderHour(snoozed?.time) });
         await supabase
           .from("reminders")
           .update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null })
@@ -1507,12 +1544,25 @@ serve(async (req: Request) => {
     } else if (text === "/personality") {
       await sendMessage(chatId, "בחר אישיות:", getPersonalityKeyboard());
     } else if (text === "/memory" || text === "/זיכרון") {
+      const prof = await fetchProfile(supabase, chatId);
+      const openGoals = await fetchGoals(supabase, chatId);
       const mems = await fetchMemories(supabase, chatId);
       if (mems.length === 0) {
         await sendMessage(chatId, "עדיין לא אספתי עליך כלום. תספר לי משהו ואני אזכור את מה ששווה לזכור.");
       } else {
         const lines = mems.map((m) => `• ${m.value}`).join("\n");
-        await sendMessage(chatId, `מה שאני זוכר עליך:\n${lines}\n\nרוצה שאשכח משהו? שלח /forget ואת המילה.`);
+        const profLines = [
+          prof.topics.length ? `נושאים: ${prof.topics.join(", ")}` : "",
+          prof.habits.length ? `הרגלים: ${prof.habits.join(", ")}` : "",
+          prof.procrastinates.length ? `נוטה לדחות: ${prof.procrastinates.join(", ")}` : "",
+          prof.active_hours.length ? `שעות פעילות: ${prof.active_hours.map((h) => `${h}:00`).join(", ")}` : "",
+          `רמת הומור שהתאמתי לך: ${Math.round((prof.humor_level ?? 0.5) * 100)}%`,
+          openGoals.length ? `מטרות פתוחות: ${openGoals.map((g) => g.title).join(", ")}` : "",
+        ].filter(Boolean).join("\n");
+        await sendMessage(
+          chatId,
+          `מה שאני זוכר עליך:\n${lines}\n\n📊 פרופיל:\n${profLines}\n\nרוצה שאשכח משהו? שלח /forget ואת המילה.`
+        );
       }
     } else if (text.startsWith("/forget")) {
       const term = text.replace("/forget", "").trim();
@@ -1684,7 +1734,7 @@ serve(async (req: Request) => {
       }
 
       const tFetch = Date.now();
-      const [activeReminders, history, memories] = await Promise.all([
+      const [activeReminders, history, memories, profile, goals] = await Promise.all([
         supabase
           .from("reminders")
           .select("text, time, type")
@@ -1692,8 +1742,52 @@ serve(async (req: Request) => {
           .eq("active", true),
         getHistory(chatId),
         fetchMemories(supabase, chatId),
+        fetchProfile(supabase, chatId),
+        fetchGoals(supabase, chatId),
       ]);
       mark("getContext", tFetch);
+
+      const lastBotReply =
+        [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+      const pace = computePacing(text, lastBotReply, profile);
+
+      // Behaviour signals (learning happens after the reply, never blocks).
+      const behaviourAfter = async (replyText: string) => {
+        await logBehavior(supabase, chatId, "message", { len: text.length });
+        if (isLaugh(text)) await logBehavior(supabase, chatId, "laughed", {});
+        if (isShortReply(text)) await logBehavior(supabase, chatId, "short_reply", {});
+        if (isShortReply(text) && lastBotReply.length > 180)
+          await logBehavior(supabase, chatId, "ignored_long", {});
+        await learnFromBehavior(supabase, chatId, profile);
+        const blendNext = evolveBlend(currentBlend(profile, activePersonality), {
+          laughed: isLaugh(text),
+          serious: /דחוף|רציני|לא מצחיק|באמת/.test(text),
+          shortMode: pace.kind !== "normal",
+        });
+        await saveProfile(supabase, chatId, {
+          blend: { ...(profile.blend ?? {}), [activePersonality]: blendNext } as Profile["blend"],
+        });
+        if (pace.kind === "normal") {
+          const res = await runProfileExtraction(callModelRaw, {
+            userText: text,
+            replyText,
+            history,
+            profile,
+          });
+          if (Object.keys(res.patch).length) await saveProfile(supabase, chatId, res.patch);
+          await upsertGoals(supabase, chatId, res.goals);
+        }
+      };
+
+      // 4. Knowing when NOT to open a conversation: micro-reply, no model call.
+      if (pace.instantReply) {
+        await sendMessage(chatId, pace.instantReply);
+        saveMessage(chatId, "user", text).catch(() => {});
+        saveMessage(chatId, "assistant", pace.instantReply).catch(() => {});
+        updateUser(chatId, { last_message_at: new Date().toISOString() }).catch(() => {});
+        behaviourAfter(pace.instantReply).catch(() => {});
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
 
       const context = activeReminders.data?.length
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
@@ -1717,16 +1811,38 @@ serve(async (req: Request) => {
         tone: intent.tone,
         intensity: intent.intensity,
         mood,
-        userHumorLevel: typeof user.humor_level === "number" ? (user.humor_level as number) : 0.5,
+        userHumorLevel: profile.humor_level ?? (typeof user.humor_level === "number" ? (user.humor_level as number) : 0.5),
+      });
+
+      const decision = decisionEngine({
+        text,
+        pacing: pace,
+        hasMemory: memories.length > 0,
+        hasGoals: goals.length > 0,
+        humorLevel: profile.humor_level ?? 0.5,
+        mood: moodLabel(mood),
       });
 
       const brainLayers = [
         memoryContext(memories),
+        profileContext(profile),
+        goalContext(goals),
+        blendInstruction(
+          PERSONALITIES[activePersonality]?.name ?? "מוטי",
+          currentBlend(profile, activePersonality)
+        ),
         coreferenceInstruction(text, history),
         moodInstruction(mood, streak),
         humor.instruction,
         toneOverrideInstruction(user.tone_override as string | null),
         followUpNudge(text),
+        linkedReasoning(text, memories, goals, profile),
+        selfCorrectionLayer(text, memories, goals),
+        pace.instruction,
+        detectGoalStatement(text)
+          ? "המשתמש בדיוק הצהיר על מטרה ארוכת טווח. תאשר אותה בטון שלך במשפט אחד, ואם חסר דדליין — תשאל עד מתי."
+          : "",
+        decision.layer,
         "פילטר טבעיות (בדוק את עצמך לפני שליחה): האם זה נשמע כמו הודעת וואטסאפ מבן אדם? אם יצא לך משפט כמו \"בהחלט! אשמח לסייע לך בנושא זה\" — תמחק ותכתוב במקום \"כן, ברור. מה אתה צריך?\".",
       ];
 
@@ -1750,6 +1866,7 @@ serve(async (req: Request) => {
 
       // Memory layer runs after the reply — it decides what is worth keeping.
       runMemoryPipeline(chatId, text, reply, history, memories).catch(() => {});
+      behaviourAfter(reply).catch(() => {});
 
       timings.total = Date.now() - t0;
       console.log(`[timing] ${JSON.stringify(timings)} mood=${moodLabel(mood)} humor=${humor.level} streak=${streak} p=${activePersonality}`);
