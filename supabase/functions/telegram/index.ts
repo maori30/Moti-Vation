@@ -44,6 +44,29 @@ import {
   upsertGoals,
   type Profile,
 } from "./profile.ts";
+import {
+  antiRepetitionInstruction,
+  bumpInsideJokes,
+  confidenceContext,
+  detectDeepMode,
+  deepModeInstruction,
+  eventContext,
+  fetchEvents,
+  fetchInsideJokes,
+  fetchRecentPhrases,
+  humanityCheck,
+  implicitIntentLayer,
+  insideJokeContext,
+  isRepetitive,
+  rankMemories,
+  rememberPhrase,
+  rewriteForHumanity,
+  rollSurprise,
+  runAwarenessExtraction,
+  runForgettingEngine,
+  surpriseInstruction,
+  upsertEvents,
+} from "./awareness.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -1000,6 +1023,25 @@ async function runMemoryPipeline(
 }
 
 // "פעם חמישית שהוא מבקש אותו דבר" detection, so the mood can react.
+async function runAwarenessPipeline(
+  chatId: number,
+  userText: string,
+  replyText: string,
+  history: HistoryMessage[]
+) {
+  try {
+    await runForgettingEngine(supabase, chatId);
+    const res = await runAwarenessExtraction(callModelRaw, { userText, replyText, history });
+    await upsertEvents(supabase, chatId, res.events);
+    await bumpInsideJokes(supabase, chatId, res.jokes);
+    if (res.events.length || res.jokes.length) {
+      console.log(`[awareness] events=${res.events.length} jokes=${res.jokes.length}`);
+    }
+  } catch (e) {
+    console.error("[awareness] pipeline failed:", e instanceof Error ? e.message : String(e));
+  }
+}
+
 function similarityStreak(text: string, history: HistoryMessage[]): number {
   const words = (s: string) => new Set(s.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
   const cur = words(text);
@@ -1734,7 +1776,7 @@ serve(async (req: Request) => {
       }
 
       const tFetch = Date.now();
-      const [activeReminders, history, memories, profile, goals] = await Promise.all([
+      const [activeReminders, history, memoriesRaw, profile, goals, events, jokes, recentPhrases] = await Promise.all([
         supabase
           .from("reminders")
           .select("text, time, type")
@@ -1744,8 +1786,12 @@ serve(async (req: Request) => {
         fetchMemories(supabase, chatId),
         fetchProfile(supabase, chatId),
         fetchGoals(supabase, chatId),
+        fetchEvents(supabase, chatId),
+        fetchInsideJokes(supabase, chatId),
+        fetchRecentPhrases(supabase, chatId),
       ]);
       mark("getContext", tFetch);
+      const memories = rankMemories(memoriesRaw);
 
       const lastBotReply =
         [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
@@ -1823,8 +1869,25 @@ serve(async (req: Request) => {
         mood: moodLabel(mood),
       });
 
+      // 8) deep conversation mode — the bot notices the talk got real.
+      const deepUntil = user.deep_mode_until ? new Date(user.deep_mode_until as string).getTime() : 0;
+      const deepNow = detectDeepMode(text, history);
+      const deepMode = deepNow.deep || deepUntil > Date.now();
+      const deepTopic = deepNow.topic ?? ((user.deep_topic as string) ?? null);
+
+      // 6) surprise engine — material it *may* bring up, sometimes.
+      const surpriseMaterial = [
+        ...events.map((e) => e.title),
+        ...goals.map((g) => g.title),
+        ...memories.filter((m) => m.kind === "project" || m.kind === "request").map((m) => m.value),
+      ].filter(Boolean);
+      const surprise = rollSurprise(surpriseMaterial.length > 0, deepMode);
+
       const brainLayers = [
         memoryContext(memories),
+        confidenceContext(memories),
+        eventContext(events),
+        insideJokeContext(jokes),
         profileContext(profile),
         goalContext(goals),
         blendInstruction(
@@ -1832,18 +1895,25 @@ serve(async (req: Request) => {
           currentBlend(profile, activePersonality)
         ),
         coreferenceInstruction(text, history),
+        implicitIntentLayer(text, {
+          events,
+          goals,
+          reminders: (activeReminders.data ?? []).map((r: { text: string }) => r.text),
+        }),
         moodInstruction(mood, streak),
         humor.instruction,
         toneOverrideInstruction(user.tone_override as string | null),
         followUpNudge(text),
         linkedReasoning(text, memories, goals, profile),
         selfCorrectionLayer(text, memories, goals),
-        pace.instruction,
+        deepMode ? deepModeInstruction(deepTopic) : pace.instruction,
+        deepMode ? "" : surpriseInstruction(surprise, surpriseMaterial),
+        antiRepetitionInstruction(recentPhrases),
         detectGoalStatement(text)
           ? "המשתמש בדיוק הצהיר על מטרה ארוכת טווח. תאשר אותה בטון שלך במשפט אחד, ואם חסר דדליין — תשאל עד מתי."
           : "",
         decision.layer,
-        "פילטר טבעיות (בדוק את עצמך לפני שליחה): האם זה נשמע כמו הודעת וואטסאפ מבן אדם? אם יצא לך משפט כמו \"בהחלט! אשמח לסייע לך בנושא זה\" — תמחק ותכתוב במקום \"כן, ברור. מה אתה צריך?\".",
+        `בדיקת אנושיות לפני שליחה (עבור על זה בראש, אל תכתוב את הבדיקה): 1) זה נשמע כמו AI? 2) ארוך מדי? 3) יותר משני אימוג'ים? 4) חוזר על משהו שאמרת? 5) מסביר משהו שהוא כבר יודע? 6) שאלה מיותרת? 7) רשמי מדי? 8) מתאים לאישיות ולמצב הרוח הנוכחיים? אם משהו מהם נכון — תשכתב לפני שאתה עונה.`,
       ];
 
       updateUser(chatId, {
@@ -1851,25 +1921,50 @@ serve(async (req: Request) => {
         mood_updated_at: new Date().toISOString(),
         last_message_at: new Date().toISOString(),
         repeat_streak: streak,
+        deep_mode_until: deepMode ? new Date(Date.now() + 30 * 60_000).toISOString() : null,
+        deep_topic: deepMode ? deepTopic : null,
       }).catch((e) => console.error("[db] mood update failed:", e));
 
       saveMessage(chatId, "user", text).catch((e) => console.error("[db] saveMessage(user) failed:", e));
 
       const tGemini = Date.now();
-      const reply = await askGemini(text, activePersonality, context, history, brainLayers);
+      let reply = await askGemini(text, activePersonality, context, history, brainLayers);
       mark("gemini", tGemini);
+
+      // 9+10) anti-repetition + humanity gate: one cheap rewrite if needed.
+      const verdict = humanityCheck(reply, {
+        lengthTarget: decision.lengthTarget,
+        deepMode,
+        recent: recentPhrases,
+        userText: text,
+      });
+      if (!verdict.ok) {
+        console.log(`[humanity] problems=${verdict.problems.join("|")}`);
+        const fixed = await rewriteForHumanity(callModelRaw, {
+          reply,
+          problems: verdict.problems,
+          personalityPrompt: PERSONALITIES[activePersonality]?.prompt ?? "",
+          userText: text,
+          lengthTarget: deepMode ? "2-4 משפטים" : decision.lengthTarget,
+        });
+        if (fixed && !isRepetitive(fixed, recentPhrases)) reply = postProcessReply(fixed);
+      }
 
       const tSend = Date.now();
       await sendMessage(chatId, reply);
       mark("sendTelegram", tSend);
       saveMessage(chatId, "assistant", reply).catch((e) => console.error("[db] saveMessage(assistant) failed:", e));
+      rememberPhrase(supabase, chatId, reply).catch(() => {});
 
       // Memory layer runs after the reply — it decides what is worth keeping.
       runMemoryPipeline(chatId, text, reply, history, memories).catch(() => {});
+      runAwarenessPipeline(chatId, text, reply, history).catch(() => {});
       behaviourAfter(reply).catch(() => {});
 
       timings.total = Date.now() - t0;
-      console.log(`[timing] ${JSON.stringify(timings)} mood=${moodLabel(mood)} humor=${humor.level} streak=${streak} p=${activePersonality}`);
+      console.log(
+        `[timing] ${JSON.stringify(timings)} mood=${moodLabel(mood)} humor=${humor.level} streak=${streak} p=${activePersonality} deep=${deepMode} surprise=${surprise}`
+      );
     }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });

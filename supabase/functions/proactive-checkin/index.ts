@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { lifeLoopDecide, markLifeLoopSent } from "./lifeloop.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
@@ -81,11 +82,30 @@ Deno.serve(async (_req: Request) => {
   try {
     if (isQuietHoursNow()) return new Response(JSON.stringify({ ok: true, skipped: "quiet_hours" }), { status: 200 });
     const followUpsSent = await sendDueFollowUps();
-    const { data: users, error } = await supabase.from("users").select("chat_id, last_proactive_at");
+    const { data: users, error } = await supabase.from("users").select("chat_id, last_proactive_at, last_message_at");
     if (error) return new Response(JSON.stringify({ ok: false, error: error.message }), { status: 200 });
     let sent = 0; const now = new Date();
     for (const u of users ?? []) {
-      if (u.last_proactive_at && (now.getTime() - new Date(u.last_proactive_at).getTime()) / 3600000 < 20) continue;
+      const hoursSinceLastProactive = u.last_proactive_at
+        ? (now.getTime() - new Date(u.last_proactive_at).getTime()) / 3600000
+        : 999;
+      if (hoursSinceLastProactive < 20) continue;
+      const hoursSinceLastUser = u.last_message_at
+        ? (now.getTime() - new Date(u.last_message_at).getTime()) / 3600000
+        : 999;
+
+      // Life Loop first: memories → goals → reminders → events → a real reason to reach out.
+      const reason = await lifeLoopDecide(supabase, u.chat_id, { hoursSinceLastUser, hoursSinceLastProactive });
+      if (reason) {
+        if (await sendTelegramMessage(u.chat_id, reason.message)) {
+          await markLifeLoopSent(supabase, u.chat_id, reason);
+          await supabase.from("users").update({ last_proactive_at: now.toISOString() }).eq("chat_id", u.chat_id);
+          sent++;
+          console.log(`[lifeloop] chat=${u.chat_id} kind=${reason.kind} score=${reason.score}`);
+        }
+        continue;
+      }
+
       const memoryPrompt = await findMemoryPrompt(u.chat_id);
       const topicPrompt = memoryPrompt ? null : await findStaleTopicPrompt(u.chat_id);
       const prompt = memoryPrompt

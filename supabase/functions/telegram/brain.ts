@@ -15,7 +15,9 @@ export type Memory = {
   mem_key: string;
   value: string;
   confidence?: number;
+  importance?: number;
   expires_at?: string | null;
+  updated_at?: string;
 };
 
 // ---------------------------------------------------------------
@@ -27,7 +29,7 @@ const MEMORY_LIMIT = 25;
 export async function fetchMemories(supabase: Supa, chatId: number): Promise<Memory[]> {
   const { data, error } = await supabase
     .from("user_memories")
-    .select("id, kind, mem_key, value, confidence, expires_at")
+    .select("id, kind, mem_key, value, confidence, importance, expires_at, updated_at")
     .eq("chat_id", chatId)
     .order("confidence", { ascending: false })
     .order("updated_at", { ascending: false })
@@ -66,6 +68,7 @@ export async function upsertMemories(supabase: Supa, chatId: number, mems: Memor
     mem_key: m.mem_key,
     value: m.value,
     confidence: m.confidence ?? 0.75,
+    importance: Math.min(4, Math.max(1, Number(m.importance) || 2)),
     expires_at: m.expires_at ?? null,
     updated_at: new Date().toISOString(),
   }));
@@ -418,9 +421,11 @@ const EXTRACTION_PROMPT = `אתה שכבת הזיכרון של בוט אישי �
 צור follow_up עם שאלה קצרה וטבעית בעברית ומתי לשאול אותה (בשעות מהרגע הזה).
 
 החזר JSON תקין בלבד, בלי טקסט מסביב, במבנה:
-{"memories":[{"kind":"fact|preference|habit|relationship|joke|project|request","mem_key":"slug_באנגלית","value":"משפט קצר בעברית","confidence":0.0-1.0}],
+{"memories":[{"kind":"fact|preference|habit|relationship|joke|project|request","mem_key":"slug_באנגלית","value":"משפט קצר בעברית","confidence":0.0-1.0,"importance":1-4,"expires_at":null}],
  "forget":["mem_key"],
  "follow_ups":[{"topic":"מבחן","question":"נו, איך היה המבחן?","in_hours":20}]}
+חוקי חשיבות: 4=קריטי (בריאות, כספים, דדליין קשיח), 3=חשוב, 2=רגיל, 1=זניח.
+חוק שכחה: אם המידע רלוונטי רק לזמן מוגבל (למשל "מחר אני הולך לרופא") — שים expires_at כ-ISO של סוף הרלוונטיות, כדי שהבוט לא יתייחס לזה אחרי שזה עבר.
 אם אין מה לזכור — החזר {"memories":[],"forget":[],"follow_ups":[]}.`;
 
 export async function runExtraction(
