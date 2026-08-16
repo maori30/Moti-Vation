@@ -44,6 +44,29 @@ import {
   upsertGoals,
   type Profile,
 } from "./profile.ts";
+import {
+  antiRepetitionInstruction,
+  bumpInsideJokes,
+  confidenceContext,
+  detectDeepMode,
+  deepModeInstruction,
+  eventContext,
+  fetchEvents,
+  fetchInsideJokes,
+  fetchRecentPhrases,
+  humanityCheck,
+  implicitIntentLayer,
+  insideJokeContext,
+  isRepetitive,
+  rankMemories,
+  rememberPhrase,
+  rewriteForHumanity,
+  rollSurprise,
+  runAwarenessExtraction,
+  runForgettingEngine,
+  surpriseInstruction,
+  upsertEvents,
+} from "./awareness.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
