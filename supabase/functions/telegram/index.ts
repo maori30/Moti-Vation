@@ -1757,7 +1757,7 @@ serve(async (req: Request) => {
       }
 
       const tFetch = Date.now();
-      const [activeReminders, history, memories, profile, goals] = await Promise.all([
+      const [activeReminders, history, memoriesRaw, profile, goals, events, jokes, recentPhrases] = await Promise.all([
         supabase
           .from("reminders")
           .select("text, time, type")
@@ -1767,8 +1767,12 @@ serve(async (req: Request) => {
         fetchMemories(supabase, chatId),
         fetchProfile(supabase, chatId),
         fetchGoals(supabase, chatId),
+        fetchEvents(supabase, chatId),
+        fetchInsideJokes(supabase, chatId),
+        fetchRecentPhrases(supabase, chatId),
       ]);
       mark("getContext", tFetch);
+      const memories = rankMemories(memoriesRaw);
 
       const lastBotReply =
         [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
