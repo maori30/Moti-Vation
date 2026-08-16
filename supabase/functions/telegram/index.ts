@@ -1023,6 +1023,25 @@ async function runMemoryPipeline(
 }
 
 // "פעם חמישית שהוא מבקש אותו דבר" detection, so the mood can react.
+async function runAwarenessPipeline(
+  chatId: number,
+  userText: string,
+  replyText: string,
+  history: HistoryMessage[]
+) {
+  try {
+    await runForgettingEngine(supabase, chatId);
+    const res = await runAwarenessExtraction(callModelRaw, { userText, replyText, history });
+    await upsertEvents(supabase, chatId, res.events);
+    await bumpInsideJokes(supabase, chatId, res.jokes);
+    if (res.events.length || res.jokes.length) {
+      console.log(`[awareness] events=${res.events.length} jokes=${res.jokes.length}`);
+    }
+  } catch (e) {
+    console.error("[awareness] pipeline failed:", e instanceof Error ? e.message : String(e));
+  }
+}
+
 function similarityStreak(text: string, history: HistoryMessage[]): number {
   const words = (s: string) => new Set(s.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
   const cur = words(text);
