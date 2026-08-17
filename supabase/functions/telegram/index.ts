@@ -913,11 +913,8 @@ ${personality.prompt}
 
 הקשר זמן: ${temporalContext}
 
-${brainBlock ? `${brainBlock}
-
-` : ""}
-${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}
-` : ""}
+${brainBlock ? `${brainBlock}\n\n` : ""}
+${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}\n` : ""}
 כללים קריטיים:
 - כתוב עברית ישראלית יומיומית וחיה. שים לב למגדר נכון.
 - תגובה קצרה ואנושית. מקסימום 2-3 משפטים קצרים!
@@ -1022,7 +1019,6 @@ async function runMemoryPipeline(
   }
 }
 
-// "פעם חמישית שהוא מבקש אותו דבר" detection, so the mood can react.
 async function runAwarenessPipeline(
   chatId: number,
   userText: string,
@@ -1067,7 +1063,6 @@ async function updateUser(chatId: number, updates: object) {
   await supabase.from("users").update(updates).eq("chat_id", chatId);
 }
 
-// Hour-of-day label for behaviour learning ("do 09:00 reminders work on him?").
 function reminderHour(time: unknown): string | null {
   if (typeof time !== "string" || !time) return null;
   const hhmm = time.match(/^(\d{1,2}):(\d{2})$/);
@@ -1268,9 +1263,21 @@ const HEBREW_WEEKDAYS: Record<string, number> = {
   "חמישי": 4, "שישי": 5, "שבת": 6,
 };
 
+// FIX: two-tier reminder detection. A "strong" trigger (explicit request
+// phrasing) always starts the reminder flow. The bare word "תזכורת" alone
+// (which can appear in rhetorical/past-tense sentences like "קבענו תזכורת?")
+// only starts the flow if there is ALSO a real time/anchor signal in the
+// same message — otherwise the message falls through to normal conversation
+// instead of being hijacked into "לא הצלחתי להבין" for a message that was
+// never trying to create a reminder in the first place.
+const STRONG_REMINDER_TRIGGER = /תזכיר\s*לי|אל תשכח(?:\s*לי)?|תדע\s*להזכיר/;
+const TIME_OR_ANCHOR_SIGNAL = /(עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב-?\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
+
 function detectReminderIntent(text: string): boolean {
   const t = text.toLowerCase();
-  return REMINDER_TRIGGER.test(t) || /(עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת))/i.test(t);
+  if (STRONG_REMINDER_TRIGGER.test(t)) return true;
+  if (REMINDER_TRIGGER.test(t) && TIME_OR_ANCHOR_SIGNAL.test(t)) return true;
+  return false;
 }
 
 function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null {
@@ -1574,6 +1581,12 @@ serve(async (req: Request) => {
     const user = await getOrCreateUser(chatId, firstName);
     mark("getUser", tUser);
 
+    // FIX: update last_message_at on EVERY incoming message, before any
+    // branching. Previously this only happened deep inside the full
+    // conversation branch, so a user who only ever set reminders or used
+    // commands was wrongly treated by the proactive job as "silent for days".
+    updateUser(chatId, { last_message_at: new Date().toISOString() }).catch(() => {});
+
     if (text === "/start") {
       await handleStart(chatId, firstName);
     } else if (text === "/diag") {
@@ -1663,7 +1676,6 @@ serve(async (req: Request) => {
         user.tone_override = switchReq.tone;
       }
 
-      // Active personality = temporary one while it lasts, otherwise the saved one.
       const tempAlive =
         user.temp_personality &&
         user.temp_personality_until &&
@@ -1681,8 +1693,6 @@ serve(async (req: Request) => {
         const hints = parseSmartHints(text);
         const parsed = parseHebrewReminderTime(text, nowInTz());
 
-        // Anchor-based reminder ("לפני שאני יוצא מהבית") with no explicit clock time:
-        // use a remembered habit time, or ask once and remember the answer.
         if (!parsed && hints.anchor) {
           const memKey = anchorMemoryKeyFor(hints.anchor);
           const mems = await fetchMemories(supabase, chatId);
@@ -1797,7 +1807,6 @@ serve(async (req: Request) => {
         [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
       const pace = computePacing(text, lastBotReply, profile);
 
-      // Behaviour signals (learning happens after the reply, never blocks).
       const behaviourAfter = async (replyText: string) => {
         await logBehavior(supabase, chatId, "message", { len: text.length });
         if (isLaugh(text)) await logBehavior(supabase, chatId, "laughed", {});
@@ -1825,7 +1834,6 @@ serve(async (req: Request) => {
         }
       };
 
-      // 4. Knowing when NOT to open a conversation: micro-reply, no model call.
       if (pace.instantReply) {
         await sendMessage(chatId, pace.instantReply);
         saveMessage(chatId, "user", text).catch(() => {});
@@ -1839,7 +1847,6 @@ serve(async (req: Request) => {
         ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
         : "למשתמש אין תזכורות פעילות כרגע.";
 
-      // ---- mood + humor + context layers ---------------------
       const mode = detectConversationMode(text);
       const intent = analyzeHebrewIntent(text);
       const streak = similarityStreak(text, history);
@@ -1869,13 +1876,11 @@ serve(async (req: Request) => {
         mood: moodLabel(mood),
       });
 
-      // 8) deep conversation mode — the bot notices the talk got real.
       const deepUntil = user.deep_mode_until ? new Date(user.deep_mode_until as string).getTime() : 0;
       const deepNow = detectDeepMode(text, history);
       const deepMode = deepNow.deep || deepUntil > Date.now();
       const deepTopic = deepNow.topic ?? ((user.deep_topic as string) ?? null);
 
-      // 6) surprise engine — material it *may* bring up, sometimes.
       const surpriseMaterial = [
         ...events.map((e) => e.title),
         ...goals.map((g) => g.title),
@@ -1931,7 +1936,6 @@ serve(async (req: Request) => {
       let reply = await askGemini(text, activePersonality, context, history, brainLayers);
       mark("gemini", tGemini);
 
-      // 9+10) anti-repetition + humanity gate: one cheap rewrite if needed.
       const verdict = humanityCheck(reply, {
         lengthTarget: decision.lengthTarget,
         deepMode,
@@ -1956,7 +1960,6 @@ serve(async (req: Request) => {
       saveMessage(chatId, "assistant", reply).catch((e) => console.error("[db] saveMessage(assistant) failed:", e));
       rememberPhrase(supabase, chatId, reply).catch(() => {});
 
-      // Memory layer runs after the reply — it decides what is worth keeping.
       runMemoryPipeline(chatId, text, reply, history, memories).catch(() => {});
       runAwarenessPipeline(chatId, text, reply, history).catch(() => {});
       behaviourAfter(reply).catch(() => {});
