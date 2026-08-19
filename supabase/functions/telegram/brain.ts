@@ -1,17 +1,12 @@
-// ============================================================
-// Moti "brain" — the layers that sit around the raw model call:
-// Intent → Memory → Context → Personality mood → Humor → Naturalness
-// Everything here is dependency-injected so index.ts stays the entry point.
-// ============================================================
-
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
 export type Supa = any;
 export type ModelCall = (payload: Record<string, unknown>) => Promise<{ ok: boolean; data?: any }>;
 export type HistoryMsg = { role: string; content: string; created_at?: string };
 
 export type Memory = {
   id?: string;
-  kind: string;
+  kind: "fact" | "preference" | "habit" | "relationship" | "joke" | "project" | "request" | string;
   mem_key: string;
   value: string;
   confidence?: number;
@@ -20,476 +15,268 @@ export type Memory = {
   updated_at?: string;
 };
 
-// ---------------------------------------------------------------
-// 1) MEMORY LAYER
-// ---------------------------------------------------------------
+export type Mood = "calm" | "funny" | "serious" | "busy" | "energetic" | "mildly_frustrated" | "warm";
 
 const MEMORY_LIMIT = 25;
 
+function normalizeJson(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function parseJsonSafely<T>(raw: string, fallback: T, label: string): T {
+  try {
+    return JSON.parse(normalizeJson(raw)) as T;
+  } catch (error) {
+    console.error(`[brain] ${label} JSON parse failed:`, error, raw.slice(0, 500));
+    return fallback;
+  }
+}
+
 export async function fetchMemories(supabase: Supa, chatId: number): Promise<Memory[]> {
-  const { data, error } = await supabase
-    .from("user_memories")
-    .select("id, kind, mem_key, value, confidence, importance, expires_at, updated_at")
-    .eq("chat_id", chatId)
-    .order("confidence", { ascending: false })
-    .order("updated_at", { ascending: false })
-    .limit(MEMORY_LIMIT);
-  if (error) {
-    console.error("[memory] fetch failed:", error.message);
+  try {
+    const { data, error } = await supabase
+      .from("user_memories")
+      .select("id, kind, mem_key, value, confidence, importance, expires_at, updated_at")
+      .eq("chat_id", chatId)
+      .order("importance", { ascending: false })
+      .order("updated_at", { ascending: false })
+      .limit(MEMORY_LIMIT);
+
+    if (error) {
+      console.error("[memory] fetch failed:", error.message);
+      return [];
+    }
+
+    const now = Date.now();
+    return (data ?? []).filter(
+      (memory: Memory) => !memory.expires_at || new Date(memory.expires_at).getTime() > now,
+    ) as Memory[];
+  } catch (error) {
+    console.error("[memory] fetch exception:", error);
     return [];
   }
-  const now = Date.now();
-  return (data ?? []).filter((m: Memory) => !m.expires_at || new Date(m.expires_at).getTime() > now);
+}
+
+export async function upsertMemories(supabase: Supa, chatId: number, memories: Memory[]) {
+  if (!memories.length) return;
+
+  const rows = memories
+    .filter((memory) => memory.mem_key && memory.value)
+    .slice(0, 6)
+    .map((memory) => ({
+      chat_id: chatId,
+      kind: memory.kind || "fact",
+      mem_key: String(memory.mem_key).toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 60),
+      value: String(memory.value).trim().slice(0, 300),
+      confidence: Math.max(0.1, Math.min(1, Number(memory.confidence ?? 0.75))),
+      importance: Math.max(1, Math.min(4, Number(memory.importance ?? 2))),
+      expires_at: memory.expires_at ?? null,
+      updated_at: new Date().toISOString(),
+    }));
+
+  if (!rows.length) return;
+  const { error } = await supabase
+    .from("user_memories")
+    .upsert(rows, { onConflict: "chat_id,mem_key" });
+  if (error) console.error("[memory] upsert failed:", error.message);
+}
+
+export async function forgetMemories(supabase: Supa, chatId: number, keys: string[]) {
+  if (!keys.length) return;
+  const { error } = await supabase
+    .from("user_memories")
+    .delete()
+    .eq("chat_id", chatId)
+    .in("mem_key", keys.slice(0, 10));
+  if (error) console.error("[memory] forget failed:", error.message);
 }
 
 const KIND_LABEL: Record<string, string> = {
   fact: "עובדה",
   preference: "העדפה",
   habit: "הרגל",
-  relationship: "אנשים בחיים שלו",
+  relationship: "אדם קרוב",
   joke: "בדיחה פנימית",
-  project: "פרויקט/מטרה",
-  request: "בקשה שהוא ביקש בעבר",
+  project: "פרויקט",
+  request: "בקשה",
 };
 
 export function memoryContext(memories: Memory[]): string {
-  if (memories.length === 0) return "";
-  const lines = memories.map((m) => `- (${KIND_LABEL[m.kind] ?? m.kind}) ${m.value}`);
-  return `מה שאתה כבר יודע עליו מהעבר (זיכרון אמיתי, לא לחזור על זה סתם — להשתמש בזה רק כשזה רלוונטי וטבעי):
-${lines.join("\n")}
-אל תכריז "אני זוכר ש..." בכל הודעה. פשוט תדבר כמו מישהו שמכיר אותו.`;
+  if (!memories.length) return "";
+  return `דברים שאתה יודע על המשתמש מהעבר. השתמש בהם רק כשזה רלוונטי וטבעי, ואל תקריא אותם כרשימה:\n${memories
+    .slice(0, 12)
+    .map((memory) => `- (${KIND_LABEL[memory.kind] ?? memory.kind}) ${memory.value}`)
+    .join("\n")}`;
 }
 
-export async function upsertMemories(supabase: Supa, chatId: number, mems: Memory[]) {
-  if (mems.length === 0) return;
-  const rows = mems.map((m) => ({
-    chat_id: chatId,
-    kind: m.kind || "fact",
-    mem_key: m.mem_key,
-    value: m.value,
-    confidence: m.confidence ?? 0.75,
-    importance: Math.min(4, Math.max(1, Number(m.importance) || 2)),
-    expires_at: m.expires_at ?? null,
-    updated_at: new Date().toISOString(),
-  }));
-  const { error } = await supabase.from("user_memories").upsert(rows, { onConflict: "chat_id,mem_key" });
-  if (error) console.error("[memory] upsert failed:", error.message);
-}
-
-export async function forgetMemories(supabase: Supa, chatId: number, keys: string[]) {
-  if (keys.length === 0) return;
-  await supabase.from("user_memories").delete().eq("chat_id", chatId).in("mem_key", keys);
-}
-
-// ---------------------------------------------------------------
-// 2) CONTEXT / CO-REFERENCE
-// ---------------------------------------------------------------
-
-const PRONOUN_RE = /(אליו|אליה|אליהם|אותו|אותה|אותם|לזה|את זה|הדבר הזה|שם|ההוא|ההיא|זה שדיברנו|כמו שאמרתי|הבנאדם הזה)/;
-
-export function needsCoreference(text: string): boolean {
-  return PRONOUN_RE.test(text);
-}
+const PRONOUN_RE = /(אליו|אליה|אליהם|אותו|אותה|אותם|לזה|את זה|הדבר הזה|ההוא|ההיא|כמו שאמרתי|הבנאדם הזה)/;
 
 export function coreferenceInstruction(text: string, history: HistoryMsg[]): string {
-  if (!needsCoreference(text) || history.length === 0) return "";
-  const recent = history.slice(-6).map((m) => `${m.role === "assistant" ? "אתה" : "הוא"}: ${m.content}`);
-  return `שים לב: בהודעה הנוכחית יש התייחסות עמומה ("אליו", "זה", "אותו"...). תפענח את זה לבד מתוך השיחה האחרונה, ואל תשאל "למי אתה מתכוון?" אלא אם באמת אין שום רמז.
-השיחה האחרונה:
-${recent.join("\n")}
-אם אתה מסיק למי/למה הכוונה — תגיד את זה במפורש בתשובה ("מחר ב-10 להתקשר לדני, סגור") כדי שהוא יוכל לתקן אותך אם טעית.`;
+  if (!PRONOUN_RE.test(text) || !history.length) return "";
+  const recent = history.slice(-6).map((message) => `${message.role === "assistant" ? "בוט" : "משתמש"}: ${message.content}`);
+  return `בהודעה יש התייחסות עמומה כמו "זה" או "אליו". פענח אותה לפי השיחה האחרונה ולא לפי ניחוש אקראי. אם יש מספיק הקשר, התייחס לדבר בשמו. אם אין הקשר בכלל, שאל שאלה קצרה אחת.\n${recent.join("\n")}`;
 }
 
-// ---------------------------------------------------------------
-// 3) MOOD ENGINE — every personality has an internal changing state
-// ---------------------------------------------------------------
-
-export type Mood = "calm" | "funny" | "serious" | "busy" | "energetic" | "mildly_frustrated" | "warm";
-
-const MOOD_HE: Record<Mood, string> = {
-  calm: "רגוע",
-  funny: "מצחיק",
-  serious: "רציני",
-  busy: "עסוק",
-  energetic: "אנרגטי",
-  mildly_frustrated: "מתוסכל קלות",
-  warm: "מפרגן",
-};
-
-const MOOD_BEHAVIOR: Record<Mood, string> = {
-  calm: "אתה במצב רוח רגוע — משפטים קצרים, בלי דרמה, בלי לדחוף.",
-  funny: "אתה במצב רוח מצחיק — מותר עקיצה חדה אחת, קלילות, טיימינג טוב.",
-  serious: "אתה במצב רוח רציני — בלי בדיחות, ישר לעניין, אנושי אבל ממוקד.",
-  busy: "אתה במצב 'עסוק' — תשובה קצרה במיוחד (משפט אחד), כאילו אתה באמצע משהו, אבל בלי להיות מנותק.",
-  energetic: "אתה במצב אנרגטי — קצב מהיר, פועל בהתחלת המשפט, דוחף לפעולה קטנה עכשיו.",
-  mildly_frustrated: "אתה מתוסכל קלות — מותר להראות את זה בעדינות ובהומור ('אחי, פעם שלישית היום'), בלי לתקוף אותו.",
-  warm: "אתה במצב מפרגן — שים לב למאמץ שלו, תן קרדיט אמיתי בלי חנופה.",
-};
-
-// Each personality drifts inside its own emotional range.
 const PERSONALITY_MOODS: Record<string, Mood[]> = {
-  coach:        ["energetic", "serious", "warm", "calm", "mildly_frustrated"],
-  cynic:        ["funny", "mildly_frustrated", "calm", "busy"],
-  friend:       ["warm", "funny", "calm", "energetic"],
-  sergeant:     ["energetic", "mildly_frustrated", "busy", "serious"],
-  therapist:    ["calm", "warm", "serious"],
-  hype:         ["energetic", "funny", "warm"],
-  grandma:      ["warm", "calm", "mildly_frustrated"],
-  philosopher:  ["calm", "serious", "funny"],
-  frayer:       ["funny", "mildly_frustrated", "warm"],
-  neighbor:     ["funny", "busy", "mildly_frustrated", "warm"],
+  coach: ["energetic", "warm", "serious", "calm"],
+  cynic: ["funny", "calm", "mildly_frustrated"],
+  friend: ["warm", "funny", "calm"],
+  sergeant: ["serious", "energetic", "mildly_frustrated"],
+  therapist: ["calm", "warm", "serious"],
+  hype: ["energetic", "funny", "warm"],
+  grandma: ["warm", "calm"],
+  philosopher: ["calm", "serious", "funny"],
+  frayer: ["funny", "warm", "mildly_frustrated"],
+  neighbor: ["funny", "warm", "busy"],
 };
 
-export type MoodSignals = {
-  mode: string;              // conversation mode from index.ts
-  hourLocal: number;
-  repeatStreak: number;      // how many similar requests in a row
-  gapMinutes: number;        // since last message
-  prevMood?: string | null;
+export function pickMood(
+  personality: string,
+  signals: { mode: string; hourLocal: number; repeatStreak: number; gapMinutes: number; prevMood?: string | null },
+): Mood {
+  const allowed = PERSONALITY_MOODS[personality] ?? PERSONALITY_MOODS.cynic;
+  if (signals.mode === "frustration") return allowed.includes("warm") ? "warm" : "calm";
+  if (signals.mode === "success") return allowed.includes("energetic") ? "energetic" : "warm";
+  if (signals.repeatStreak >= 3 && allowed.includes("mildly_frustrated")) return "mildly_frustrated";
+  if (signals.hourLocal < 7 || signals.hourLocal >= 23) return "calm";
+  if (signals.prevMood && allowed.includes(signals.prevMood as Mood) && Math.random() > 0.35) return signals.prevMood as Mood;
+  return allowed[Math.floor(Math.random() * allowed.length)];
+}
+
+const MOOD_TEXT: Record<Mood, string> = {
+  calm: "טון רגוע וקצר. בלי לדחוף.",
+  funny: "קלילות ועקיצה אחת לכל היותר אם היא באמת מתאימה.",
+  serious: "ישיר וענייני. בלי בדיחות.",
+  busy: "משפט קצר בלבד, בלי לפתוח נושא חדש.",
+  energetic: "קצב גבוה ודחיפה לצעד קטן אחד.",
+  mildly_frustrated: "אפשר להראות חוסר סבלנות קל בחיבה, בלי לפגוע.",
+  warm: "תן קרדיט, חום ועידוד אמיתי בלי חנופה.",
 };
 
-export function pickMood(personalityKey: string, s: MoodSignals): Mood {
-  const palette = (PERSONALITY_MOODS[personalityKey] ?? PERSONALITY_MOODS.cynic).filter(
-    (m) => MOOD_HE[m] !== undefined,
-  );
-
-  // Hard signals win over drift.
-  if (s.mode === "frustration") return palette.includes("warm") ? "warm" : "calm";
-  if (s.mode === "success") return palette.includes("energetic") ? "energetic" : "warm";
-  if (s.repeatStreak >= 3 && palette.includes("mildly_frustrated")) return "mildly_frustrated";
-  if (s.hourLocal >= 23 || s.hourLocal < 6) return "calm";
-  if (s.hourLocal >= 6 && s.hourLocal < 10 && palette.includes("energetic")) return "energetic";
-  if (s.gapMinutes < 2 && palette.includes("busy")) return "busy";
-
-  // Soft drift: usually keep the mood, sometimes change it.
-  const prev = (s.prevMood as Mood) ?? palette[0];
-  if (palette.includes(prev) && Math.random() > 0.35) return prev;
-  return palette[Math.floor(Math.random() * palette.length)];
+export function moodInstruction(mood: Mood, repeatStreak: number): string {
+  return `מצב הרוח הנוכחי שלך: ${MOOD_TEXT[mood]}${repeatStreak >= 3 ? " המשתמש חזר על עצמו; תכיר בזה בטבעיות ולא כמו טופס." : ""}`;
 }
 
-export function moodInstruction(mood: Mood, streak: number): string {
-  const base = MOOD_BEHAVIOR[mood] ?? MOOD_BEHAVIOR.calm;
-  const streakLine =
-    streak >= 3
-      ? ` הוא כבר ביקש ממך משהו דומה ${streak} פעמים — תגיב לזה כמו בן אדם ("הבנתי, הבנתי 😄"), לא כמו טופס.`
-      : "";
-  return `מצב הרוח הפנימי שלך כרגע: ${MOOD_HE[mood]}. ${base}${streakLine}
-מצב הרוח משפיע על הסגנון בלבד — האישיות שלך נשארת אותה אישיות.`;
+export function moodLabel(mood: Mood): string {
+  return ({ calm: "רגוע", funny: "מצחיק", serious: "רציני", busy: "עסוק", energetic: "אנרגטי", mildly_frustrated: "מתוסכל קלות", warm: "מפרגן" } as Record<Mood, string>)[mood];
 }
 
-export function moodLabel(mood: string): string {
-  return MOOD_HE[mood as Mood] ?? mood;
+const HEAVY_RE = /(מוות|מת|אובדני|בית חולים|אשפוז|פיטורים|גירושין|דיכאון|חרדה קשה|אלימות|ניתוח)/;
+
+export function humorPolicy(args: { text: string; mode: string; tone: string; intensity: number; mood: Mood; userHumorLevel: number }) {
+  if (HEAVY_RE.test(args.text)) return { level: 0, instruction: "אפס הומור. הנושא כבד, הקשב באמת." };
+  if (args.mode === "frustration") return { level: 1, instruction: "קודם תן מקום לתסכול; אולי קלילות עדינה, לא בדיחה." };
+  if (["joke", "sarcastic", "dark_humor", "hyperbole"].includes(args.tone) && args.userHumorLevel >= 0.45) {
+    return { level: 2, instruction: "המשתמש עצמו בהומור. אפשר עקיצה אחת ספציפית וקצרה." };
+  }
+  return { level: 1, instruction: "הומור נמוך. אל תמציא בדיחה אם אין אחת טבעית." };
 }
 
-// ---------------------------------------------------------------
-// 4) HUMOR ENGINE — decide *if*, *what kind*, and *how much*
-// ---------------------------------------------------------------
-
-export type HumorDecision = { level: 0 | 1 | 2 | 3; instruction: string };
-
-const SERIOUS_TOPICS = /(מת|מוות|אשפוז|בית חולים|גירושין|פיטורים|פוטרתי|דיכאון|חרדה קשה|אובדני|נפרדנו|חולה|ניתוח|לוויה|אבל|שכול|התמכרות|פשיטת רגל)/;
-
-export function humorPolicy(opts: {
-  text: string;
-  mode: string;
-  tone: string;
-  intensity: number;
-  mood: Mood;
-  userHumorLevel: number;
-}): HumorDecision {
-  const { text, mode, tone, intensity, mood, userHumorLevel } = opts;
-
-  if (SERIOUS_TOPICS.test(text)) {
-    return {
-      level: 0,
-      instruction:
-        "מנוע ההומור: כבוי לחלוטין. הנושא כבד ואמיתי. אפס בדיחות, אפס עוקצנות, אפס אמוג'י מצחיק. תהיה בן אדם שמקשיב.",
-    };
-  }
-  if (mode === "frustration" && intensity < 0.4) {
-    return {
-      level: 1,
-      instruction:
-        "מנוע ההומור: מינימלי. אולי חצי חיוך בסוף המשפט, לא יותר. קודם הרגש, אחר כך הקלילות.",
-    };
-  }
-  if (mood === "serious") {
-    return { level: 1, instruction: "מנוע ההומור: נמוך. עקיצה אחת קטנה לכל היותר, ורק אם היא ממש מתבקשת." };
-  }
-
-  const userIsJoking = ["joke", "sarcastic", "dark_humor", "hyperbole", "affectionate_mock"].includes(tone);
-  const score = (userIsJoking ? 0.5 : 0) + intensity * 0.3 + userHumorLevel * 0.4 + (mood === "funny" ? 0.3 : 0);
-
-  if (score >= 0.85) {
-    const kind = tone === "dark_humor" ? "הומור שחור ישראלי" : tone === "sarcastic" ? "סרקזם יבש" : "עקיצה חיבתית";
-    return {
-      level: 3,
-      instruction: `מנוע ההומור: גבוה, והסוג המתאים הוא ${kind}. הוא בעצמו צוחק — תחזיר באותו מטבע, ספציפי למה שהוא בדיוק אמר. בדיחה אחת חדה, לא שלוש רכות. אל תסביר את הבדיחה.`,
-    };
-  }
-  if (score >= 0.5) {
-    return {
-      level: 2,
-      instruction:
-        "מנוע ההומור: בינוני. עקיצה אחת ספציפית למה שהוא אמר, ואז חזרה לעניין. בלי סטנד־אפ.",
-    };
-  }
-  return {
-    level: 1,
-    instruction: "מנוע ההומור: נמוך. קלילות במקום בדיחה. אם אין משהו באמת מצחיק להגיד — אל תמציא.",
-  };
-}
-
-// ---------------------------------------------------------------
-// 5) PERSONALITY SWITCHING (explicit request, session or permanent)
-// ---------------------------------------------------------------
-
-const PERSONALITY_ALIASES: Record<string, string> = {
-  "מאמן": "coach", "coach": "coach",
-  "ציני": "cynic", "הציני": "cynic", "ציניות": "cynic", "cynic": "cynic",
-  "חבר": "friend", "friend": "friend",
-  "סמל": "sergeant", "צבאי": "sergeant", "sergeant": "sergeant",
-  "מטפל": "therapist", "פסיכולוג": "therapist",
-  "מעודד": "hype", "הייפ": "hype",
-  "סבתא": "grandma",
-  "פילוסוף": "philosopher",
-  "פראייר": "frayer",
-  "שכן": "neighbor",
+const ALIASES: Record<string, string> = {
+  מאמן: "coach", ציני: "cynic", חבר: "friend", רסר: "sergeant", "רס\"ר": "sergeant",
+  מטפל: "therapist", סבתא: "grandma", פילוסוף: "philosopher", פראייר: "frayer", שכן: "neighbor", מעודד: "hype",
 };
 
-export type SwitchRequest =
-  | { type: "personality"; key: string; scope: "session" | "permanent" }
-  | { type: "tone"; tone: "serious" | "funnier" | "softer" | "harsher"; scope: "session" }
-  | null;
-
-export function detectSwitchRequest(text: string): SwitchRequest {
-  const t = text.trim().toLowerCase();
-  if (!/(תהיה|דבר|תדבר|עבור|תעבור|עזוב|מספיק|די עם|תפסיק עם|בוא נהיה|אני רוצה ש)/.test(t)) return null;
-
-  // Tone shifts first — "עזוב ציניות עכשיו, תהיה רציני"
-  if (/(תהיה רציני|בלי בדיחות|עזוב ציניות|מספיק ציניות|די עם הבדיחות|תפסיק עם ההומור|ברצינות עכשיו)/.test(t)) {
-    return { type: "tone", tone: "serious", scope: "session" };
-  }
-  if (/(תהיה מצחיק|יותר מצחיק|תצחיק אותי|יותר בציניות|יותר ציני|תעקוץ|יותר סרקסטי)/.test(t)) {
-    return { type: "tone", tone: /ציני|סרקס/.test(t) ? "harsher" : "funnier", scope: "session" };
-  }
-  if (/(תהיה עדין|תרד ממני|יותר בעדינות|תהיה נחמד|תפסיק ללחוץ)/.test(t)) {
-    return { type: "tone", tone: "softer", scope: "session" };
-  }
-
-  for (const [alias, key] of Object.entries(PERSONALITY_ALIASES)) {
-    if (t.includes(alias)) {
-      const permanent = /(מעכשיו|תמיד|קבוע|מהיום|תישאר)/.test(t);
-      return { type: "personality", key, scope: permanent ? "permanent" : "session" };
+export function detectSwitchRequest(text: string): { type: "personality"; key: string; scope: "session" | "permanent" } | { type: "tone"; tone: string } | null {
+  const t = text.toLowerCase();
+  if (/(תהיה רציני|בלי בדיחות|עזוב ציניות|תפסיק להתלוצץ)/.test(t)) return { type: "tone", tone: "serious" };
+  if (/(תהיה עדין|יותר בעדינות|תרד ממני)/.test(t)) return { type: "tone", tone: "softer" };
+  if (/(תהיה מצחיק|יותר מצחיק|יותר ציני|תעקוץ)/.test(t)) return { type: "tone", tone: "funnier" };
+  for (const [alias, key] of Object.entries(ALIASES)) {
+    if (t.includes(alias) && /(תהיה|תדבר|דבר|מעכשיו|תעבור)/.test(t)) {
+      return { type: "personality", key, scope: /(מעכשיו|תמיד|קבוע|מהיום)/.test(t) ? "permanent" : "session" };
     }
   }
   return null;
 }
 
 export function toneOverrideInstruction(tone: string | null | undefined): string {
-  switch (tone) {
-    case "serious":
-      return "המשתמש ביקש במפורש שתהיה רציני עכשיו — אפס בדיחות ואפס ציניות בשיחה הזו, עד שיגיד אחרת.";
-    case "funnier":
-      return "המשתמש ביקש שתהיה יותר מצחיק — תעלה הילוך בהומור, אבל עדיין תשובה קצרה.";
-    case "harsher":
-      return "המשתמש ביקש יותר ציניות/עוקץ — תחדד את הלשון, בחיבה ובלי להעליב באמת.";
-    case "softer":
-      return "המשתמש ביקש שתרד מהגז — עדין, בלי לחץ, בלי עקיצות.";
-    default:
-      return "";
-  }
+  if (tone === "serious") return "המשתמש ביקש רצינות. אל תשתמש בציניות או בדיחות עד שיבקש אחרת.";
+  if (tone === "softer") return "המשתמש ביקש עדינות. בלי לחץ ובלי עקיצות.";
+  if (tone === "funnier") return "אפשר יותר קלילות, אבל עדיין לא להגזים.";
+  return "";
 }
 
-// ---------------------------------------------------------------
-// 6) SMART REMINDERS — anchors, lead time, confirmation nudges
-// ---------------------------------------------------------------
-
-export type SmartReminderHint = {
-  anchor?: string;        // "לפני שאני יוצא מהבית", "כשאני מגיע לעבודה"
-  leadMinutes?: number;   // "שעתיים לפני", "יום לפני"
-  confirmNeeded?: boolean;// "אם לא סימנתי שביצעתי"
-};
-
-const ANCHOR_PATTERNS: { re: RegExp; anchor: string; memKey: string }[] = [
-  { re: /(לפני שאני יוצא|כשאני יוצא|לפני היציאה) (מהבית|מהעבודה)?/, anchor: "leaving_home", memKey: "leave_home_time" },
-  { re: /(כשאני מגיע|כשאגיע) ל?עבודה/, anchor: "arriving_work", memKey: "arrive_work_time" },
-  { re: /(כשאני חוזר|כשאחזור) (הביתה|מהעבודה)/, anchor: "back_home", memKey: "leave_work_time" },
-  { re: /(לפני שאני הולך לישון|לפני השינה)/, anchor: "bedtime", memKey: "bedtime" },
-  { re: /(כשאני קם|בבוקר כשאני מתעורר)/, anchor: "wakeup", memKey: "wake_time" },
+const ANCHORS: Array<{ re: RegExp; anchor: string; key: string }> = [
+  { re: /לפני שאני יוצא|כשאני יוצא|לפני היציאה/, anchor: "leaving_home", key: "leave_home_time" },
+  { re: /כשאני מגיע.*עבודה|כשאגיע.*עבודה/, anchor: "arriving_work", key: "arrive_work_time" },
+  { re: /כשאני חוזר|כשאחזור/, anchor: "back_home", key: "leave_work_time" },
+  { re: /לפני השינה|לפני שאני הולך לישון/, anchor: "bedtime", key: "bedtime" },
 ];
 
-export function parseSmartHints(text: string): SmartReminderHint {
-  const hint: SmartReminderHint = {};
-  for (const p of ANCHOR_PATTERNS) {
-    if (p.re.test(text)) { hint.anchor = p.anchor; break; }
-  }
-  const lead = text.match(/(יום|יומיים|שעה|שעתיים|חצי שעה|\d{1,3})\s*(דקות|דקה|שעות|ימים)?\s*(לפני|קודם)/);
-  if (lead) {
-    const [, amount, unit] = lead;
-    const n = Number(amount);
-    if (amount === "יום") hint.leadMinutes = 1440;
-    else if (amount === "יומיים") hint.leadMinutes = 2880;
-    else if (amount === "שעה") hint.leadMinutes = 60;
-    else if (amount === "שעתיים") hint.leadMinutes = 120;
-    else if (amount === "חצי שעה") hint.leadMinutes = 30;
-    else if (!Number.isNaN(n)) hint.leadMinutes = /שע/.test(unit ?? "") ? n * 60 : /ימ/.test(unit ?? "") ? n * 1440 : n;
-  }
-  if (/(אם לא סימנתי|אם לא אישרתי|עד שאני מאשר|תרדוף אחריי|תציק לי|אם לא עשיתי)/.test(text)) {
-    hint.confirmNeeded = true;
-  }
-  return hint;
+export function parseSmartHints(text: string): { anchor?: string; leadMinutes?: number; confirmNeeded?: boolean } {
+  const result: { anchor?: string; leadMinutes?: number; confirmNeeded?: boolean } = {};
+  const found = ANCHORS.find((item) => item.re.test(text));
+  if (found) result.anchor = found.anchor;
+  if (/שעתיים לפני/.test(text)) result.leadMinutes = 120;
+  else if (/שעה לפני/.test(text)) result.leadMinutes = 60;
+  else if (/חצי שעה לפני/.test(text)) result.leadMinutes = 30;
+  else if (/יום לפני/.test(text)) result.leadMinutes = 1440;
+  if (/(אם לא סימנתי|אם לא אישרתי|תרדוף אחריי|תציק לי)/.test(text)) result.confirmNeeded = true;
+  return result;
 }
 
 export function anchorMemoryKeyFor(anchor: string): string | null {
-  const found = ANCHOR_PATTERNS.find((p) => p.anchor === anchor);
-  return found ? found.memKey : null;
+  return ANCHORS.find((item) => item.anchor === anchor)?.key ?? null;
 }
 
 export function anchorQuestion(anchor: string): string {
-  switch (anchor) {
-    case "leaving_home": return "באיזו שעה אתה בדרך כלל יוצא מהבית?";
-    case "arriving_work": return "מתי אתה בדרך כלל מגיע לעבודה?";
-    case "back_home": return "מתי אתה בדרך כלל חוזר הביתה?";
-    case "bedtime": return "באיזו שעה אתה בדרך כלל הולך לישון?";
-    case "wakeup": return "באיזו שעה אתה בדרך כלל קם?";
-    default: return "באיזו שעה בערך?";
-  }
+  return ({ leaving_home: "באיזו שעה אתה בדרך כלל יוצא מהבית?", arriving_work: "מתי אתה בדרך כלל מגיע לעבודה?", back_home: "מתי אתה בדרך כלל חוזר הביתה?", bedtime: "באיזו שעה אתה בדרך כלל הולך לישון?" } as Record<string, string>)[anchor] ?? "באיזו שעה בערך?";
 }
-
-// ---------------------------------------------------------------
-// 7) NATURALNESS FILTER — last gate before sending
-// ---------------------------------------------------------------
-
-const CORPORATE_REPLACEMENTS: [RegExp, string][] = [
-  [/^בהחלט[!,.]?\s*/u, ""],
-  [/^כמובן[!,.]?\s*/u, ""],
-  [/^ללא ספק[!,.]?\s*/u, ""],
-  [/^מצוין[!,.]?\s*/u, ""],
-  [/^נהדר[!,.]?\s*/u, ""],
-  [/אשמח לסייע לך בנושא זה/gu, "מה אתה צריך?"],
-  [/אשמח לסייע/gu, "יאללה, מה צריך"],
-  [/אני כאן כדי לסייע לך/gu, "אני פה"],
-  [/אני כאן בשבילך/gu, "אני פה"],
-  [/האם תרצה ש/gu, "רוצה ש"],
-  [/האם ברצונך/gu, "רוצה"],
-  [/במידה ו/gu, "אם"],
-  [/על מנת ל/gu, "כדי ל"],
-  [/יש לך אפשרות ל/gu, "אתה יכול "],
-  [/בהצלחה רבה/gu, "בהצלחה"],
-  [/אני מבין את התסכול שלך/gu, "מבאס"],
-  [/זה נשמע מאתגר/gu, "זה מעצבן"],
-  [/כפי שציינת קודם לכן/gu, "כמו שאמרת"],
-  [/בנוסף לכך/gu, "וגם"],
-  [/יחד עם זאת/gu, "אבל"],
-  [/לסיכום/gu, "בקיצור"],
-  [/התזכורת נקבעה בהצלחה/gu, "רשמתי"],
-  [/הבקשה שלך התקבלה/gu, "סגור"],
-];
 
 export function naturalize(text: string): string {
-  let out = text;
-  for (const [re, rep] of CORPORATE_REPLACEMENTS) out = out.replace(re, rep);
-
-  // Kill emoji spam: keep at most 2.
-  const emojiRe = /(\p{Extended_Pictographic})/gu;
-  const emojis = out.match(emojiRe) ?? [];
-  if (emojis.length > 2) {
-    let kept = 0;
-    out = out.replace(emojiRe, (m) => (++kept <= 2 ? m : ""));
-  }
-
-  // A human doesn't open three sentences in a row with the same word.
-  out = out.replace(/\s{2,}/g, " ").trim();
-  return out;
+  let result = text.trim();
+  const replacements: Array<[RegExp, string]> = [
+    [/^בהחלט[!,.]?\s*/u, ""], [/^כמובן[!,.]?\s*/u, ""], [/אשמח לסייע לך בנושא זה/gu, "מה אתה צריך?"],
+    [/אני כאן בשבילך/gu, "אני פה"], [/האם תרצה ש/gu, "רוצה ש"], [/במידה ו/gu, "אם"],
+    [/התזכורת נקבעה בהצלחה/gu, "רשמתי"], [/הבקשה שלך התקבלה/gu, "סגור"],
+  ];
+  for (const [re, replacement] of replacements) result = result.replace(re, replacement);
+  let emojiCount = 0;
+  result = result.replace(/\p{Extended_Pictographic}/gu, (emoji) => ++emojiCount <= 2 ? emoji : "");
+  return result.replace(/\s{2,}/g, " ").trim();
 }
 
-// ---------------------------------------------------------------
-// 8) EXTRACTION PASS — what's worth remembering + what to follow up on
-// ---------------------------------------------------------------
+const EXTRACTION_PROMPT = `אתה שכבת זיכרון לבוט אישי בעברית. החזר JSON תקין בלבד, בלי markdown:
+{"memories":[{"kind":"fact|preference|habit|relationship|joke|project|request","mem_key":"english_key","value":"משפט קצר בעברית","confidence":0.8,"importance":2,"expires_at":null}],"forget":["key"],"follow_ups":[{"topic":"נושא","question":"שאלה קצרה בעברית","in_hours":24}]}
+שמור רק מידע ארוך טווח, מטרות, העדפות, הרגלים ואירועים עתידיים. אל תשמור פטפוט חולף או תזכורת רגילה.`;
 
-const EXTRACTION_PROMPT = `אתה שכבת הזיכרון של בוט אישי בעברית. קיבלת חילופי הודעות בין משתמש לבוט.
-המשימה: להחליט מה *שווה לזכור לטווח ארוך* — ולא לשמור כלום מעבר לזה.
-
-כן לזכור: עובדות יציבות (עבודה, לימודים, מקום, בן/בת זוג, חיות מחמד, שמות של אנשים קרובים),
-העדפות והרגלים ("שונא לקום מוקדם", "עובד עד 18:00", "אימון ביום חמישי"),
-פרויקטים ומטרות מתמשכות, בדיחות פנימיות שחוזרות, ובקשות סגנון שהמשתמש ביקש.
-
-לא לזכור: פטפוט חולף, מצב רוח של רגע, תזכורות (הן נשמרות במקום אחר), שאלות טכניות, כל הודעה סתם.
-
-בנוסף: אם המשתמש הזכיר אירוע עתידי שראוי לחזור ולשאול עליו (מבחן, ראיון, עבודה חדשה, פגישה חשובה, דדליין) —
-צור follow_up עם שאלה קצרה וטבעית בעברית ומתי לשאול אותה (בשעות מהרגע הזה).
-
-החזר JSON תקין בלבד, בלי טקסט מסביב, במבנה:
-{"memories":[{"kind":"fact|preference|habit|relationship|joke|project|request","mem_key":"slug_באנגלית","value":"משפט קצר בעברית","confidence":0.0-1.0,"importance":1-4,"expires_at":null}],
- "forget":["mem_key"],
- "follow_ups":[{"topic":"מבחן","question":"נו, איך היה המבחן?","in_hours":20}]}
-חוקי חשיבות: 4=קריטי (בריאות, כספים, דדליין קשיח), 3=חשוב, 2=רגיל, 1=זניח.
-חוק שכחה: אם המידע רלוונטי רק לזמן מוגבל (למשל "מחר אני הולך לרופא") — שים expires_at כ-ISO של סוף הרלוונטיות, כדי שהבוט לא יתייחס לזה אחרי שזה עבר.
-אם אין מה לזכור — החזר {"memories":[],"forget":[],"follow_ups":[]}.`;
-
-export async function runExtraction(
-  callModel: ModelCall,
-  args: { userText: string; replyText: string; history: HistoryMsg[]; known: Memory[] },
-): Promise<{ memories: Memory[]; forget: string[]; followUps: { topic: string; question: string; in_hours: number }[] }> {
-  const empty = { memories: [], forget: [], followUps: [] };
-  try {
-    const knownList = args.known.map((m) => `${m.mem_key}: ${m.value}`).join("\n") || "(אין עדיין)";
-    const convo = [...args.history.slice(-4), { role: "user", content: args.userText }, { role: "assistant", content: args.replyText }]
-      .map((m) => `${m.role === "assistant" ? "בוט" : "משתמש"}: ${m.content}`)
-      .join("\n");
-
-    const res = await callModel({
-      systemInstruction: { parts: [{ text: EXTRACTION_PROMPT }] },
-      contents: [{ role: "user", parts: [{ text: `זיכרונות קיימים:\n${knownList}\n\nהשיחה:\n${convo}` }] }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 512, responseMimeType: "application/json" },
-    });
-    if (!res.ok) return empty;
-    const raw: string =
-      res.data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
-    const jsonText = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-    const parsed = JSON.parse(jsonText);
-    return {
-      memories: Array.isArray(parsed.memories)
-        ? parsed.memories
-            .filter((m: Memory) => m && m.mem_key && m.value)
-            .slice(0, 6)
-            .map((m: Memory) => ({ ...m, mem_key: String(m.mem_key).slice(0, 60) }))
-        : [],
-      forget: Array.isArray(parsed.forget) ? parsed.forget.slice(0, 5) : [],
-      followUps: Array.isArray(parsed.follow_ups)
-        ? parsed.follow_ups.filter((f: any) => f?.question && f?.in_hours >= 0).slice(0, 2)
-        : [],
-    };
-  } catch (e) {
-    console.error("[memory] extraction failed:", e instanceof Error ? e.message : String(e));
-    return empty;
-  }
+export async function runExtraction(callModel: ModelCall, args: { userText: string; replyText: string; history: HistoryMsg[]; known: Memory[] }) {
+  const empty = { memories: [] as Memory[], forget: [] as string[], followUps: [] as Array<{ topic: string; question: string; in_hours: number }> };
+  const history = [...args.history.slice(-4), { role: "user", content: args.userText }, { role: "assistant", content: args.replyText }]
+    .map((message) => `${message.role}: ${message.content}`).join("\n");
+  const response = await callModel({
+    systemInstruction: { parts: [{ text: EXTRACTION_PROMPT }] },
+    contents: [{ role: "user", parts: [{ text: `זיכרונות קיימים:\n${args.known.map((m) => m.value).join("\n") || "אין"}\n\nשיחה:\n${history}` }] }],
+    generationConfig: { temperature: 0.1, maxOutputTokens: 512, responseMimeType: "application/json" },
+  });
+  if (!response.ok) return empty;
+  const raw = response.data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
+  const parsed = parseJsonSafely(raw, empty, "memory extraction") as typeof empty;
+  return {
+    memories: Array.isArray(parsed.memories) ? parsed.memories.filter((m) => m?.mem_key && m?.value).slice(0, 6) : [],
+    forget: Array.isArray(parsed.forget) ? parsed.forget.slice(0, 5) : [],
+    followUps: Array.isArray(parsed.followUps) ? parsed.followUps.filter((f) => f?.question && Number(f.in_hours) >= 0).slice(0, 2) : [],
+  };
 }
 
-export async function scheduleFollowUps(
-  supabase: Supa,
-  chatId: number,
-  followUps: { topic: string; question: string; in_hours: number }[],
-) {
-  if (followUps.length === 0) return;
-  const rows = followUps.map((f) => ({
+export async function scheduleFollowUps(supabase: Supa, chatId: number, followUps: Array<{ topic: string; question: string; in_hours: number }>) {
+  if (!followUps.length) return;
+  const rows = followUps.map((followUp) => ({
     chat_id: chatId,
-    topic: String(f.topic ?? "").slice(0, 120) || "מעקב",
-    question: String(f.question).slice(0, 300),
-    due_at: new Date(Date.now() + Math.max(0.5, Number(f.in_hours) || 20) * 3600_000).toISOString(),
+    topic: String(followUp.topic).slice(0, 120),
+    question: String(followUp.question).slice(0, 300),
+    due_at: new Date(Date.now() + Math.max(1, Number(followUp.in_hours) || 24) * 3_600_000).toISOString(),
   }));
   const { error } = await supabase.from("follow_ups").insert(rows);
   if (error) console.error("[followup] insert failed:", error.message);
 }
 
-// In-conversation follow-up: should the bot end with an offer instead of a full stop?
 export function followUpNudge(text: string): string {
-  if (/(מבחן|ראיון|מצגת|דדליין|הגשה|פגישה חשובה|טסט|בוחן)/.test(text)) {
-    return "אם מתאים — תציע בסוף ההודעה, במשפט קצר וטבעי, תזכורת אחת קונקרטית שתעזור לו להתכונן (למשל ללמוד הערב). הצעה, לא הרצאה.";
-  }
-  if (/(מתחיל עבודה|יום ראשון מתחיל|התחלתי ללמוד|מתחיל קורס|עובר דירה)/.test(text)) {
-    return "זה אירוע שכדאי לחזור אליו בעתיד — תגיב עכשיו קצר, ותשאיר פתח לחזור ולשאול איך הלך.";
-  }
+  if (/(מבחן|ראיון|מצגת|דדליין|הגשה|טסט)/.test(text)) return "אפשר להציע תזכורת אחת קונקרטית, בלי ללחוץ.";
   return "";
 }
