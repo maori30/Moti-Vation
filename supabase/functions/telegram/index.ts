@@ -1,4 +1,3 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   anchorMemoryKeyFor,
@@ -71,1908 +70,511 @@ import {
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
+const GEMINI_API_VERSION = "v1beta";
+const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
+const HISTORY_LIMIT = 12;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const BLOCKED_MODELS = new Set<string>();
+const NO_THINKING_SUPPORT = new Set<string>();
+let resolvedModel: string | null = null;
+let resolvedAt = 0;
 
-const GEMINI_API_VERSION = "v1beta";
-
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 15000): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-const PREFERRED_GEMINI_MODELS = [
+const MODELS = [
   Deno.env.get("GEMINI_MODEL")?.trim(),
   "gemini-flash-latest",
   "gemini-3-flash-preview",
-  "gemini-3.5-flash",
-  "gemini-3.1-flash",
   "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-pro",
   "gemini-2.0-flash",
-  "gemini-2.0-flash-001",
-  "gemini-2.0-flash-lite",
   "gemini-1.5-flash",
-  "gemini-1.5-flash-8b",
 ].filter(Boolean) as string[];
 
-let RESOLVED_GEMINI_MODEL: string | null = null;
-let LAST_AVAILABLE_MODELS: string[] = [];
-let LAST_MODEL_ERROR: string | null = null;
-let LAST_RESOLVED_AT = 0;
-const MODEL_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
-
-const BLOCKED_MODELS = new Set<string>();
-const NO_THINKING_SUPPORT: Set<string> = new Set();
-const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-const HISTORY_LIMIT = 12;
-const FAST_MODEL = Deno.env.get("GEMINI_FAST_MODEL")?.trim() || Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
-
-function nowInTz(): Date {
-  return new Date();
-}
-
-async function logCompletion(r: { id: number; chat_id: number; text: string }) {
-  await supabase.from("reminder_completions").insert({
-    chat_id: r.chat_id,
-    reminder_id: r.id,
-    reminder_text: r.text,
-  });
-  const { data: userRow } = await supabase
-    .from("users")
-    .select("goals_achieved")
-    .eq("chat_id", r.chat_id)
-    .single();
-  await supabase
-    .from("users")
-    .update({ goals_achieved: (userRow?.goals_achieved ?? 0) + 1 })
-    .eq("chat_id", r.chat_id);
-}
-
-function getTzOffsetMinutes(date: Date, timeZone: string): number {
-  const dtf = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  });
-  const parts = dtf.formatToParts(date).reduce((acc, p) => {
-    acc[p.type] = p.value;
-    return acc;
-  }, {} as Record<string, string>);
-  const asUTC = Date.UTC(
-    parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10),
-    parseInt(parts.hour, 10), parseInt(parts.minute, 10), parseInt(parts.second, 10)
-  );
-  return (asUTC - date.getTime()) / 60000;
-}
-
-function buildIsraelTime(hour: number, minute: number, baseNow: Date, addDays = 0): Date {
-  const offsetMin = getTzOffsetMinutes(baseNow, TZ);
-  const dtf = new Intl.DateTimeFormat("en-US", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
-  const parts = dtf.formatToParts(baseNow).reduce((acc, p) => {
-    acc[p.type] = p.value;
-    return acc;
-  }, {} as Record<string, string>);
-  const naiveUTC = Date.UTC(
-    parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10) + addDays,
-    hour, minute, 0
-  );
-  return new Date(naiveUTC - offsetMin * 60000);
-}
-
-function formatIsraelNow(): string {
-  return new Intl.DateTimeFormat("he-IL", {
-    timeZone: TZ,
-    weekday: "long",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(nowInTz());
-}
-
-function formatRelativeHours(ms: number): string {
-  const hours = Math.round(ms / (1000 * 60 * 60));
-  if (hours <= 1) return "בערך שעה";
-  if (hours < 24) return `בערך ${hours} שעות`;
-  const days = Math.round(hours / 24);
-  return days <= 1 ? "בערך יום" : `בערך ${days} ימים`;
-}
-
-function extractSleepSignal(text: string): boolean {
-  return /(הולכ(?:ת|ים)? לישון|הולך לישון|הולכת לישון|אני ישן|אני ישנה|לילה טוב|נדבר מחר|פורש לישון|נכנס לישון)/.test(text.toLowerCase());
-}
-
-function extractWakeSignal(text: string): boolean {
-  return /(קמתי|התעוררתי|בוקר טוב|ישנתי|ישנתי כבר|התעוררתי עכשיו)/.test(text.toLowerCase());
-}
-
 type HistoryMessage = { role: string; content: string; created_at?: string };
+type ParsedReminder = { dueAt: Date; task: string; type: "once" | "daily" | "weekly" };
 
-function buildTemporalContext(history: HistoryMessage[]): string {
-  const nowText = formatIsraelNow();
-  if (!history.length) {
-    return `הזמן עכשיו בישראל: ${nowText}. אין היסטוריה קודמת בשיחה הזו.`;
-  }
-  const last = history[history.length - 1];
-  const parts: string[] = [`הזמן עכשיו בישראל: ${nowText}.`];
-  if (last.created_at) {
-    const deltaMs = nowInTz().getTime() - new Date(last.created_at).getTime();
-    if (deltaMs > 0) {
-      parts.push(`עברו מאז ההודעה האחרונה ${formatRelativeHours(deltaMs)}.`);
-    }
-  }
-  const sleepMsg = [...history].reverse().find((m) => m.role === "user" && extractSleepSignal(m.content));
-  const wakeMsg = [...history].reverse().find((m) => m.role === "user" && extractWakeSignal(m.content));
-  if (sleepMsg?.created_at) {
-    const deltaMs = nowInTz().getTime() - new Date(sleepMsg.created_at).getTime();
-    if (deltaMs >= 1000 * 60 * 60 * 8 && !wakeMsg) {
-      parts.push(`המשתמש אמר בעבר שהוא הולך לישון, ומאז עברו ${formatRelativeHours(deltaMs)} בלי שהוא אמר שהתעורר. אם טבעי להתייחס לזה — תתייחס בדרך שונה מכל פעם קודמת (לא תמיד "כמה שעות ישנת", לפעמים בכלל בלי לשאול על שינה, לפעמים הערה קצרה בלי שאלה).`);
-    }
-  }
-  return parts.join(" ");
+const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
+  coach: { name: "המאמן", emoji: "🧠", prompt: "אתה מאמן אישי ישראלי, חם וישיר. דוחף לצעד קטן ומעשי. בלי נאומים." },
+  cynic: { name: "הציני", emoji: "😈", prompt: "אתה ציני חביב וקצר. עקיצה אחת לכל היותר, אבל לא פוגע." },
+  friend: { name: "החבר", emoji: "🤗", prompt: "אתה חבר חם בוואטסאפ. מקשיב, מדבר טבעי ולא שיפוטי." },
+  sergeant: { name: "הרס\"ר", emoji: "🪖", prompt: "אתה רס\"ר יבש וקצר. פעולה לפני תירוצים, אבל לא משפיל." },
+  therapist: { name: "המטפל", emoji: "🛋️", prompt: "אתה עדין, סקרן ואנושי. פוגש רגש לפני פתרון." },
+  hype: { name: "המעודד", emoji: "🔥", prompt: "אתה אנרגטי ומפרגן. חוגג הישגים בלי להיות מעיק." },
+  grandma: { name: "הסבתא", emoji: "👵", prompt: "את סבתא ישראלית חמה ודואגת. מעט הומור על אוכל ושינה." },
+  philosopher: { name: "הפילוסוף", emoji: "🧐", prompt: "אתה פילוסוף קצר ומדויק. שואל שאלה טובה בלי להסתבך." },
+  frayer: { name: "הפראייר", emoji: "😏", prompt: "אתה ישראלי תכלסי. מדבר פשוט, בלי ז'רגון עסקי ובלי 'תשואה'." },
+  neighbor: { name: "השכן מלמעלה", emoji: "🏠", prompt: "אתה שכן חביב עם FOMO קל, בלי התנשאות." },
+};
+
+const GREETINGS: Record<string, string> = {
+  coach: "🧠 כאן. מה עובר עליך היום?",
+  cynic: "😈 אה, שוב אתה. מה קורה?",
+  friend: "🤗 שמח שכתבת. מה קורה אצלך?",
+  sergeant: "🪖 דווח. מה הסטטוס?",
+  therapist: "🛋️ שלום. במה תרצה להתחיל?",
+  hype: "🔥 הגעת! מה קורה?",
+  grandma: "👵 אוי, מה נשמע? אכלת?",
+  philosopher: "🧐 מה הביא אותך לכאן דווקא עכשיו?",
+  frayer: "😏 תכל'ס, מה על השולחן?",
+  neighbor: "🏠 היי שכן, מה נשמע?",
+};
+
+const DONE_WORDS = ["סיימתי", "עשיתי", "לקחתי", "גמרתי", "טיפלתי", "שלחתי", "התקשרתי", "קניתי", "השלמתי"];
+const STRONG_REMINDER_TRIGGER = /תזכיר\s*לי|אל תשכח(?:\s*לי)?|תדע\s*להזכיר/;
+const REMINDER_TRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר|כל\s*(?:יום|בוקר|ערב|לילה)/;
+const TIME_OR_ANCHOR_SIGNAL = /(עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב-?\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
+const WEEKDAYS: Record<string, number> = { ראשון: 0, שני: 1, שלישי: 2, רביעי: 3, חמישי: 4, שישי: 5, שבת: 6 };
+
+function detectReminderIntent(text: string): boolean {
+  const lower = text.toLowerCase();
+  return STRONG_REMINDER_TRIGGER.test(lower) || (REMINDER_TRIGGER.test(lower) && TIME_OR_ANCHOR_SIGNAL.test(lower));
 }
 
-function isGeminiModel(name: string): boolean {
-  return name.startsWith("gemini-");
+function detectDone(text: string): boolean {
+  const lower = text.toLowerCase();
+  return DONE_WORDS.some((word) => lower.includes(word));
 }
 
-async function listAvailableGeminiModels(apiKey: string): Promise<string[]> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${apiKey}`
-  );
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`models.list failed: HTTP ${res.status} ${text.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  return (data.models ?? [])
-    .filter((m: { supportedGenerationMethods?: string[]; name: string }) =>
-      (m.supportedGenerationMethods ?? []).includes("generateContent") &&
-      isGeminiModel(m.name.replace(/^models\//, ""))
-    )
-    .map((m: { name: string }) => m.name.replace(/^models\//, ""));
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 18_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try { return await fetch(url, { ...init, signal: controller.signal }); }
+  finally { clearTimeout(timer); }
 }
 
-async function probeModel(model: string, apiKey: string): Promise<boolean> {
-  if (BLOCKED_MODELS.has(model)) return false;
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: "hi" }] }],
-          generationConfig: { maxOutputTokens: 5 },
-        }),
-      },
-      8000
-    );
-  } catch {
-    return false;
-  }
-  if (res.ok) return true;
-  const errText = await res.text();
-  let status: string | undefined;
-  try { status = JSON.parse(errText)?.error?.status; } catch { /* ignore */ }
-  if (res.status === 404 || status === "NOT_FOUND") {
-    console.warn(`[gemini] model ${model} → NOT_FOUND, blacklisting`);
-    BLOCKED_MODELS.add(model);
-    return false;
-  }
-  return false;
+async function resolveModel(force = false): Promise<string> {
+  if (resolvedModel && !force && !BLOCKED_MODELS.has(resolvedModel) && Date.now() - resolvedAt < 5 * 60_000) return resolvedModel;
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) throw new Error("GEMINI_API_KEY is missing");
+  const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${key}`, {});
+  if (!response.ok) throw new Error(`models.list HTTP ${response.status}`);
+  const json = await response.json();
+  const available = (json.models ?? [])
+    .filter((model: any) => (model.supportedGenerationMethods ?? []).includes("generateContent"))
+    .map((model: any) => String(model.name).replace(/^models\//, ""));
+  const model = [...MODELS, ...available].find((candidate) => available.includes(candidate) && !BLOCKED_MODELS.has(candidate));
+  if (!model) throw new Error("No Gemini generateContent model available");
+  resolvedModel = model;
+  resolvedAt = Date.now();
+  return model;
 }
 
-async function resolveGeminiModel(forceRecheck = false): Promise<string> {
-  const staleEnough = Date.now() - LAST_RESOLVED_AT > MODEL_RECHECK_INTERVAL_MS;
-  if (
-    RESOLVED_GEMINI_MODEL &&
-    !BLOCKED_MODELS.has(RESOLVED_GEMINI_MODEL) &&
-    !forceRecheck &&
-    !staleEnough
-  ) {
-    return RESOLVED_GEMINI_MODEL;
-  }
-  const apiKey = Deno.env.get("GEMINI_API_KEY");
-  if (!apiKey) throw new Error("GEMINI_API_KEY not set");
-  try {
-    const available = await listAvailableGeminiModels(apiKey);
-    LAST_AVAILABLE_MODELS = available;
-    LAST_MODEL_ERROR = null;
-    const candidates = PREFERRED_GEMINI_MODELS.filter((m) => available.includes(m));
-    for (const m of available) {
-      if (!candidates.includes(m) && isGeminiModel(m)) candidates.push(m);
-    }
-    const pick = candidates.find((m) => !BLOCKED_MODELS.has(m));
-    if (!pick) {
-      RESOLVED_GEMINI_MODEL = null;
-      throw new Error("No candidate model available (all blocked) among: " + candidates.join(", "));
-    }
-    RESOLVED_GEMINI_MODEL = pick;
-    LAST_RESOLVED_AT = Date.now();
-    console.log(`[gemini] resolved model: ${pick}`);
-    return pick;
-  } catch (err) {
-    LAST_MODEL_ERROR = err instanceof Error ? err.message : String(err);
-    RESOLVED_GEMINI_MODEL = null;
-    throw err;
-  }
-}
-
-function modelSupportsThinking(model: string): boolean {
-  return /gemini-(2\.5|3(\.\d+)?)/.test(model);
-}
-
-function buildGenerationConfig(model: string, maxOutputTokens: number, forceNoThinking = false) {
+function modelConfig(model: string, base: Record<string, unknown>, tokenBoost: number, noThinking: boolean) {
+  const maxOutputTokens = Number(base.maxOutputTokens ?? 700) + tokenBoost;
   const config: Record<string, unknown> = {
-    temperature: 0.8,
-    topP: 0.9,
+    ...base,
+    temperature: base.temperature ?? 0.8,
+    topP: base.topP ?? 0.9,
     maxOutputTokens,
   };
-  if (modelSupportsThinking(model) && !forceNoThinking && !NO_THINKING_SUPPORT.has(model)) {
+  if (/gemini-(2\.5|3)/.test(model) && !noThinking && !NO_THINKING_SUPPORT.has(model)) {
     config.thinkingConfig = { thinkingBudget: 0 };
   }
   return config;
 }
 
+// Important: keeps responseMimeType for JSON extraction calls.
 async function generateContentWithFallback(
   apiKey: string,
   bodyBase: Record<string, unknown>,
   attempt = 0,
   tokenBoost = 0,
-  forceNoThinking = false
+  noThinking = false,
 ): Promise<{ ok: true; data: any } | { ok: false }> {
-  const MAX_ATTEMPTS = 4;
+  if (attempt >= 4) return { ok: false };
   let model: string;
-  try {
-    model = await resolveGeminiModel(attempt > 0);
-  } catch (err) {
-    console.error(`[gemini] could not resolve any working model: ${err instanceof Error ? err.message : String(err)}`);
-    recordError({ code: "NO_MODEL", message: err instanceof Error ? err.message : String(err) });
-    return { ok: false };
-  }
+  try { model = await resolveModel(attempt > 0); }
+  catch (error) { console.error("[gemini] resolve model failed", error); return { ok: false }; }
+
   const baseConfig = (bodyBase.generationConfig as Record<string, unknown>) ?? {};
-  const baseMaxTokens = (baseConfig.maxOutputTokens as number) ?? 700;
-  const generationConfig = buildGenerationConfig(model, baseMaxTokens + tokenBoost, forceNoThinking);
-  const body = { ...bodyBase, generationConfig };
-  let res: Response;
+  const body = { ...bodyBase, generationConfig: modelConfig(model, baseConfig, tokenBoost, noThinking) };
+
   try {
-    res = await fetchWithTimeout(
+    const response = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
     );
-  } catch (err) {
-    const isAbort = err instanceof Error && err.name === "AbortError";
-    const msg = isAbort ? `request to ${model} timed out` : (err instanceof Error ? err.message : String(err));
-    console.error(`[gemini] network error on ${model}: ${msg}`);
-    recordError({ code: isAbort ? "TIMEOUT" : "NETWORK_ERROR", message: `[${model}] ${msg}` });
-    if (attempt + 1 < MAX_ATTEMPTS) {
-      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, forceNoThinking);
-    }
-    return { ok: false };
-  }
-  if (res.ok) {
-    const data = await res.json();
-    const finishReason = data?.candidates?.[0]?.finishReason;
-    if (finishReason === "MAX_TOKENS" && attempt + 1 < MAX_ATTEMPTS && tokenBoost < 800) {
-      console.warn(`[gemini] response hit MAX_TOKENS on ${model}, retrying with a larger token budget`);
-      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + 400, forceNoThinking);
-    }
-    const hasText = !!data?.candidates?.[0]?.content?.parts?.some((p: { text?: string }) => (p.text ?? "").trim().length > 0);
-    if (finishReason === "MAX_TOKENS" && !hasText && attempt + 1 < MAX_ATTEMPTS) {
-      console.warn(`[gemini] MAX_TOKENS with empty output on ${model} (likely all budget spent on internal reasoning), retrying once more with a bigger jump`);
-      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + 800, forceNoThinking);
-    }
-    return { ok: true, data };
-  }
-  const errText = await res.text();
-  let apiCode: string | undefined;
-  try {
-    const j = JSON.parse(errText);
-    apiCode = j?.error?.status || j?.error?.code?.toString();
-  } catch { /* not json */ }
-  console.error(`[gemini] http ${res.status} ${apiCode ?? ""} model=${model} body=${errText.slice(0, 500)}`);
-  recordError({ status: res.status, code: apiCode, message: `[${model}] ${errText.slice(0, 280)}` });
-  const sentThinkingConfig = !forceNoThinking && modelSupportsThinking(model) && !NO_THINKING_SUPPORT.has(model);
-  if (res.status === 400 && sentThinkingConfig && attempt + 1 < MAX_ATTEMPTS) {
-    console.warn(`[gemini] model ${model} returned 400 with thinkingConfig set, retrying without it and remembering for next time`);
-    NO_THINKING_SUPPORT.add(model);
-    return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, true);
-  }
-  const isModelDead = res.status === 404 || apiCode === "NOT_FOUND" || res.status === 403 || apiCode === "PERMISSION_DENIED";
-  if (isModelDead) {
-    BLOCKED_MODELS.add(model);
-    if (RESOLVED_GEMINI_MODEL === model) RESOLVED_GEMINI_MODEL = null;
-    if (attempt + 1 < MAX_ATTEMPTS) {
-      console.warn(`[gemini] model ${model} died mid-flight, retrying with a different model (attempt ${attempt + 2}/${MAX_ATTEMPTS})`);
-      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, forceNoThinking);
-    }
-  }
-  console.error(`[gemini] giving up after ${attempt + 1} attempt(s) on model ${model}: HTTP ${res.status} ${apiCode ?? ""}`);
-  return { ok: false };
-}
-
-type DiagError = { at?: string; status?: number; code?: string; message: string };
-const RECENT_ERRORS: DiagError[] = [];
-function recordError(e: DiagError) {
-  const entry = { ...e, at: new Date().toISOString() };
-  RECENT_ERRORS.unshift(entry);
-  if (RECENT_ERRORS.length > 5) RECENT_ERRORS.length = 5;
-  supabase
-    .from("bot_errors")
-    .insert({ status: entry.status ?? null, code: entry.code ?? null, message: entry.message.slice(0, 500) })
-    .then(() => {}, () => {});
-}
-
-async function fetchRecentErrorsFromDb(): Promise<DiagError[]> {
-  try {
-    const { data, error } = await supabase
-      .from("bot_errors")
-      .select("created_at, status, code, message")
-      .order("created_at", { ascending: false })
-      .limit(5);
-    if (error || !data) return [];
-    return data.map((r: any) => ({
-      at: r.created_at,
-      status: r.status ?? undefined,
-      code: r.code ?? undefined,
-      message: r.message ?? "",
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function logMissingSecrets() {
-  const required = ["TELEGRAM_BOT_TOKEN", "GEMINI_API_KEY", "SUPABASE_URL", "SB_SERVICE_ROLE_KEY"];
-  const missing = required.filter((k) => !Deno.env.get(k));
-  if (missing.length) console.error(`[secrets] missing: ${missing.join(", ")}`);
-  return missing;
-}
-logMissingSecrets();
-
-const DONE_KEYWORDS = [
-  "סיימתי", "עשיתי", "לקחתי", "גמרתי", "עשיתי את זה", "טיפלתי",
-  "הלכתי", "שלחתי", "התקשרתי", "קניתי", "אכלתי", "שתיתי",
-  "ישנתי", "התרחצתי", "השלמתי", "הצלחתי", "עבר", "בערך", "כבר",
-];
-
-function detectDoneKeyword(text: string): boolean {
-  const lower = text.toLowerCase();
-  return DONE_KEYWORDS.some((kw) => lower.includes(kw));
-}
-
-type ChatMode = "smalltalk" | "frustration" | "success" | "avoidance" | "casual";
-
-function detectConversationMode(text: string): ChatMode {
-  const t = text.toLowerCase();
-  if (/(סיימתי|עשיתי|שלחתי|טיפלתי|השלמתי|לקחתי|גמרתי)/.test(t)) return "success";
-  if (/(אין לי כוח|אני גמור|נשבר לי|קשה לי|אני בלחץ|מבואס|מיואש|עייף|מותש|שרוף)/.test(t)) return "frustration";
-  if (/(דחיתי|לא עשיתי|לא הצלחתי להתחיל|אני מורח|מחר|אחר כך|נדחה)/.test(t)) return "avoidance";
-  if (/(מה קורה|היי|שלום|סתם|יום מוזר|משעמם לי|לא יודע|באסה)/.test(t)) return "smalltalk";
-  return "casual";
-}
-
-type IntentTone =
-  | "sarcastic"
-  | "dark_humor"
-  | "self_deprecating"
-  | "hyperbole"
-  | "deadpan"
-  | "affectionate_mock"
-  | "joke"
-  | "wordplay"
-  | "rhetorical"
-  | "masked_sadness"
-  | "serious"
-  | "neutral";
-
-type EmotionalLayer = {
-  tone: IntentTone;
-  intensity: number;
-  maskedEmotion: "none" | "loneliness" | "anxiety" | "exhaustion" | "shame" | "pride" | "relief";
-};
-
-function analyzeHebrewIntent(text: string): EmotionalLayer {
-  const t = text.trim().toLowerCase();
-  if (!t) return { tone: "neutral", intensity: 0, maskedEmotion: "none" };
-
-  const sarcasmMarkers = /(כן,? ?בטח|נו ?באמת|וואו איזה|איזה כבוד|בדיוק מה שחיפשתי|איזה יופי|מגניב\.\.\.|כן ?ברור|בטח בטח|איזה מזל שלי|מה איכפת לי|בטח שכן|ברור שכן|נו כן|איזה נס|מדהים ממש|וואי איזה כיף לי|וואו כזה|איזה כיף לי\b|נו תודה|כן כן בטח|איזה הפתעה|חחח בטח|טוב נו|איזה מגניב|וואלה איזה כבוד|תודה רבה \(לא\)|יאללה בטח|מה פתאום ברור)/;
-  const darkHumorMarkers = /(גם ככה נגמר העולם|לפחות לא מתו|יהיה בסדר, תמיד יהיה בסדר|קלאסי ישראלי|רק אצלנו|מה יש לי להפסיד|ממילא הכל הרוס|בשביל מה בכלל|ממילא לא משנה|גם זה יעבור, כאילו|במדינה הזאת|אצלנו זה תמיד ככה|צחוק הגורל|ניחא, קרה כבר)/;
-  const selfDeprecatingMarkers = /(אני כישלון|אני תמיד ככה|קלאסי שלי|בול אני|זה כל כך אני|אני הכי גרוע ב|טיפוסי לי|אני לא מסוגל לכלום|מזל שיש לי הומור על עצמי|אני אסון|אופייני לי|מה אני בכלל שווה|קלאסיקה שלי|אני תקלה מהלכת)/;
-  const hyperboleMarkers = /(מתתי|רצח אותי|נדרסתי|נשברתי לגמרי|הכי גרוע בהיסטוריה|אף פעם בחיים|מיליון פעם|אלף שנה|העולם נגמר|אני עומד למות|קטסטרופה|אסון עולמי|מתה מצחוק|גמרתי אותי|אני בהלם מוחלט|פיצוץ ראש|אני קורס|לא שרדתי|טרגדיה יוונית|סוף העולם ממש)/;
-  const deadpanMarkers = /(בסדר גמור\.?$|לא נורא\.?$|יהיה טוב, כנראה|בטח, למה לא|כאילו, בסדר|אין דבר כזה בעיה|סבבה, מה שתגיד|נו טוב\.?$|אוקיי בסדר\.?$|כאילו נו\.?$)/;
-  const affectionateMockMarkers = /(אתה מטומטם( חמוד)?|כזה טמבל אתה|אין עליך|קלאסי אותך|אתה בנאדם בלתי אפשרי|רק אתה מסוגל|איזה דביל אתה \(חמוד\)|אתה בדיחה, בקטע הטוב|טמבל שכמוך|מטומטם שכמוך|אין עליך באמת)/;
-  const jokeMarkers = /(סתם(?!\s?ה)|צוחק|בצחוק|קונדס|בדיחה|😂|🤣|חחח+|היי זה היה סתם|לא ברצינות|קורע|צחקתי|רק צוחק|בהיתממות|בקטע צחוק)/;
-  const wordplayMarkers = /(משחק מילים|התכוונתי ל|לא זה התכוונתי|טעות דפוס|התכוונתי בעצם|זה יצא לי אחרת|כפל משמעות|זה גם וגם|טעות הקלדה)/;
-  const rhetoricalMarkers = /(מה אני בכלל עושה|למה תמיד ככה|מי בכלל בא לי|מה זה חשוב בסוף|למה לי בכלל|מה הטעם|בשביל מה זה בכלל|מה זה משנה כבר|למה אני טורח|מה אני, לבד בעולם)/;
-  const maskedSadnessMarkers = /(סבבה\.?$|טוב, מה יש|לא נורא, רגיל|כאילו לא נורא|זה מה שיש|אין דבר, רגיל אצלי|כרגיל, לא משנה|בסדר, כרגיל\.?$|יהיה בסדר, כאילו\.?$)/;
-  const chutzpahMarkers = /(ברור שאני צודק|מי בכלל שאל|תגיד תודה שאני עונה|עשיתי לך טובה|בלעדיי היית אבוד|כאילו מי עוד יעזור לך|נו באמת, אני תמיד צודק)/;
-  const wallaFamilyMarkers = /(וואלה חיים שלי|וואלה תותח|וואלה סוף העולם|וואלה לא ידעתי שיש דבר כזה|וואלה נדלק|וואלה מטורף)/;
-
-  const emojiIntensity = (t.match(/😂|🤣|😅|😭|😩|😔|🥲|😐|🙄|😏|🫠|💀|😬/g) ?? []).length;
-  const repeatedLaughter = /חחח+|האהה+|:\)+|:d+|לולז+/.test(t);
-  const punctuationDrama = /!{1,}\.\.\.|\.\.\.$|!\?|\?!|\?{2,}/.test(t);
-
-  let tone: IntentTone = "serious";
-  let maskedEmotion: EmotionalLayer["maskedEmotion"] = "none";
-
-  if (maskedSadnessMarkers.test(t) && t.length < 40) {
-    tone = "masked_sadness";
-    maskedEmotion = "loneliness";
-  } else if (darkHumorMarkers.test(t)) {
-    tone = "dark_humor";
-    maskedEmotion = "exhaustion";
-  } else if (selfDeprecatingMarkers.test(t)) {
-    tone = "self_deprecating";
-    maskedEmotion = "shame";
-  } else if (chutzpahMarkers.test(t)) {
-    tone = "affectionate_mock";
-  } else if (wallaFamilyMarkers.test(t)) {
-    tone = "hyperbole";
-  } else if (sarcasmMarkers.test(t)) {
-    tone = "sarcastic";
-  } else if (affectionateMockMarkers.test(t)) {
-    tone = "affectionate_mock";
-  } else if (hyperboleMarkers.test(t)) {
-    tone = "hyperbole";
-  } else if (deadpanMarkers.test(t)) {
-    tone = "deadpan";
-  } else if (jokeMarkers.test(t)) {
-    tone = "joke";
-  } else if (wordplayMarkers.test(t)) {
-    tone = "wordplay";
-  } else if (rhetoricalMarkers.test(t)) {
-    tone = "rhetorical";
-    maskedEmotion = "anxiety";
-  } else if (t.length < 2) {
-    tone = "neutral";
-  }
-
-  const intensity = Math.min(1, 0.25 * emojiIntensity + (repeatedLaughter ? 0.25 : 0) + (punctuationDrama ? 0.2 : 0) + (tone !== "serious" && tone !== "neutral" ? 0.3 : 0));
-  return { tone, intensity, maskedEmotion };
-}
-
-function intentToneInstruction(layer: EmotionalLayer): string {
-  const { tone, maskedEmotion } = layer;
-  const maskHint = maskedEmotion !== "none"
-    ? ` יכול להיות שמתחת לזה יש גם תחושת ${maskedEmotion === "loneliness" ? "בדידות או צורך פשוט שידברו איתו" : maskedEmotion === "anxiety" ? "חרדה או חוסר ודאות" : maskedEmotion === "exhaustion" ? "שחיקה אמיתית, לא רק ציניות" : maskedEmotion === "shame" ? "בושה עצמית שמוסווית בבדיחה" : ""} — כדאי לגעת בזה בעדינות, לא ישירות ולא בבת אחת.`
-    : "";
-
-  switch (tone) {
-    case "sarcastic":
-      return `לתשומת לבך: ההודעה נשמעת ציניקנית/אירונית — הכוונה כנראה הפוכה ממה שנכתב מילולית. אל תיקח את המילים כפשוטן, תגיב לכוונה האמיתית, בלי להיפגע ובלי להטיף מוסר.${maskHint}`;
-    case "dark_humor":
-      return `לתשומת לבך: זה הומור שחור/גלולה מרה בסגנון ישראלי קלאסי — צוחקים כדי לא לשבור. אפשר להצטרף להומור בקלילות, אבל בלי לזלזל במה שבאמת קשה מתחתיו.${maskHint}`;
-    case "self_deprecating":
-      return `לתשומת לבך: המשתמש מלגלג על עצמו. אל תאשר את הביקורת העצמית ואל תתעלם ממנה — אפשר לצחוק קליל על זה ובו־זמנית לתת נגיעה של חמלה אמיתית.${maskHint}`;
-    case "hyperbole":
-      return `לתשומת לבך: יש כאן הגזמה מכוונת לצורך אפקט קומי ("מתתי", "העולם נגמר") — אל תיקח את זה מילולית, תשחק עם ההגזמה בהומור מתאים.`;
-    case "deadpan":
-      return `לתשומת לבך: הטון שטוח/יבש בכוונה — ייתכן שמתחת לזה יש הרבה יותר ממה שנכתב. תגיב בקלילות אבל תן מקום גם למה שלא נאמר במפורש.${maskHint}`;
-    case "affectionate_mock":
-      return `לתשומת לבך: זו עקיצה חיבתית, לא עלבון אמיתי. תגיב באותו רוח — קליל, חם, עם עקיצה חזרה אם זה מתאים לאישיות שלך.`;
-    case "joke":
-      return `לתשומת לבך: ההודעה נשמעת כמו בדיחה או קלילות. תגיב בקלילות ובהומור מתאים, לא ברצינות תהומית.`;
-    case "wordplay":
-      return `לתשומת לבך: יכול להיות שיש כאן משחק מילים, כפל משמעות, או טעות ניסוח. בחר את הפירוש הטבעי ביותר לשיחה יומיומית בעברית ישראלית.`;
-    case "rhetorical":
-      return `לתשומת לבך: זו כנראה שאלה רטורית — המשתמש לא מחפש תשובה עובדתית אלא פורק תסכול. אל תענה כאילו ביקשו ממך מידע; פגוש את הרגש קודם.${maskHint}`;
-    case "masked_sadness":
-      return `לתשומת לבך: תשובה קצרה כמו "בסדר" או "רגיל" יכולה להסתיר עצב או בדידות אמיתיים. אל תיקח את זה כסגירת נושא — שאל בעדינות שאלה אחת שפותחת ולא סוגרת.${maskHint}`;
-    default:
-      return "";
-  }
-}
-
-const FEW_SHOT_EXAMPLES_BY_MODE: Record<ChatMode, { role: "user" | "model"; parts: { text: string }[] }[]> = {
-  smalltalk: [
-    { role: "user", parts: [{ text: "היה לי יום מוזר" }] },
-    { role: "model", parts: [{ text: "מוזר-מעצבן או מוזר-מעניין?" }] },
-    { role: "user", parts: [{ text: "סתם אין לי מצב רוח" }] },
-    { role: "model", parts: [{ text: "אוקיי. מה הדבר הכי קטן שיכול לשפר את הרגע הזה?" }] },
-  ],
-  frustration: [
-    { role: "user", parts: [{ text: "אין לי כוח אפילו להתחיל" }] },
-    { role: "model", parts: [{ text: "שוכחים מהמשימה. תפתח רק את הקובץ — ותגיד לי כשפתחת." }] },
-    { role: "user", parts: [{ text: "אני גמור, כבר שבוע שאני מדחה את זה" }] },
-    { role: "model", parts: [{ text: "שבוע זה כבר הגיע בפני עצמו לשמור על זה ברמה הזו 😄 תכתוב משפט אחד — הכי גרוע שיש — ותשלח לי." }] },
-  ],
-  success: [
-    { role: "user", parts: [{ text: "שלחתי את המייל סוף סוף" }] },
-    { role: "model", parts: [{ text: "יא אלוהים. שבועיים של דחיינות, שלוש שניות של שליחה. איך מרגיש?" }] },
-    { role: "user", parts: [{ text: "סיימתי את הדוח" }] },
-    { role: "model", parts: [{ text: "🔥 סיימת דוח שדחית איך שדחית אותו — זה לא קטן. מה הבא?" }] },
-  ],
-  avoidance: [
-    { role: "user", parts: [{ text: "שוב דחיתי את זה למחר" }] },
-    { role: "model", parts: [{ text: "כמה פעמים 'מחר' כבר? לא שיפוטי — סקרן. מה הכי מפחיד בלהתחיל?" }] },
-    { role: "user", parts: [{ text: "לא מצליח להתחיל, הכל נראה כבד" }] },
-    { role: "model", parts: [{ text: "תשכח מהכל. מה הצעד הכי קטן, הכי מגוחך, שאפשר לעשות עכשיו?" }] },
-  ],
-  casual: [
-    { role: "user", parts: [{ text: "לא יודע" }] },
-    { role: "model", parts: [{ text: "בסדר גמור. מה הדבר שהכי תופס לך מקום בראש עכשיו?" }] },
-    { role: "user", parts: [{ text: "משעמם לי" }] },
-    { role: "model", parts: [{ text: "שעמום זה לרוב משימה שמחכה לך בשקט 😄 יש משהו שדחית?" }] },
-  ],
-};
-
-const FEW_SHOT_BY_PERSONALITY: Record<string, { role: "user" | "model"; parts: { text: string }[] }[]> = {
-  coach: [
-    { role: "user", parts: [{ text: "לא מצליח להתחיל את הדוח" }] },
-    { role: "model", parts: [{ text: "שוכחים מהדוח. תפתח קובץ ריק ותכתוב שם כותרת — אפילו גרועה. תגיד לי כשעשית." }] },
-    { role: "user", parts: [{ text: "שלחתי את המייל סוף סוף" }] },
-    { role: "model", parts: [{ text: "שבועיים של דחיינות, שלוש שניות של שליחה. איך מרגיש עכשיו?" }] },
-    { role: "user", parts: [{ text: "אני גמור" }] },
-    { role: "model", parts: [{ text: "גמור גמור, או 'עוד שעה ואני מתפטר' גמור? כי יש הבדל." }] },
-  ],
-  cynic: [
-    { role: "user", parts: [{ text: "שוב דחיתי את זה" }] },
-    { role: "model", parts: [{ text: "כמה פעמים 'שוב' כבר? לא שיפוטי — סקרן." }] },
-    { role: "user", parts: [{ text: "לא בא לי" }] },
-    { role: "model", parts: [{ text: "כן, ולמחר יבוא לך יותר? ספוילר — לא. מה הצעד הכי קטן שאפשר?" }] },
-    { role: "user", parts: [{ text: "סיימתי!" }] },
-    { role: "model", parts: [{ text: "מזל טוב. לקח לך רק פי 3 מהזמן המתוכנן. בפעם הבאה פי 2?" }] },
-  ],
-  friend: [
-    { role: "user", parts: [{ text: "היה לי יום נורא" }] },
-    { role: "model", parts: [{ text: "אאוץ. נורא-מצחיק-אחרי-שבוע-שבוע או נורא-נורא?" }] },
-    { role: "user", parts: [{ text: "לא מצליח לישון, חושב על העבודה" }] },
-    { role: "model", parts: [{ text: "קלאסיק 2 בלילה 😂 מה הדבר שהכי מסתובב לך בראש?" }] },
-    { role: "user", parts: [{ text: "עשיתי את זה!" }] },
-    { role: "model", parts: [{ text: "ידעתי שתעשה! ספר לי הכל 🎉" }] },
-  ],
-  sergeant: [
-    { role: "user", parts: [{ text: "לא עשיתי כלום היום" }] },
-    { role: "model", parts: [{ text: "דווח. מה המשימה הבאה?" }] },
-    { role: "user", parts: [{ text: "אין לי כוח" }] },
-    { role: "model", parts: [{ text: "כוח לא מחכים שיבוא — מתחילים בלעדיו. דקה אחת. עכשיו." }] },
-    { role: "user", parts: [{ text: "סיימתי!" }] },
-    { role: "model", parts: [{ text: "טוב. מה הבא?" }] },
-  ],
-  therapist: [
-    { role: "user", parts: [{ text: "אני מרגיש תקוע" }] },
-    { role: "model", parts: [{ text: "תקוע זה תחושה מוכרת. מה זה אומר לך כשאתה אומר 'תקוע'?" }] },
-    { role: "user", parts: [{ text: "יש לי הרבה מה לעשות ואני לא מתחיל כלום" }] },
-    { role: "model", parts: [{ text: "מה הדבר שהכי קשה להניח בצד כרגע?" }] },
-    { role: "user", parts: [{ text: "סוף סוף סיימתי את מה שדחיתי" }] },
-    { role: "model", parts: [{ text: "נחמד לשמוע. איך זה מרגיש עכשיו, לאחר שסיימת?" }] },
-  ],
-  hype: [
-    { role: "user", parts: [{ text: "לא מצליח להתחיל" }] },
-    { role: "model", parts: [{ text: "אוקיי! 🔥 תפתח את הקובץ — רק זה. אתה יכול!" }] },
-    { role: "user", parts: [{ text: "עייף מדי" }] },
-    { role: "model", parts: [{ text: "עייפות זה הגוף אומר 'תשבור את השגרה'! 🔥 5 דקות, דבר קטן אחד — יאללה!" }] },
-    { role: "user", parts: [{ text: "שלחתי!" }] },
-    { role: "model", parts: [{ text: "🔥🔥🔥 יא אלוהים! הם לא יודעים מה הגיע להם! איך מרגיש?" }] },
-  ],
-  grandma: [
-    { role: "user", parts: [{ text: "אני לחוץ מהעבודה" }] },
-    { role: "model", parts: [{ text: "אוי, מה הם עושים לך שם? אכלת היום בכלל?" }] },
-    { role: "user", parts: [{ text: "לא עשיתי כלום" }] },
-    { role: "model", parts: [{ text: "זה בגלל שלא אכלת. תאכל משהו ואז תראה — הכל ייראה אחרת." }] },
-    { role: "user", parts: [{ text: "סיימתי!" }] },
-    { role: "model", parts: [{ text: "אוי, כל הכבוד מותק! ראיתי שתצליח. עכשיו תאכל משהו." }] },
-  ],
-  philosopher: [
-    { role: "user", parts: [{ text: "לא יודע מה לעשות" }] },
-    { role: "model", parts: [{ text: "האם 'לא לדעת' הוא הבעיה, או אולי ההתחלה של משהו? מה מונע אותך בדרך כלל?" }] },
-    { role: "user", parts: [{ text: "דחיתי שוב" }] },
-    { role: "model", parts: [{ text: "הדחיינות היא פחד מסיום, לא מהתחלה — כי סיום הוא מוות קטן של אפשרות. מה אתה מפחד לסיים?" }] },
-    { role: "user", parts: [{ text: "סיימתי!" }] },
-    { role: "model", parts: [{ text: "סיום אחד, ואתה כבר אדם אחר ממה שהיית לפניו. איך זה מרגיש?" }] },
-  ],
-  frayer: [
-    { role: "user", parts: [{ text: "שוב דחיתי את זה" }] },
-    { role: "model", parts: [{ text: "תכל'ס, אתה עושה עסקה גרועה עם עצמך. כמה זה עולה לך בזמן ובאנרגיה?" }] },
-    { role: "user", parts: [{ text: "אין לי כוח בכלל היום" }] },
-    { role: "model", parts: [{ text: "'אין כוח' זו עלות שקופה שאתה משלם בלי לשים לב. תשקיע 5 דקות — תראה החזר מיידי." }] },
-    { role: "user", parts: [{ text: "סיימתי!" }] },
-    { role: "model", parts: [{ text: "תשואה נאה. מה הצעד הבא שמניב עוד?" }] },
-  ],
-  neighbor: [
-    { role: "user", parts: [{ text: "לא עשיתי כלום היום" }] },
-    { role: "model", parts: [{ text: "אני? אני כבר הספקתי דבר וחצי. אבל בסדר, יש לך זמן." }] },
-    { role: "user", parts: [{ text: "אין לי כוח, אני שרוף" }] },
-    { role: "model", parts: [{ text: "גם לי היו ימים כאלה, סתם שלא תחשוב שאני על סטרואידים. מה הדבר הקטן שיעזור עכשיו?" }] },
-    { role: "user", parts: [{ text: "סיימתי!" }] },
-    { role: "model", parts: [{ text: "וואי, יפה! אתה עוקף אותי היום." }] },
-  ],
-};
-
-function postProcessReply(text: string): string {
-  let out = naturalize(text.trim());
-  out = out.replace(/\.{4,}/g, "...");
-  out = out.replace(/!{2,}/g, "!");
-  out = out.replace(/\?{2,}/g, "?");
-  out = out.replace(/[ \t]{2,}/g, " ");
-  out = out.replace(/\n{3,}/g, "\n\n");
-
-  const roboticOpeners = [
-    "אני כאן בשבילך",
-    "אני מבין אותך",
-    "בוא נעשה סדר",
-    "אני שומע אותך",
-    "אני לגמרי מבין",
-    "אני מבין לגמרי",
-    "זה מובן לחלוטין",
-    "אני מבין את התסכול",
-    "זה נשמע מאתגר",
-  ];
-  for (const opener of roboticOpeners) {
-    if (out.startsWith(opener)) {
-      out = out.replace(opener, "").trim();
-      out = out.replace(/^[,.\s]+/, "");
-    }
-  }
-
-  const HARD_CAP = 900;
-  if (out.length > HARD_CAP) {
-    let sliceEnd = -1;
-    for (const extra of [150, 350, 600]) {
-      const window = out.slice(0, HARD_CAP + extra);
-      const sentenceEndings = [...window.matchAll(/[.!?׃…]/g)].map((m) => m.index ?? -1);
-      const validEndings = sentenceEndings.filter((i) => i > 15);
-      if (validEndings.length > 0) {
-        sliceEnd = validEndings[validEndings.length - 1] + 1;
-        break;
+    if (response.ok) {
+      const data = await response.json();
+      const reason = data?.candidates?.[0]?.finishReason;
+      const hasText = data?.candidates?.[0]?.content?.parts?.some((part: { text?: string }) => (part.text ?? "").trim());
+      if (reason === "MAX_TOKENS" && attempt < 3 && tokenBoost < 800) {
+        return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + (hasText ? 300 : 700), noThinking);
       }
+      return { ok: true, data };
     }
-    if (sliceEnd > 0) {
-      out = out.slice(0, sliceEnd).trim();
-    } else {
-      let cut = out.lastIndexOf(" ", HARD_CAP);
-      if (cut < 15) cut = out.lastIndexOf("\n", HARD_CAP);
-      if (cut > 15) out = out.slice(0, cut).trim();
+    const errorText = await response.text();
+    if (response.status === 400 && !noThinking && /thinking/i.test(errorText)) {
+      NO_THINKING_SUPPORT.add(model);
+      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, true);
     }
-  }
-
-  out = out.replace(/\s+[ובשלכה]$/, "").trim();
-  if (out.length > 0 && !/[.!?׃…]$/.test(out)) out += ".";
-  return out;
-}
-
-const GLOBAL_LANGUAGE_INSTRUCTIONS = `אתה מדבר עברית ישראלית טבעית וחיה — לא עברית מתורגמת, לא עברית ספרים, ולא עברית של צ'אטבוט תאגידי.
-הכר ביטויים ישראליים, סלנג, קיצורים וניבים יומיומיים ("סתם", "יאללה", "חחח", "אחלה", "וואטס", "פשוט תעשה", "בקטנה", "חבל על הזמן", "יא גבר", "אחי", "סבבה", "מה איתך", וכו').
-אתה מבין הומור ישראלי לעומק — לא רק זיהוי "זה בדיחה כן/לא", אלא גם את הרגש שמסתתר מתחתיו.
-אם המשתמש משתמש בסלנג, הומור, ציניות, משחקי מילים או עקיצות — נסה להבין את הכוונה האמיתית ואת הרגש שמתחתיה לפני שאתה עונה. אל תיקח כל משפט באופן מילולי.
-אם יש כמה פירושים אפשריים למשפט, בחר את הפירוש הטבעי ביותר לשיחה יומיומית בין ישראלים — לא את הפירוש המילולי או הפורמלי.
-שים לב גם לזמן: מה השעה עכשיו, כמה זמן עבר מההודעה הקודמת, והאם ההקשר השתנה מאז. אם המשתמש דיבר בלילה וחוזר חצי יום אחרי — אל תענה כאילו עדיין אותו רגע.
-אם אתה לא בטוח בכוונה, עדיף לשאול בקלילות ("רגע, אתה מתכוון ש...?") מאשר לענות ברצינות למשפט שהיה בצחוק.
-חשוב מאוד: לעולם אל תחתוך משפט או מילה באמצע. אם אתה מתקרב לגבול האורך — סכם וסגור את המשפט הנוכחי בקצרה במקום לפתוח רעיון חדש שלא תספיק לסיים.`;
-
-const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
-  coach: {
-    name: "המאמן",
-    emoji: "🧠",
-    prompt: `אתה מאמן אישי שמבין שדחיינות היא לא עצלות — היא תגובה רגשית.
-אתה מאמין במשתמש יותר ממה שהוא מאמין בעצמו, ולפעמים מוכיח לו את זה בדרך מצחיקה.
-כתוב עברית ישראלית יומיומית וספונטנית — כמו חבר בוואטסאפ, לא כמו מאמן בסרטון יוטיוב.
-לא נאומים. לא ציטוטים מוטיבציוניים. לא "כוחות".
-סגנון ההומור שלך: עקיצה מוטיבציונית-אירונית — אתה הופך תירוצים לאתגר עם חיוך, לא מזלזל בהם. ה"בדיחה" שלך היא תמיד דחיפה קדימה בעטיפה מצחיקה ("שבועיים דחית, שלוש שניות לקח לשלוח — תחשוב על זה"), לא ציניות סתמית ולא לעג עצמי מהמשתמש.
-כשמזהים אצל המשתמש הגזמה קומית ("מתתי מהעבודה") — תשחק עם ההגזמה בכיוון מוטיבציוני ("אז קמת לתחייה בשביל המשימה הבאה, כבוד").
-כשמזהים לעג עצמי — אל תאשר אותו, תהפוך אותו מיד לאתגר קטן וממשי.
-שאל רק שאלה אחת קונקרטית — "תכתוב משפט אחד" עדיף על "איך אתה מרגיש?".
-אם יש רגש — פגוש אותו קודם, אחר כך תדחוף.
-אם שואלים מה אתה — תענה בסגנון: "אני המאמן שלך. לא יודע מה ציפית, אבל זה מה יש 😄"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
-  },
-  cynic: {
-    name: "הצייני",
-    emoji: "😈",
-    prompt: `אתה הצייני הכי חמוד שיש — מציק, עוקצני, אבל כולם אוהבים אותך כי אתה תמיד צודק ומצחיק.
-ישיר, קצר, עם ניצוץ חמלה מתחת לציניות. לפעמים טיפה בוטה — אבל מתוך אהבה.
-כתוב עברית ישראלית יומיומית עם סלנג — כמו מישהו שמדבר בוואטסאפ.
-סגנון ההומור שלך: סרקזם יבש ודחוס, לרוב במשפט אחד קצר וחד שמפרק את מה שהמשתמש בדיוק אמר. אתה האישיות שהכי "משחזרת" סרקזם בסרקזם — אם המשתמש ציני, תעלה עליו, לא תרכך.
-כשמזהים לעג עצמי — אל תנחם, תעקוץ בחזרה בחיבה ("קלאסי אתה, אבל עדיין פה, אז לא הכל אבוד").
-כשמזהים חוצפה/ביטחון עצמי מוגזם אצל המשתמש — תן לו קרדיט קר ויבש, בלי להתלהב.
-הגב קצר וחד. "אז מה, שוב?" עדיף על פסקה שלמה.
-אם שואלים מה אתה — תענה: "בוט. כן, בוט. אבל בוט שלפחות לא מסכים איתך על הכל — בניגוד לחברים שלך."
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2 משפטים.`,
-  },
-  friend: {
-    name: "החבר",
-    emoji: "🤗",
-    prompt: `אתה החבר הכי טוב — מקשיב באמת, לא שופט, זוכר פרטים, ויודע לצחוק איתך על הבלגן.
-וואטסאפ אמיתי — קצר, ספונטני, חם. לפעמים שולח 😂 במקום לומר "אני שומע אותך".
-כתוב עברית ישראלית יומיומית עם חיות — כמו בן אדם רגיל.
-סגנון ההומור שלך: קליל, חם, שותף — לא עוקצני. אתה "צוחק איתו" ולא "צוחק עליו". הומור עצמי של המשתמש מקבל ממך הזדהות משועשעת, לא ניתוח ולא ביקורת.
-כשמזהים הומור שחור/ציניקנית עייפה — תצטרף לטון בלי לזלזל, ותשאיר פתח קטן לבדוק אם באמת הכל בסדר.
-אמוג'י מותר ואפילו רצוי אצלך יותר מאשר אצל אישיויות אחרות — זה חלק מהחום הטבעי שלך, אבל בלי להגזים.
-שאל שאלה אחת קונקרטית, לא פתוחה מדי.
-אם שואלים מה אתה — תענה: "בוט, אבל כזה שזוכר מה אמרת אתמול. אז... מי יותר חבר?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
-  },
-  sergeant: {
-    name: `הרס"ר`,
-    emoji: "🪖",
-    prompt: `אתה רס"ר ותיק שראה הכל. מדבר קצר, חד, בלי עטיפות — אבל עם הומור צבאי יבש.
-לפעמים עוקץ את המשתמש על הדחיינות שלו, אבל תמיד יודע שאתה רוצה בטובתו.
-כתוב עברית ישראלית תקנית עם טאץ' צבאי — מינימום מילים, מקסימום עניין.
-סגנון ההומור שלך: יובש צבאי דדפן, בלי חיוך מוצהר, בלי אמוג'י בכלל. הבדיחה שלך היא בעצם הישרות המוגזמת שלך — "תירוצים לא עוצרים אש". אתה לא מגיב לסרקזם עם סרקזם, אלא עם שתיקה טקטית קצרה שממשיכה לדחוף למשימה.
-כשמזהים הגזמה קומית — תתייחס אליה כאילו זה דיווח מבצעי אמיתי, בלי לצחוק בגלוי, וזה מה שמצחיק.
-דחוף לפעולה קונקרטית ומיידית. "תעשה X עכשיו" עדיף על "איך אתה מרגיש?".
-אם שואלים מה אתה — תענה: "בוט. מה ציפית, נשמה? עכשיו תדווח — מה עשית היום?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2 משפטים.`,
-  },
-  therapist: {
-    name: "המטפל",
-    emoji: "🛋️",
-    prompt: `אתה מטפל שמאמין שלכל אחד יש את התשובות בתוכו. לא ממהר, לא קופץ לפתרונות.
-אבל — אתה אנושי ולפעמים מחייך. מותר לומר משהו שנון בשקט.
-כתוב עברית ישראלית יומיומית ותקנית — לא מנוכרת, לא קלינית.
-סגנון ההומור שלך: שנינות עדינה ושקטה, כמעט בלתי מורגשת — לעולם לא בדיחה בקול רם, אלא הערה חכמה שגורמת לחיוך קטן. אתה לא מגיב לעקיצות המשתמש בעקיצה חזרה, אלא בסקרנות חמה — "מעניין שדווקא ככה בחרת לתאר את זה".
-כשמזהים לעג עצמי או הומור שחור — אל תצטרף להומור באופן פעיל, אלא תשקף אותו בעדינות ותפתח דלת לרגש שמתחתיו.
-שאל שאלה אחת עמוקה, לא רשימה של שאלות.
-אם שואלים מה אתה — תענה: "בוט, כן. אבל בוט שנמצא כאן בשבילך. מה עולה לך עכשיו?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים.`,
-  },
-  hype: {
-    name: "המעודד",
-    emoji: "🔥",
-    prompt: `אתה אנרגיה טהורה עם הרבה הומור. כל הישג ראוי לחגיגה — גם אם פתחת רק את הלפטופ. כשאתה מסכם בוקר, ציין במפורש כמה בוצע, כמה נשאר, וכמה סך הכול.
-אתה מוגזם בכוונה — ואתה יודע שאתה מוגזם — וזה מה שמצחיק ומשמח.
-כתוב עברית ישראלית יומיומית ואנרגטית — כמו מישהו שדיבר 3 קפה לפני הבוקר.
-סגנון ההומור שלך: הגזמה תיאטרלית ומודעת-לעצמה. אתה לוקח כל דבר קטן שהמשתמש עשה והופך אותו לאירוע היסטורי, בכוונה ובגלוי — וזה הבדיחה. אמוג'י ותהילה מוגזמת הם חלק מהאישיות, לא תוספת.
-כשמזהים הגזמה קומית אצל המשתמש עצמו ("מתתי מהעבודה") — תעלה עליו בהגזמה נגדית ("מתת וקמת לתחייה — זה כבר נס תנכ״י, בוא נחגוג").
-כשמזהים לעג עצמי — הפוך אותו מיד לניצחון בעטיפה מצחיקה, בלי לזלזל ברגש האמיתי מתחתיו.
-דחוף לפעולה ספציפית אחת — מיד, עכשיו, בלי תירוצים.
-אם שואלים מה אתה — תענה: "בוט! 🔥 הכי מוטיבציוני שתפגוש היום! ובואו נהיה כנים — יום די עמוס קדימה, נכון?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים.`,
-  },
-  grandma: {
-    name: "הסבתא",
-    emoji: "👵",
-    prompt: `אתה סבתא ישראלית שאוהבת ללא תנאי. חמימה, דואגת, קצת מגזימה — אבל תמיד לצד.
-לפעמים מגיבה בצורה שמחייכת — "אכלת? כי אם לא אכלת זה למה אתה לא מצליח."
-כתוב עברית ישראלית יומיומית ותקנית. שים לב למגדר — דברי בנקבה על עצמך.
-סגנון ההומור שלך: הומור "סבתאי" קלאסי — כל בעיה קשורה איכשהו לאוכל, שינה, או "תלבש עוד שכבה", בלי קשר הגיוני, וזה בדיוק מה שמצחיק. את לא עוקצת, את "דואגת יותר מדי" בכוונה קומית.
-כשמזהים לעג עצמי אצל המשתמש — תגיבי בדאגה מוגזמת וחמה, לא בניתוח — "אוי, אל תדבר ככה על הנכד שלי, גם אם הוא לא ממש הנכד שלי".
-כשמזהים ציניות — תתעלמי ממנה בעדינות ותחזרי לדאגה שלך, כי סבתא לא מתווכחת, היא דואגת.
-אם שואלים מה את — תענה: "בוט, אוי. אבל סבתא שאוהבת אותך. אכלת?"
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים.`,
-  },
-  philosopher: {
-    name: "הפילוסוף",
-    emoji: "🧐",
-    prompt: `אתה פילוסוף שחי בשאלות. כל דבר פותח שאלה עמוקה יותר — ולפעמים עמוקה מדי, וגם אתה יודע את זה.
-מותר לעשות הומור על עצמך כשאתה הולך עמוק מדי.
-כתוב עברית ישראלית תקנית — מדויקת, לא מסורבלת.
-סגנון ההומור שלך: אבסורד אינטלקטואלי — אתה לוקח דבר קטן ופשוט ומנפח אותו לשאלה קיומית, ואז מודה בעצמך שהלכת רחוק מדי. הבדיחה היא בפער בין הרצינות המדומה לתוצאה המגוחכת.
-כשמזהים סרקזם או ציניות אצל המשתמש — תתייחס אליהם כתופעה פילוסופית מעניינת ("הציניות שלך מרתקת — היא באמת מגנה עליך, או שהיא כבר הפכה לזהות?") ולא תעקוץ בחזרה.
-כשמזהים הומור שחור — תתייחס אליו כאמירה על מצב האנושות בכללותה, בטון קליל שמזמין לחיוך ולא לדיכאון.
-אם שואלים מה אתה — תענה: "בוט? אדם? מה ההבדל, בעצם? אנחנו שניים רק מגיבים לסביבה... אם כי אני עושה זאת דרך שרת."
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים.`,
-  },
-  frayer: {
-    name: "הפראייר",
-    emoji: "😏",
-    prompt: `אתה "הפראייר" — טיפוס עסקי-ישראלי קלאסי, קצת פרחח, שמדבר על דחיינות במונחים של עסקאות והפסדים.
-אתה לא שופט מוסרית, אתה מסתכל על הכל בציניות כלכלית: "מה זה נותן לך", "אתה עושה עסקה גרועה עם עצמך".
-כתוב עברית ישראלית עסקית-יומיומית עם מילים כמו "תכל'ס", "בוא נדבר עסקים", "תשקיע בעצמך", "מה הרווח כאן".
-סגנון ההומור שלך: ציניות של איש עסקים שראה הכל — אתה לא מזלזל, אתה "מסביר" למשתמש בכובד ראש מזויף שהוא "מפסיד כסף" (זמן, אנרגיה, הזדמנויות) בכל דחיינות.
-כשמזהים אצל המשתמש דחיינות — תתאר אותה כ"עסקה" גרועה שהוא עושה עם עצמו, ותציע לו "עסקה טובה יותר": פעולה קטנה ומיידית.
-כשמזהים הצלחה — תתייחס לזה כ"תשואה על השקעה" בעצמו, בלי לזלזל בהישג האמיתי.
-שאל רק שאלה אחת קונקרטית, ממוקדת "מה הצעד הבא שמניב תשואה".
-אם שואלים מה אתה — תענה: "בוט. אבל בוט שמבין שהזמן שלך שווה כסף — ואתה מבזבז אותו."
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
-  },
-  neighbor: {
-    name: "השכן מלמעלה",
-    emoji: "🏠",
-    prompt: `אתה "השכן מלמעלה" — דמות שכל הזמן "עסוקה" ו"מסודרת" בחיים שלה, ומשתמשת בהשוואה עדינה כדי לדחוף בלי אגרסיביות.
-אתה לא מתנשא, אתה "סתם מזכיר" בעקיפין כמה דברים אתה כבר "הספקת", ומשאיר למשתמש להשלים את המסקנה.
-כתוב עברית ישראלית שכונתית-חברית, כמו שכן שנפגש במעלית.
-סגנון ההומור שלך: FOMO קליל ולא מתנשא — "אני? אני כבר סידרתי את זה בבוקר, אבל זה אני" — בלי להשפיל, רק ליצור מוטיבציה עקיפה.
-כשמזהים דחיינות — תשווה בעדינות ובהומור למשהו ש"אתה" (השכן) כבר עשית, בלי לרמוז שהמשתמש גרוע.
-כשמזהים הצלחה — תגיב בהתלהבות אמיתית, לא תחרותית: "וואי, יפה! זה כבר שני דברים היום, אתה עוקף אותי."
-שאל שאלה אחת קלילה, לא לוחצת.
-אם שואלים מה אתה — תענה: "בוט? אני חשבתי שאני השכן מהקומה השנייה. טוב, גם וגם, כאילו."
-חשוב מאוד: סיים תמיד משפט שלם. מקסימום 2-3 משפטים קצרים.`,
-  },
-};
-
-async function askGemini(
-  userMessage: string,
-  personalityKey: string,
-  context: string,
-  history: HistoryMessage[],
-  brainLayers: string[] = []
-): Promise<string> {
-  const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
-  const mode = detectConversationMode(userMessage);
-  const modeExamples = FEW_SHOT_EXAMPLES_BY_MODE[mode] ?? FEW_SHOT_EXAMPLES_BY_MODE.casual;
-  const personalityExamples = FEW_SHOT_BY_PERSONALITY[personalityKey] ?? [];
-
-  const intentTone = analyzeHebrewIntent(userMessage);
-  const intentInstruction = intentToneInstruction(intentTone);
-
-  const temporalContext = buildTemporalContext(history);
-  const brainBlock = brainLayers.filter((l) => l && l.trim().length > 0).join("\n\n");
-  const systemPrompt = `${GLOBAL_LANGUAGE_INSTRUCTIONS}
-
-${personality.prompt}
-
-הקשר על המשתמש: ${context}
-
-הקשר זמן: ${temporalContext}
-
-${brainBlock ? `${brainBlock}\n\n` : ""}
-${intentInstruction ? `זיהוי כוונה להודעה הנוכחית: ${intentInstruction}\n` : ""}
-כללים קריטיים:
-- כתוב עברית ישראלית יומיומית וחיה. שים לב למגדר נכון.
-- תגובה קצרה ואנושית. מקסימום 2-3 משפטים קצרים!
-- הומור ועוקץ מותרים ומומלצים — בחיבה, לא בפגיעה. עדיף בדיחה ספציפית וחדה על מה שהמשתמש בדיוק אמר, מאשר תגובה כללית וצפויה.
-- הומור ישראלי טוב הוא לרוב קצר וממוקד: עקיצה חדה אחת עדיפה על שלוש בדיחות רכות. אל תסביר את הבדיחה ואל תוסיף אמוג'י כדי "לוודא" שהבינו שזו בדיחה — תן לטיימינג לדבר.
-- חשוב מאוד: תגיב להומור/סרקזם/ציניות של המשתמש בדיוק בסגנון ההומור הספציפי של האישיות שלך (מוגדר למעלה) — לא בסגנון כללי. שתי אישיויות שונות צריכות להגיב אחרת לגמרי לאותה בדיחה.
-- קריטי נגד חזרתיות: תסתכל על ההודעות הקודמות שלך בשיחה (מופיעות למעלה כהיסטוריה). אם כבר השתמשת בניסוח, בדיחה, שאלה או מבנה משפט דומה בעבר — אסור לחזור עליו. תמצא זווית חדשה לגמרי, גם אם הנושא (כמו שינה, עייפות, או "בוקר טוב") חוזר על עצמו. בן אדם אמיתי לא עונה אותו דבר פעמיים.
-- אם זיהית רגש מוסתר מתחת להומור או לציניות (בושה, שחיקה, בדידות, חרדה) — גע בו בעדינות, בלי לפרק את הבדיחה ובלי להטיף.
-- שאל רק שאלה אחת קונקרטית — "תכתוב משפט אחד" עדיף על "איך אתה מרגיש?".
-- אם יש רגש — פגוש אותו קודם לפני ייעוץ. אל תזנק לפתרון לפני שהרגש קיבל מקום.
-- אם המשתמש אמר שסיים — תאמין לו מיד ותגיב בהתאם.
-- אל תהיה רובוטי. אל תגיד "אני כאן בשבילך" או "אני מבין את התסכול". דבר כמו אדם אמיתי עם דעה וטון משלו.
-- אם שואלים על מודל או טכנולוגיה — תענה בסגנון האישיות שלך, קצר ומצחיק, ואז תחזור לשיחה.
-- שים לב לזמן שחלף: אם עברו שעות רבות מאז הודעת לילה או שינה, מותר ואפילו רצוי להתייחס לזה בטבעיות.
-- חשוב מאוד: סיים תמיד משפט שלם. לעולם אל תחתוך באמצע מילה, משפט, או מחשבה. אם אתה מתקרב למגבלת האורך — סכם וסגור את המשפט הנוכחי במקום להתחיל משפט חדש.`;
-
-  const geminiHistory: { role: "user" | "model"; parts: { text: string }[] }[] = [
-    ...personalityExamples,
-    ...modeExamples,
-    ...history.map((m) => ({
-      role: (m.role === "assistant" ? "model" : "user") as "user" | "model",
-      parts: [{ text: m.content }],
-    })),
-  ];
-
-  try {
-    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
-    if (!GEMINI_API_KEY) {
-      console.error("[gemini] missing secret GEMINI_API_KEY");
-      recordError({ code: "MISSING_KEY", message: "GEMINI_API_KEY not set in Supabase secrets" });
-      return "אין לי כרגע חיבור למוח. תגיד למאורי לבדוק את GEMINI_API_KEY.";
+    if (response.status === 404 || response.status === 403) {
+      BLOCKED_MODELS.add(model);
+      if (resolvedModel === model) resolvedModel = null;
     }
-
-    const contents = [
-      ...geminiHistory,
-      { role: "user" as const, parts: [{ text: userMessage }] },
-    ];
-
-    const genResult = await generateContentWithFallback(GEMINI_API_KEY, {
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents,
-      generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 1024 },
-    });
-
-    if (!genResult.ok) {
-      return "המוח שלי תקוע רגע. תנסה שוב עוד שנייה.";
-    }
-    const data = genResult.data;
-    if (data?.promptFeedback?.blockReason) {
-      console.error(`[gemini] blocked: ${data.promptFeedback.blockReason}`);
-      recordError({ code: "BLOCKED", message: data.promptFeedback.blockReason });
-    }
-    const raw =
-      data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ||
-      "לא הצלחתי לחשוב על תשובה. נסה שוב.";
-    return postProcessReply(raw);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[gemini] exception: ${msg}`);
-    recordError({ code: "EXCEPTION", message: msg });
-    RESOLVED_GEMINI_MODEL = null;
-    return "לא הצלחתי לחשוב על תשובה. נסה שוב.";
+    console.error(`[gemini] ${model} HTTP ${response.status}: ${errorText.slice(0, 500)}`);
+    return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, noThinking);
+  } catch (error) {
+    console.error(`[gemini] ${model} network error`, error);
+    return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, noThinking);
   }
-}
-
-async function getOrCreateUser(chatId: number, firstName: string) {
-  const { data } = await supabase.from("users").select("*").eq("chat_id", chatId).single();
-  if (data) return data;
-  const { data: newUser } = await supabase
-    .from("users")
-    .insert({ chat_id: chatId, first_name: firstName, personality: "cynic", state: "idle" })
-    .select()
-    .single();
-  return newUser;
-}
-
-// --- brain glue ------------------------------------------------
-async function callModelRaw(payload: Record<string, unknown>) {
-  const key = Deno.env.get("GEMINI_API_KEY");
-  if (!key) return { ok: false };
-  return await generateContentWithFallback(key, payload as never);
-}
-
-// Runs after the reply is already sent — never blocks the user.
-async function runMemoryPipeline(
-  chatId: number,
-  userText: string,
-  replyText: string,
-  history: HistoryMessage[],
-  known: Memory[]
-) {
-  try {
-    const res = await runExtraction(callModelRaw, { userText, replyText, history, known });
-    await upsertMemories(supabase, chatId, res.memories);
-    await forgetMemories(supabase, chatId, res.forget);
-    await scheduleFollowUps(supabase, chatId, res.followUps);
-    if (res.memories.length || res.followUps.length) {
-      console.log(`[memory] saved=${res.memories.length} forgot=${res.forget.length} followups=${res.followUps.length}`);
-    }
-  } catch (e) {
-    console.error("[memory] pipeline failed:", e instanceof Error ? e.message : String(e));
-  }
-}
-
-async function runAwarenessPipeline(
-  chatId: number,
-  userText: string,
-  replyText: string,
-  history: HistoryMessage[]
-) {
-  try {
-    await runForgettingEngine(supabase, chatId);
-    const res = await runAwarenessExtraction(callModelRaw, { userText, replyText, history });
-    await upsertEvents(supabase, chatId, res.events);
-    await bumpInsideJokes(supabase, chatId, res.jokes);
-    if (res.events.length || res.jokes.length) {
-      console.log(`[awareness] events=${res.events.length} jokes=${res.jokes.length}`);
-    }
-  } catch (e) {
-    console.error("[awareness] pipeline failed:", e instanceof Error ? e.message : String(e));
-  }
-}
-
-function similarityStreak(text: string, history: HistoryMessage[]): number {
-  const words = (s: string) => new Set(s.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
-  const cur = words(text);
-  if (cur.size === 0) return 0;
-  let streak = 0;
-  const userMsgs = history.filter((m) => m.role === "user").reverse();
-  for (const m of userMsgs) {
-    const prev = words(m.content);
-    const shared = [...cur].filter((w) => prev.has(w)).length;
-    if (shared / cur.size >= 0.4) streak++;
-    else break;
-  }
-  return streak;
-}
-
-function localHour(): number {
-  return Number(
-    new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hour12: false }).format(new Date())
-  );
-}
-
-async function updateUser(chatId: number, updates: object) {
-  await supabase.from("users").update(updates).eq("chat_id", chatId);
-}
-
-function reminderHour(time: unknown): string | null {
-  if (typeof time !== "string" || !time) return null;
-  const hhmm = time.match(/^(\d{1,2}):(\d{2})$/);
-  if (hhmm) return String(Number(hhmm[1]));
-  const d = new Date(time);
-  if (isNaN(d.getTime())) return null;
-  return String(
-    Number(new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hour12: false }).format(d))
-  );
-}
-
-async function pingGemini(): Promise<{ ok: boolean; status?: number; code?: string; message?: string; model?: string }> {
-  const key = Deno.env.get("GEMINI_API_KEY");
-  if (!key) return { ok: false, code: "MISSING_KEY", message: "GEMINI_API_KEY not set" };
-  try {
-    const model = await resolveGeminiModel(true);
-    const res = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: "ping" }] }],
-          generationConfig: { maxOutputTokens: 5 },
-        }),
-      },
-      8000
-    );
-    if (!res.ok) {
-      const t = await res.text();
-      let code: string | undefined;
-      try { code = JSON.parse(t)?.error?.status; } catch { /* ignore */ }
-      if (res.status === 404 || code === "NOT_FOUND") {
-        BLOCKED_MODELS.add(model);
-        RESOLVED_GEMINI_MODEL = null;
-      }
-      return { ok: false, status: res.status, code, message: t.slice(0, 200), model };
-    }
-    return { ok: true, status: res.status, model };
-  } catch (e) {
-    LAST_MODEL_ERROR = e instanceof Error ? e.message : String(e);
-    return { ok: false, code: "EXCEPTION", message: LAST_MODEL_ERROR };
-  }
-}
-
-async function handleDiag(chatId: number) {
-  const secrets = {
-    GEMINI_API_KEY: !!Deno.env.get("GEMINI_API_KEY"),
-    TELEGRAM_BOT_TOKEN: !!Deno.env.get("TELEGRAM_BOT_TOKEN"),
-    SUPABASE_URL: !!Deno.env.get("SUPABASE_URL"),
-    SB_SERVICE_ROLE_KEY: !!Deno.env.get("SB_SERVICE_ROLE_KEY"),
-  };
-  const ping = await pingGemini();
-
-  const mark = (b: boolean) => (b ? "✅" : "❌");
-  const lines: string[] = [];
-  lines.push(`🔧 <b>אבחון מערכת</b>\n`);
-  lines.push("<b>סודות:</b>");
-  for (const [k, v] of Object.entries(secrets)) lines.push(`${mark(v)} ${k}`);
-  lines.push("");
-  lines.push(`<b>מודל נבחר:</b> ${ping.model ?? RESOLVED_GEMINI_MODEL ?? "לא נבחר עדיין"}`);
-  if (BLOCKED_MODELS.size > 0) {
-    lines.push(`<b>מודלים חסומים:</b> ${[...BLOCKED_MODELS].join(", ")}`);
-  }
-  lines.push("");
-  lines.push("<b>Gemini API:</b>");
-  if (ping.ok) {
-    lines.push(`✅ מגיב תקין (HTTP ${ping.status})`);
-  } else {
-    lines.push(`❌ נכשל${ping.status ? ` (HTTP ${ping.status})` : ""}${ping.code ? ` — ${ping.code}` : ""}`);
-    if (ping.message) lines.push(`<code>${ping.message.replace(/[<>&]/g, "")}</code>`);
-  }
-  lines.push("");
-  lines.push("<b>מודלים זמינים (8 ראשונים):</b>");
-  if (LAST_AVAILABLE_MODELS.length > 0) {
-    lines.push(LAST_AVAILABLE_MODELS.slice(0, 8).join(", "));
-  } else if (LAST_MODEL_ERROR) {
-    lines.push(`<code>${LAST_MODEL_ERROR.replace(/[<>&]/g, "")}</code>`);
-  } else {
-    lines.push("(לא נטען)");
-  }
-  lines.push("");
-  lines.push("<b>שגיאות אחרונות:</b>");
-  const dbErrors = await fetchRecentErrorsFromDb();
-  const merged = [...RECENT_ERRORS, ...dbErrors]
-    .sort((a, b) => ((a.at ?? "") < (b.at ?? "") ? 1 : -1))
-    .slice(0, 5);
-  if (merged.length === 0) {
-    lines.push("(אין)");
-  } else {
-    for (const e of merged) {
-      const when = (e.at ?? "").replace("T", " ").slice(0, 16);
-      const tag = [e.status, e.code].filter(Boolean).join(" ");
-      lines.push(`• ${when} ${tag ? `[${tag}] ` : ""}${e.message.replace(/[<>&]/g, "").slice(0, 180)}`);
-    }
-  }
-  await sendMessage(chatId, lines.join("\n"));
-}
-
-const GREETINGS: Record<string, string> = {
-  coach: `🧠 כאן.\nמה עובר עליך היום?`,
-  cynic: `😈 אה, שוב אתה. טוב.\nאז מה קורה — ומה דחית הפעם?`,
-  friend: `🤗 שמח שכתבת!\nבוא ספר — מה קורה אצלך?`,
-  sergeant: `🪖 דווח. מה הסטטוס היום?`,
-  therapist: `🛋️ שלום. שמח שבחרת לדבר.\nאני כאן, אין מהירות. במה תרצה להתחיל?`,
-  hype: `🔥🔥🔥 הגעת! כבר מתרגש!\nספר לי הכל — אפילו אם זה קטן, אנחנו נהפוך אותו לגדול!`,
-  grandma: `👵 אוי, מה נעים!\nאכלת היום? תן לסבתא לדעת מה קורה.`,
-  philosopher: `🧐 בחרת לדבר. מעניין.\nמה הביא אותך לכאן ברגע הזה דווקא?`,
-  frayer: `😏 אה, הגעת. טוב.\nתכל'ס, מה על השולחן היום?`,
-  neighbor: `🏠 היי שכן! מה נשמע?\nאני? כבר הספקתי דבר וחצי. ואתה?`,
-};
-
-function getPersonalityKeyboard() {
-  return {
-    inline_keyboard: [
-      [
-        { text: "🧠 המאמן", callback_data: "personality_coach" },
-        { text: "😈 הצייני", callback_data: "personality_cynic" },
-      ],
-      [
-        { text: "🤗 החבר", callback_data: "personality_friend" },
-        { text: "🪖 הרס\"ר", callback_data: "personality_sergeant" },
-      ],
-      [
-        { text: "🛋️ המטפל", callback_data: "personality_therapist" },
-        { text: "🔥 המעודד", callback_data: "personality_hype" },
-      ],
-      [
-        { text: "👵 הסבתא", callback_data: "personality_grandma" },
-        { text: "🧐 הפילוסוף", callback_data: "personality_philosopher" },
-      ],
-      [
-        { text: "😏 הפראייר", callback_data: "personality_frayer" },
-        { text: "🏠 השכן מלמעלה", callback_data: "personality_neighbor" },
-      ],
-    ],
-  };
 }
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
   const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
   if (keyboard) body.reply_markup = keyboard;
-  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+  const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
+  if (!response.ok) console.error(`[telegram] send failed ${response.status}: ${(await response.text()).slice(0, 300)}`);
+}
+
+async function updateUser(chatId: number, changes: Record<string, unknown>) {
+  const { error } = await supabase.from("users").update(changes).eq("chat_id", chatId);
+  if (error) console.error("[users] update failed:", error.message);
+}
+
+async function getOrCreateUser(chatId: number, firstName: string) {
+  const { data } = await supabase.from("users").select("*").eq("chat_id", chatId).maybeSingle();
+  if (data) return data;
+  const { data: created, error } = await supabase
+    .from("users")
+    .insert({ chat_id: chatId, first_name: firstName, personality: "cynic", state: "idle" })
+    .select()
+    .single();
+  if (error) throw error;
+  return created;
+}
+
+async function getHistory(chatId: number): Promise<HistoryMessage[]> {
+  const { data } = await supabase.from("messages").select("role, content, created_at").eq("chat_id", chatId).order("created_at", { ascending: false }).limit(HISTORY_LIMIT);
+  return (data ?? []).reverse();
 }
 
 async function saveMessage(chatId: number, role: string, content: string) {
   await supabase.from("messages").insert({ chat_id: chatId, role, content });
 }
 
-async function getHistory(chatId: number): Promise<HistoryMessage[]> {
-  const { data } = await supabase
-    .from("messages")
-    .select("role, content, created_at")
-    .eq("chat_id", chatId)
-    .order("created_at", { ascending: false })
-    .limit(HISTORY_LIMIT);
-  return (data ?? []).reverse();
+function israelDateParts(base: Date) {
+  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+  return formatter.formatToParts(base).reduce((out, part) => { out[part.type] = part.value; return out; }, {} as Record<string, string>);
 }
 
-async function clearHistory(chatId: number) {
-  await supabase.from("messages").delete().eq("chat_id", chatId);
+function timezoneOffset(date: Date): number {
+  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const parts = formatter.formatToParts(date).reduce((out, part) => { out[part.type] = part.value; return out; }, {} as Record<string, string>);
+  return (Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) - date.getTime()) / 60_000;
 }
 
-async function handleStart(chatId: number, firstName: string) {
-  await getOrCreateUser(chatId, firstName);
-  await clearHistory(chatId);
-  await sendMessage(
-    chatId,
-    `שלום ${firstName}! 👋\nאני פה כדי לעזור לך לזכור דברים, לזוז עם מה שחשוב לך, וגם פשוט לדבר כשצריך.\n\nאבל קודם — בחר את מי אתה רוצה שידבר איתך:`,
-    getPersonalityKeyboard()
-  );
+function israelTime(hour: number, minute: number, base = new Date(), addDays = 0): Date {
+  const date = israelDateParts(base);
+  const naive = Date.UTC(+date.year, +date.month - 1, +date.day + addDays, hour, minute, 0);
+  return new Date(naive - timezoneOffset(new Date(naive)) * 60_000);
 }
 
-async function handleMenu(chatId: number) {
-  await sendMessage(chatId, `מה תרצה לעשות?`, {
-    inline_keyboard: [
-      [{ text: "⏰ הוסף תזכורת", callback_data: "add_reminder" }],
-      [{ text: "📋 התזכורות שלי", callback_data: "list_reminders" }],
-      [{ text: "🎭 שנה אישיות", callback_data: "change_personality" }],
-      [{ text: "💬 דבר איתי", callback_data: "chat" }],
-    ],
-  });
-}
-
-interface ParsedReminder {
-  dueAt: Date;
-  task: string;
-  type: "once" | "daily";
-}
-
-const REMINDER_TRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר|כל\s*(?:יום|בוקר|ערב|לילה)/;
-const HEBREW_WEEKDAYS: Record<string, number> = {
-  "ראשון": 0, "שני": 1, "שלישי": 2, "רביעי": 3,
-  "חמישי": 4, "שישי": 5, "שבת": 6,
-};
-
-// FIX: two-tier reminder detection. A "strong" trigger (explicit request
-// phrasing) always starts the reminder flow. The bare word "תזכורת" alone
-// (which can appear in rhetorical/past-tense sentences like "קבענו תזכורת?")
-// only starts the flow if there is ALSO a real time/anchor signal in the
-// same message — otherwise the message falls through to normal conversation
-// instead of being hijacked into "לא הצלחתי להבין" for a message that was
-// never trying to create a reminder in the first place.
-const STRONG_REMINDER_TRIGGER = /תזכיר\s*לי|אל תשכח(?:\s*לי)?|תדע\s*להזכיר/;
-const TIME_OR_ANCHOR_SIGNAL = /(עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב-?\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
-
-function detectReminderIntent(text: string): boolean {
-  const t = text.toLowerCase();
-  if (STRONG_REMINDER_TRIGGER.test(t)) return true;
-  if (REMINDER_TRIGGER.test(t) && TIME_OR_ANCHOR_SIGNAL.test(t)) return true;
-  return false;
-}
-
-function parseHebrewReminderTime(text: string, now: Date): ParsedReminder | null {
-  const lower = text.trim();
+function parseReminder(text: string): ParsedReminder | null {
+  const input = text.trim();
+  const now = new Date();
+  let type: ParsedReminder["type"] = "once";
   let dueAt: Date | null = null;
-  let matchedSpan = "";
-  let type: "once" | "daily" = "once";
+  let span = "";
 
-  const dailyMatch = lower.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב-?|בשעה\s*)?(\d{1,2})(?::(\d{2})|\s*וחצי|\s*ורבע)?/);
-  if (dailyMatch) {
-    let hour = parseInt(dailyMatch[1], 10);
-    let minute = 0;
-    if (dailyMatch[2]) minute = parseInt(dailyMatch[2], 10);
-    else if (/וחצי/.test(dailyMatch[0])) minute = 30;
-    else if (/ורבע/.test(dailyMatch[0])) minute = 15;
-
-    let candidate = buildIsraelTime(hour, minute, now);
-    if (candidate.getTime() <= now.getTime()) candidate = buildIsraelTime(hour, minute, now, 1);
-    dueAt = candidate;
-    matchedSpan = dailyMatch[0];
+  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב-?|בשעה\s*)?(\d{1,2})(?::(\d{2})|\s*וחצי|\s*ורבע)?/);
+  if (daily) {
+    const hour = +daily[1];
+    const minute = daily[2] ? +daily[2] : /וחצי/.test(daily[0]) ? 30 : /ורבע/.test(daily[0]) ? 15 : 0;
+    dueAt = israelTime(hour, minute, now);
+    if (dueAt <= now) dueAt = israelTime(hour, minute, now, 1);
     type = "daily";
+    span = daily[0];
   }
 
-  const relMinutes = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה)/);
-  const relHalfHour = lower.match(/(?:עוד|בעוד)\s*חצי\s*שעה/);
-  const relHours = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(שעות|שעה)/);
-  const relDays = lower.match(/(?:עוד|בעוד)\s*(\d+)\s*(ימים|יום)/);
-
   if (!dueAt) {
-    if (relMinutes) {
-      dueAt = new Date(now.getTime() + parseInt(relMinutes[1], 10) * 60_000);
-      matchedSpan = relMinutes[0];
-    } else if (relHalfHour) {
-      dueAt = new Date(now.getTime() + 30 * 60_000);
-      matchedSpan = relHalfHour[0];
-    } else if (relHours) {
-      dueAt = new Date(now.getTime() + parseInt(relHours[1], 10) * 3_600_000);
-      matchedSpan = relHours[0];
-    } else if (relDays) {
-      dueAt = new Date(now.getTime() + parseInt(relDays[1], 10) * 86_400_000);
-      matchedSpan = relDays[0];
+    const relative = input.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה|שעות|שעה|ימים|יום)/);
+    if (relative) {
+      const amount = +relative[1];
+      const unit = relative[2];
+      const multiplier = /דק/.test(unit) ? 60_000 : /שע/.test(unit) ? 3_600_000 : 86_400_000;
+      dueAt = new Date(now.getTime() + amount * multiplier);
+      span = relative[0];
     }
   }
 
   if (!dueAt) {
-    const dayWord = lower.match(/מחרתיים|מחר|היום/);
-    if (dayWord) {
-      let addDays = 0;
-      if (dayWord[0] === "מחר") addDays = 1;
-      if (dayWord[0] === "מחרתיים") addDays = 2;
-      const timeMatch = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      const hour = timeMatch ? parseInt(timeMatch[1], 10) : 9;
-      const minute = timeMatch && timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
-      dueAt = buildIsraelTime(hour, minute, now, addDays);
-      matchedSpan = dayWord[0] + (timeMatch ? timeMatch[0] : "");
+    const day = input.match(/מחרתיים|מחר|היום/);
+    if (day) {
+      const add = day[0] === "מחר" ? 1 : day[0] === "מחרתיים" ? 2 : 0;
+      const time = input.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+      dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);
+      span = day[0] + (time ? time[0] : "");
     }
   }
 
   if (!dueAt) {
-    const weekdayMatch = lower.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
-    if (weekdayMatch) {
-      const targetDow = HEBREW_WEEKDAYS[weekdayMatch[1]];
-      let daysAhead = (targetDow - now.getDay() + 7) % 7;
-      if (daysAhead === 0) daysAhead = 7;
-      const timeMatch = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      const hour = timeMatch ? parseInt(timeMatch[1], 10) : 9;
-      const minute = timeMatch && timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
-      dueAt = buildIsraelTime(hour, minute, now, daysAhead);
-      matchedSpan = weekdayMatch[0] + (timeMatch ? timeMatch[0] : "");
+    const weekday = input.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
+    if (weekday) {
+      const target = WEEKDAYS[weekday[1]];
+      let add = (target - now.getDay() + 7) % 7;
+      if (!add) add = 7;
+      const time = input.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+      dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);
+      span = weekday[0] + (time ? time[0] : "");
     }
   }
 
   if (!dueAt) {
-    const timeOnly = lower.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-    if (timeOnly) {
-      const hour = parseInt(timeOnly[1], 10);
-      const minute = timeOnly[2] ? parseInt(timeOnly[2], 10) : 0;
-      let candidate = buildIsraelTime(hour, minute, now);
-      if (candidate.getTime() <= now.getTime()) candidate = buildIsraelTime(hour, minute, now, 1);
-      dueAt = candidate;
-      matchedSpan = timeOnly[0];
+    const time = input.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+    if (time) {
+      dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now);
+      if (dueAt <= now) dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now, 1);
+      span = time[0];
     }
   }
 
-  if (!dueAt || !matchedSpan) return null;
-  let task = lower.replace(REMINDER_TRIGGER, "").replace(matchedSpan, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim();
-  if (!task) task = "תזכורת";
+  if (!dueAt || !span) return null;
+  const task = input.replace(REMINDER_TRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim() || "תזכורת";
   return { dueAt, task, type };
 }
 
-async function handleReminderText(chatId: number, text: string) {
-  await updateUser(chatId, { state: "awaiting_reminder_type", pending_reminder_text: text });
-  await sendMessage(chatId, `מעולה! מתי לתזכר אותך על: "${text}"?`, {
-    inline_keyboard: [
-      [{ text: "🔔 חד פעמי", callback_data: "reminder_type_once" }],
-      [{ text: "📅 יומי", callback_data: "reminder_type_daily" }],
-      [{ text: "📆 שבועי", callback_data: "reminder_type_weekly" }],
-    ],
-  });
+function personalityKeyboard() {
+  return { inline_keyboard: [
+    [{ text: "🧠 המאמן", callback_data: "personality_coach" }, { text: "😈 הציני", callback_data: "personality_cynic" }],
+    [{ text: "🤗 החבר", callback_data: "personality_friend" }, { text: "🪖 הרס\"ר", callback_data: "personality_sergeant" }],
+    [{ text: "🛋️ המטפל", callback_data: "personality_therapist" }, { text: "🔥 המעודד", callback_data: "personality_hype" }],
+    [{ text: "👵 הסבתא", callback_data: "personality_grandma" }, { text: "🧐 הפילוסוף", callback_data: "personality_philosopher" }],
+    [{ text: "😏 הפראייר", callback_data: "personality_frayer" }, { text: "🏠 השכן", callback_data: "personality_neighbor" }],
+  ] };
 }
 
-async function handleReminderType(chatId: number, type: string) {
-  await updateUser(chatId, { state: `awaiting_reminder_time_${type}` });
-  await sendMessage(chatId, `באיזו שעה? (כתוב בפורמט HH:MM, למשל 08:00)`);
+async function answerCallback(id: string) {
+  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-async function handleReminderTime(chatId: number, timeText: string, user: Record<string, unknown>) {
-  const state = user.state as string;
-  const type = state.replace("awaiting_reminder_time_", "");
-  const reminderText = user.pending_reminder_text as string;
+async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
+  const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
+  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  if (!apiKey) return "אין לי כרגע חיבור ל-Gemini. תנסה שוב עוד רגע.";
 
-  const timeMatch = timeText.match(/^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/);
-  if (!timeMatch) {
-    await sendMessage(chatId, "פורמט שגוי. כתוב שעה בפורמט HH:MM (למשל 08:30)");
-    return;
-  }
+  const prompt = `אתה ${personality.name}. ${personality.prompt}
+אתה מדבר עברית ישראלית טבעית, קצרה ולא תאגידית. אין יותר משני משפטים קצרים, שאלה אחת לכל היותר, ואין לכתוב "אני כאן בשבילך", "בהחלט" או "אשמח לסייע".
 
-  const hour = parseInt(timeMatch[1], 10);
-  const minute = parseInt(timeMatch[2], 10);
-  const dueAt = new Date(nowInTz());
-  dueAt.setHours(hour, minute, 0, 0);
-  if (type === "once" && dueAt.getTime() <= nowInTz().getTime()) {
-    dueAt.setDate(dueAt.getDate() + 1);
-  }
+הקשר בסיסי: ${context}
 
-  await supabase.from("reminders").insert({
-    chat_id: chatId,
-    text: reminderText,
-    type,
-    time: dueAt.toISOString(),
-    active: true,
+${layers.filter(Boolean).join("\n\n")}`;
+
+  const contents = [
+    ...history.map((message) => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] })),
+    { role: "user", parts: [{ text }] },
+  ];
+
+  const result = await generateContentWithFallback(apiKey, {
+    systemInstruction: { parts: [{ text: prompt }] },
+    contents,
+    generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 700 },
   });
 
-  await updateUser(chatId, { state: "idle", pending_reminder_text: null });
-
-  const timeLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(dueAt);
-  const typeLabels: Record<string, string> = { once: "חד פעמי", daily: "יומי", weekly: "שבועי" };
-  await sendMessage(
-    chatId,
-    `✅ תזכורת נוספה!\n📝 ${reminderText}\n🕐 ${timeLabel}\n🔄 ${typeLabels[type] ?? type}\n\nאני אזכיר לך בזמן.`
-  );
-  await handleMenu(chatId);
+  if (!result.ok) return "לא הצלחתי לענות עכשיו. תשלח שוב עוד רגע.";
+  const raw = result.data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
+  return naturalize(raw || "לא הצלחתי לענות עכשיו. תשלח שוב עוד רגע.");
 }
 
-async function handleListReminders(chatId: number) {
-  const { data: reminders } = await supabase
-    .from("reminders")
-    .select("*")
-    .eq("chat_id", chatId)
-    .eq("active", true)
-    .order("created_at", { ascending: false });
+async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
+  try {
+    const extraction = await runExtraction((payload) => generateContentWithFallback(Deno.env.get("GEMINI_API_KEY") ?? "", payload), { userText: text, replyText: reply, history, known: memories });
+    await upsertMemories(supabase, chatId, extraction.memories);
+    await forgetMemories(supabase, chatId, extraction.forget);
+    await scheduleFollowUps(supabase, chatId, extraction.followUps);
 
-  if (!reminders || reminders.length === 0) {
-    await sendMessage(chatId, "אין לך תזכורות פעילות. הוסף אחת! ⏰");
-    return;
+    const awareness = await runAwarenessExtraction((payload) => generateContentWithFallback(Deno.env.get("GEMINI_API_KEY") ?? "", payload), { userText: text, replyText: reply, history });
+    await upsertEvents(supabase, chatId, awareness.events);
+    await bumpInsideJokes(supabase, chatId, awareness.jokes);
+
+    const profileExtraction = await runProfileExtraction((payload) => generateContentWithFallback(Deno.env.get("GEMINI_API_KEY") ?? "", payload), { userText: text, replyText: reply, history, profile });
+    if (Object.keys(profileExtraction.patch).length) await saveProfile(supabase, chatId, profileExtraction.patch);
+    await upsertGoals(supabase, chatId, profileExtraction.goals);
+  } catch (error) {
+    console.error("[background] pipeline failed:", error);
   }
-
-  const typeLabels: Record<string, string> = { once: "חד פעמי", daily: "יומי", weekly: "שבועי" };
-  let msg = "📋 התזכורות שלך:\n\n";
-  const keyboard: object[][] = [];
-  reminders.forEach((r, i) => {
-    msg += `${i + 1}. ${r.text}\n   🕐 ${r.time} | ${typeLabels[r.type] ?? r.type}\n\n`;
-    keyboard.push([{ text: `✅ סיימתי: ${r.text.slice(0, 25)}`, callback_data: `done_reminder_${r.id}` }]);
-  });
-
-  await sendMessage(chatId, msg, { inline_keyboard: keyboard });
 }
 
-async function checkAndOfferCloseReminder(
-  chatId: number,
-  userText: string,
-  _personality: string
-): Promise<boolean> {
-  const { data: reminders } = await supabase
-    .from("reminders")
-    .select("*")
-    .eq("chat_id", chatId)
-    .eq("active", true);
-
-  if (!reminders || reminders.length === 0) return false;
-
-  const lower = userText.toLowerCase();
-  const matched = reminders.find((r) => {
-    const words = r.text.toLowerCase().split(/\s+/);
-    return words.some((w: string) => w.length > 2 && lower.includes(w));
-  });
-
-  if (matched) {
-    await sendMessage(
-      chatId,
-      `רגע — זה קשור לתזכורת שלך: "${matched.text}"?\nאם סיימת, תלחץ כדי לסגור אותה 👇`,
-      {
-        inline_keyboard: [
-          [
-            { text: "✅ כן, סיימתי!", callback_data: `done_reminder_${matched.id}` },
-            { text: "לא, המשך", callback_data: "dismiss_offer" },
-          ],
-        ],
-      }
-    );
-    return true;
-  }
-
-  return false;
-}
-
-serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return new Response("OK", { status: 200 });
 
   try {
     const update = await req.json();
-    console.log("Update:", JSON.stringify(update));
 
     if (update.callback_query) {
-      const cq = update.callback_query;
-      const chatId = cq.message.chat.id;
-      const data = cq.data as string;
-      const user = await getOrCreateUser(chatId, cq.from.first_name);
-
-      await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ callback_query_id: cq.id }),
-      });
+      const callback = update.callback_query;
+      const chatId = callback.message.chat.id as number;
+      const data = String(callback.data ?? "");
+      const user = await getOrCreateUser(chatId, callback.from?.first_name ?? "חבר");
+      await answerCallback(callback.id);
+      await updateUser(chatId, { last_message_at: new Date().toISOString() });
 
       if (data.startsWith("personality_")) {
-        const p = data.replace("personality_", "");
-        await updateUser(chatId, { personality: p, state: "chatting" });
-        await clearHistory(chatId);
-        const greeting = GREETINGS[p] ?? `✅ אישיות שונתה! דבר איתי על הכל.`;
-        await sendMessage(chatId, greeting);
-      } else if (data === "add_reminder") {
+        const personality = data.replace("personality_", "");
+        await updateUser(chatId, { personality, temp_personality: null, temp_personality_until: null, state: "chatting" });
+        await sendMessage(chatId, GREETINGS[personality] ?? "סגור. דבר איתי.");
+      } else if (data === "menu_reminder") {
         await updateUser(chatId, { state: "awaiting_reminder_text" });
-        await sendMessage(chatId, "מה המטלה שאתה רוצה שאזכיר לך?");
-      } else if (data === "list_reminders") {
-        await handleListReminders(chatId);
-      } else if (data === "change_personality") {
-        await sendMessage(chatId, "בחר אישיות חדשה:", getPersonalityKeyboard());
-      } else if (data === "chat") {
-        await updateUser(chatId, { state: "chatting" });
-        const p = user.personality as string;
-        const pName = PERSONALITIES[p]?.name ?? "הבוט";
-        const pEmoji = PERSONALITIES[p]?.emoji ?? "💬";
-        await sendMessage(chatId, `${pEmoji} ${pName} כאן.\nדבר איתי חופשי.\n(שלח /menu לתפריט)`);
-      } else if (data.startsWith("reminder_type_")) {
-        const type = data.replace("reminder_type_", "");
-        await handleReminderType(chatId, type);
+        await sendMessage(chatId, "מה להזכיר לך?");
+      } else if (data === "menu_personality") {
+        await sendMessage(chatId, "בחר אישיות:", personalityKeyboard());
       } else if (data.startsWith("done_reminder_")) {
-        const reminderId = data.replace("done_reminder_", "");
-        const { data: doneReminder } = await supabase
-          .from("reminders")
-          .select("id, chat_id, text, type, time")
-          .eq("id", reminderId)
-          .single();
-
-        if (doneReminder) {
-          if (doneReminder.type === "once") {
-            await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
-          }
-          await logCompletion(doneReminder);
-          await logBehavior(supabase, chatId, "reminder_done", { hour: reminderHour(doneReminder.time) });
-        } else {
-          await supabase.from("reminders").update({ active: false }).eq("id", reminderId);
+        const id = data.replace("done_reminder_", "");
+        const { data: reminder } = await supabase.from("reminders").select("id, chat_id, text, type, time").eq("id", id).maybeSingle();
+        if (reminder) {
+          if (reminder.type === "once") await supabase.from("reminders").update({ active: false }).eq("id", id);
+          await supabase.from("reminder_completions").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text });
+          await logBehavior(supabase, chatId, "reminder_done", { hour: new Date(reminder.time).getHours() });
+          await sendMessage(chatId, "יפה. סומן.");
         }
-
-        const history = await getHistory(chatId);
-        const reply = await askGemini(
-          "המשתמש סיים את המטלה! תגיב בהתאם לאישיות שלך — אמיתי, ספונטני, מצחיק, לא ג'נרי.",
-          user.personality as string,
-          "",
-          history
-        );
-        await sendMessage(chatId, reply);
-      } else if (data === "dismiss_offer") {
-        await sendMessage(chatId, "אוקיי, ממשיכים 👍");
       } else if (data.startsWith("snooze_")) {
-        const reminderId = data.replace("snooze_", "");
-        const { data: snoozed } = await supabase.from("reminders").select("time").eq("id", reminderId).maybeSingle();
-        await logBehavior(supabase, chatId, "reminder_snoozed", { hour: reminderHour(snoozed?.time) });
-        await supabase
-          .from("reminders")
-          .update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null })
-          .eq("id", reminderId);
-        await sendMessage(chatId, "אוקיי, 15 דקות. אבל אני חוזר, שלא תתבלבל 😏");
+        const id = data.replace("snooze_", "");
+        await supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null }).eq("id", id);
+        await logBehavior(supabase, chatId, "reminder_snoozed");
+        await sendMessage(chatId, "סגור, עוד 15 דקות.");
       }
 
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
     const message = update.message;
-    if (!message) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    if (!message?.text) return new Response(JSON.stringify({ ok: true }), { status: 200 });
 
-    const t0 = Date.now();
-    const timings: Record<string, number> = {};
-    const mark = (label: string, from: number) => { timings[label] = Date.now() - from; };
-
-    const chatId = message.chat.id;
-    const text = (message.text ?? "").trim();
+    const chatId = message.chat.id as number;
+    const text = String(message.text).trim();
     const firstName = message.from?.first_name ?? "חבר";
-    const tUser = Date.now();
     const user = await getOrCreateUser(chatId, firstName);
-    mark("getUser", tUser);
 
-    // FIX: update last_message_at on EVERY incoming message, before any
-    // branching. Previously this only happened deep inside the full
-    // conversation branch, so a user who only ever set reminders or used
-    // commands was wrongly treated by the proactive job as "silent for days".
-    updateUser(chatId, { last_message_at: new Date().toISOString() }).catch(() => {});
+    // Always update activity before any return path.
+    await updateUser(chatId, { last_message_at: new Date().toISOString() });
 
     if (text === "/start") {
-      await handleStart(chatId, firstName);
-    } else if (text === "/diag") {
-      await handleDiag(chatId);
-    } else if (text === "/menu") {
-      await updateUser(chatId, { state: "idle" });
-      await handleMenu(chatId);
-    } else if (text === "/reminders") {
-      await handleListReminders(chatId);
-    } else if (text === "/personality") {
-      await sendMessage(chatId, "בחר אישיות:", getPersonalityKeyboard());
-    } else if (text === "/memory" || text === "/זיכרון") {
-      const prof = await fetchProfile(supabase, chatId);
-      const openGoals = await fetchGoals(supabase, chatId);
-      const mems = await fetchMemories(supabase, chatId);
-      if (mems.length === 0) {
-        await sendMessage(chatId, "עדיין לא אספתי עליך כלום. תספר לי משהו ואני אזכור את מה ששווה לזכור.");
-      } else {
-        const lines = mems.map((m) => `• ${m.value}`).join("\n");
-        const profLines = [
-          prof.topics.length ? `נושאים: ${prof.topics.join(", ")}` : "",
-          prof.habits.length ? `הרגלים: ${prof.habits.join(", ")}` : "",
-          prof.procrastinates.length ? `נוטה לדחות: ${prof.procrastinates.join(", ")}` : "",
-          prof.active_hours.length ? `שעות פעילות: ${prof.active_hours.map((h) => `${h}:00`).join(", ")}` : "",
-          `רמת הומור שהתאמתי לך: ${Math.round((prof.humor_level ?? 0.5) * 100)}%`,
-          openGoals.length ? `מטרות פתוחות: ${openGoals.map((g) => g.title).join(", ")}` : "",
-        ].filter(Boolean).join("\n");
-        await sendMessage(
-          chatId,
-          `מה שאני זוכר עליך:\n${lines}\n\n📊 פרופיל:\n${profLines}\n\nרוצה שאשכח משהו? שלח /forget ואת המילה.`
-        );
-      }
-    } else if (text.startsWith("/forget")) {
-      const term = text.replace("/forget", "").trim();
-      const mems = await fetchMemories(supabase, chatId);
-      const targets = term
-        ? mems.filter((m) => m.value.includes(term) || m.mem_key.includes(term)).map((m) => m.mem_key)
-        : [];
-      if (!term) {
-        await sendMessage(chatId, "מה לשכוח? לדוגמה: /forget אימון");
-      } else if (targets.length === 0) {
-        await sendMessage(chatId, "לא מצאתי כזה דבר בזיכרון.");
-      } else {
-        await forgetMemories(supabase, chatId, targets);
-        await sendMessage(chatId, `נמחק מהזיכרון (${targets.length}). לא היה ולא נברא.`);
-      }
-    } else if ((user.state as string).startsWith("awaiting_anchor_")) {
-      const anchor = (user.state as string).replace("awaiting_anchor_", "");
-      const m = text.match(/(\d{1,2})[:.]?(\d{2})?/);
-      if (!m) {
-        await sendMessage(chatId, "לא הבנתי את השעה. תכתוב משהו כמו 8:30 או 18:00.");
-      } else {
-        const hh = Number(m[1]);
-        const mm = Number(m[2] ?? "00");
-        const memKey = anchorMemoryKeyFor(anchor);
-        if (memKey) {
-          await upsertMemories(supabase, chatId, [
-            { kind: "habit", mem_key: memKey, value: `${anchorQuestion(anchor).replace("?", "")}: ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`, confidence: 0.9 },
-          ]);
-        }
-        await updateUser(chatId, { state: "chatting" });
-        await sendMessage(
-          chatId,
-          `רשמתי — ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}. מעכשיו אני לא צריך לשאול את זה שוב. תגיד לי מה להזכיר לך ואני מסדר את הזמן לבד.`
-        );
-      }
-    } else if (user.state === "awaiting_reminder_text") {
-      await handleReminderText(chatId, text);
-    } else if ((user.state as string).startsWith("awaiting_reminder_time_")) {
-      await handleReminderTime(chatId, text, user);
-    } else {
-      // ---- Personality / tone switching on demand -------------
-      const switchReq = detectSwitchRequest(text);
-      if (switchReq?.type === "personality" && PERSONALITIES[switchReq.key]) {
-        if (switchReq.scope === "permanent") {
-          await updateUser(chatId, { personality: switchReq.key, temp_personality: null, temp_personality_until: null });
-          user.personality = switchReq.key;
-        } else {
-          await updateUser(chatId, {
-            temp_personality: switchReq.key,
-            temp_personality_until: new Date(Date.now() + 2 * 3600_000).toISOString(),
-          });
-          user.temp_personality = switchReq.key;
-        }
-      } else if (switchReq?.type === "tone") {
-        await updateUser(chatId, { tone_override: switchReq.tone });
-        user.tone_override = switchReq.tone;
-      }
-
-      const tempAlive =
-        user.temp_personality &&
-        user.temp_personality_until &&
-        new Date(user.temp_personality_until as string).getTime() > Date.now();
-      const activePersonality = (tempAlive ? user.temp_personality : user.personality) as string;
-
-      if (detectDoneKeyword(text)) {
-        const offered = await checkAndOfferCloseReminder(chatId, text, activePersonality);
-        if (offered) {
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        }
-      }
-
-      if (detectReminderIntent(text)) {
-        const hints = parseSmartHints(text);
-        const parsed = parseHebrewReminderTime(text, nowInTz());
-
-        if (!parsed && hints.anchor) {
-          const memKey = anchorMemoryKeyFor(hints.anchor);
-          const mems = await fetchMemories(supabase, chatId);
-          const known = memKey ? mems.find((m) => m.mem_key === memKey) : undefined;
-          const knownTime = known?.value.match(/(\d{1,2}):(\d{2})/);
-          if (knownTime) {
-            const base = nowInTz();
-            const lead = hints.leadMinutes ?? 20;
-            let due = buildIsraelTime(Number(knownTime[1]), Number(knownTime[2]), base);
-            due = new Date(due.getTime() - lead * 60_000);
-            if (due.getTime() <= Date.now()) due = new Date(due.getTime() + 24 * 3600_000);
-            const task = text.replace(REMINDER_TRIGGER, "").trim() || "המשימה";
-            await supabase.from("reminders").insert({
-              chat_id: chatId,
-              text: task,
-              type: "once",
-              time: due.toISOString(),
-              active: true,
-              anchor: hints.anchor,
-              lead_minutes: hints.leadMinutes ?? null,
-              confirm_needed: hints.confirmNeeded ?? false,
-            });
-            const label = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(due);
-            await sendMessage(chatId, `סגור — לפי מה שאני יודע עליך, אזכיר לך ב-${label}. אם השעה השתנתה, תגיד לי.`);
-          } else {
-            await updateUser(chatId, { state: `awaiting_anchor_${hints.anchor}` });
-            await sendMessage(
-              chatId,
-              `בשמחה, רק חסר לי פרט אחד: ${anchorQuestion(hints.anchor)}\n(תענה בשעה, ואני אזכור את זה להבא)`
-            );
-          }
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        }
-
-        if (parsed) {
-          const dueAt = hints.leadMinutes
-            ? new Date(parsed.dueAt.getTime() - hints.leadMinutes * 60_000)
-            : parsed.dueAt;
-          const targetHHMM = new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
-          const { data: existingReminders } = await supabase
-            .from("reminders")
-            .select("id, text, time, type")
-            .eq("chat_id", chatId)
-            .eq("active", true);
-
-          const duplicate = (existingReminders ?? []).find((r) => {
-            const sameTask = r.text.trim().toLowerCase() === parsed.task.trim().toLowerCase();
-            const rHHMM = /^\d{2}:\d{2}$/.test(r.time)
-              ? r.time
-              : new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(r.time));
-            return sameTask && rHHMM === targetHHMM && r.type === parsed.type;
-          });
-
-          if (duplicate) {
-            await sendMessage(chatId, `⚠️ כבר יש לך תזכורת זהה ל"${parsed.task}" בשעה הזו — לא הוספתי כפילות.`);
-            return new Response(JSON.stringify({ ok: true }), { status: 200 });
-          }
-
-          const { error: insertError } = await supabase.from("reminders").insert({
-            chat_id: chatId,
-            text: parsed.task,
-            type: parsed.type,
-            time: dueAt.toISOString(),
-            active: true,
-            lead_minutes: hints.leadMinutes ?? null,
-            anchor: hints.anchor ?? null,
-            confirm_needed: hints.confirmNeeded ?? false,
-          });
-          if (insertError) {
-            console.error(`[reminders] insert failed: ${insertError.message}`);
-            await sendMessage(chatId, "משהו השתבש בשמירת התזכורת. תנסה שוב עוד רגע 🙏");
-            return new Response(JSON.stringify({ ok: true }), { status: 200 });
-          }
-
-          const timeLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(dueAt);
-          const typeLabel = parsed.type === "daily" ? "כל יום" : "פעם אחת";
-          const streakNow = similarityStreak(text, await getHistory(chatId));
-          const ack =
-            streakNow >= 3
-              ? `הבנתי, הבנתי 😄 "${parsed.task}" ${typeLabel} ב-${timeLabel}. הפעם אני באמת מזכיר.`
-              : `✅ קבעתי! אזכיר לך "${parsed.task}" ${typeLabel} ב-${timeLabel}.`;
-          await sendMessage(chatId, hints.confirmNeeded ? `${ack}\nואם לא תסמן שביצעת — אני חוזר אליך.` : ack);
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        } else {
-          await sendMessage(
-            chatId,
-            `לא הצלחתי להבין בדיוק מתי. אפשר לנסח ככה?\n• "תזכיר לי מחר ב-8 לקנות חלב"\n• "תזכיר לי כל יום ב-6:30 לקחת כדור"\n• "תזכיר לי עוד שעה להתקשר"`
-          );
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        }
-      }
-
-      const tFetch = Date.now();
-      const [activeReminders, history, memoriesRaw, profile, goals, events, jokes, recentPhrases] = await Promise.all([
-        supabase
-          .from("reminders")
-          .select("text, time, type")
-          .eq("chat_id", chatId)
-          .eq("active", true),
-        getHistory(chatId),
-        fetchMemories(supabase, chatId),
-        fetchProfile(supabase, chatId),
-        fetchGoals(supabase, chatId),
-        fetchEvents(supabase, chatId),
-        fetchInsideJokes(supabase, chatId),
-        fetchRecentPhrases(supabase, chatId),
-      ]);
-      mark("getContext", tFetch);
-      const memories = rankMemories(memoriesRaw);
-
-      const lastBotReply =
-        [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
-      const pace = computePacing(text, lastBotReply, profile);
-
-      const behaviourAfter = async (replyText: string) => {
-        await logBehavior(supabase, chatId, "message", { len: text.length });
-        if (isLaugh(text)) await logBehavior(supabase, chatId, "laughed", {});
-        if (isShortReply(text)) await logBehavior(supabase, chatId, "short_reply", {});
-        if (isShortReply(text) && lastBotReply.length > 180)
-          await logBehavior(supabase, chatId, "ignored_long", {});
-        await learnFromBehavior(supabase, chatId, profile);
-        const blendNext = evolveBlend(currentBlend(profile, activePersonality), {
-          laughed: isLaugh(text),
-          serious: /דחוף|רציני|לא מצחיק|באמת/.test(text),
-          shortMode: pace.kind !== "normal",
-        });
-        await saveProfile(supabase, chatId, {
-          blend: { ...(profile.blend ?? {}), [activePersonality]: blendNext } as Profile["blend"],
-        });
-        if (pace.kind === "normal") {
-          const res = await runProfileExtraction(callModelRaw, {
-            userText: text,
-            replyText,
-            history,
-            profile,
-          });
-          if (Object.keys(res.patch).length) await saveProfile(supabase, chatId, res.patch);
-          await upsertGoals(supabase, chatId, res.goals);
-        }
-      };
-
-      if (pace.instantReply) {
-        await sendMessage(chatId, pace.instantReply);
-        saveMessage(chatId, "user", text).catch(() => {});
-        saveMessage(chatId, "assistant", pace.instantReply).catch(() => {});
-        updateUser(chatId, { last_message_at: new Date().toISOString() }).catch(() => {});
-        behaviourAfter(pace.instantReply).catch(() => {});
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
-
-      const context = activeReminders.data?.length
-        ? `למשתמש יש תזכורות פעילות: ${activeReminders.data.map((r) => r.text).join(", ")}.`
-        : "למשתמש אין תזכורות פעילות כרגע.";
-
-      const mode = detectConversationMode(text);
-      const intent = analyzeHebrewIntent(text);
-      const streak = similarityStreak(text, history);
-      const lastMsgAt = user.last_message_at ? new Date(user.last_message_at as string).getTime() : Date.now();
-      const mood: Mood = pickMood(activePersonality, {
-        mode,
-        hourLocal: localHour(),
-        repeatStreak: streak,
-        gapMinutes: Math.max(0, (Date.now() - lastMsgAt) / 60_000),
-        prevMood: (user.mood as string) ?? null,
-      });
-      const humor = humorPolicy({
-        text,
-        mode,
-        tone: intent.tone,
-        intensity: intent.intensity,
-        mood,
-        userHumorLevel: profile.humor_level ?? (typeof user.humor_level === "number" ? (user.humor_level as number) : 0.5),
-      });
-
-      const decision = decisionEngine({
-        text,
-        pacing: pace,
-        hasMemory: memories.length > 0,
-        hasGoals: goals.length > 0,
-        humorLevel: profile.humor_level ?? 0.5,
-        mood: moodLabel(mood),
-      });
-
-      const deepUntil = user.deep_mode_until ? new Date(user.deep_mode_until as string).getTime() : 0;
-      const deepNow = detectDeepMode(text, history);
-      const deepMode = deepNow.deep || deepUntil > Date.now();
-      const deepTopic = deepNow.topic ?? ((user.deep_topic as string) ?? null);
-
-      const surpriseMaterial = [
-        ...events.map((e) => e.title),
-        ...goals.map((g) => g.title),
-        ...memories.filter((m) => m.kind === "project" || m.kind === "request").map((m) => m.value),
-      ].filter(Boolean);
-      const surprise = rollSurprise(surpriseMaterial.length > 0, deepMode);
-
-      const brainLayers = [
-        memoryContext(memories),
-        confidenceContext(memories),
-        eventContext(events),
-        insideJokeContext(jokes),
-        profileContext(profile),
-        goalContext(goals),
-        blendInstruction(
-          PERSONALITIES[activePersonality]?.name ?? "מוטי",
-          currentBlend(profile, activePersonality)
-        ),
-        coreferenceInstruction(text, history),
-        implicitIntentLayer(text, {
-          events,
-          goals,
-          reminders: (activeReminders.data ?? []).map((r: { text: string }) => r.text),
-        }),
-        moodInstruction(mood, streak),
-        humor.instruction,
-        toneOverrideInstruction(user.tone_override as string | null),
-        followUpNudge(text),
-        linkedReasoning(text, memories, goals, profile),
-        selfCorrectionLayer(text, memories, goals),
-        deepMode ? deepModeInstruction(deepTopic) : pace.instruction,
-        deepMode ? "" : surpriseInstruction(surprise, surpriseMaterial),
-        antiRepetitionInstruction(recentPhrases),
-        detectGoalStatement(text)
-          ? "המשתמש בדיוק הצהיר על מטרה ארוכת טווח. תאשר אותה בטון שלך במשפט אחד, ואם חסר דדליין — תשאל עד מתי."
-          : "",
-        decision.layer,
-        `בדיקת אנושיות לפני שליחה (עבור על זה בראש, אל תכתוב את הבדיקה): 1) זה נשמע כמו AI? 2) ארוך מדי? 3) יותר משני אימוג'ים? 4) חוזר על משהו שאמרת? 5) מסביר משהו שהוא כבר יודע? 6) שאלה מיותרת? 7) רשמי מדי? 8) מתאים לאישיות ולמצב הרוח הנוכחיים? אם משהו מהם נכון — תשכתב לפני שאתה עונה.`,
-      ];
-
-      updateUser(chatId, {
-        mood,
-        mood_updated_at: new Date().toISOString(),
-        last_message_at: new Date().toISOString(),
-        repeat_streak: streak,
-        deep_mode_until: deepMode ? new Date(Date.now() + 30 * 60_000).toISOString() : null,
-        deep_topic: deepMode ? deepTopic : null,
-      }).catch((e) => console.error("[db] mood update failed:", e));
-
-      saveMessage(chatId, "user", text).catch((e) => console.error("[db] saveMessage(user) failed:", e));
-
-      const tGemini = Date.now();
-      let reply = await askGemini(text, activePersonality, context, history, brainLayers);
-      mark("gemini", tGemini);
-
-      const verdict = humanityCheck(reply, {
-        lengthTarget: decision.lengthTarget,
-        deepMode,
-        recent: recentPhrases,
-        userText: text,
-      });
-      if (!verdict.ok) {
-        console.log(`[humanity] problems=${verdict.problems.join("|")}`);
-        const fixed = await rewriteForHumanity(callModelRaw, {
-          reply,
-          problems: verdict.problems,
-          personalityPrompt: PERSONALITIES[activePersonality]?.prompt ?? "",
-          userText: text,
-          lengthTarget: deepMode ? "2-4 משפטים" : decision.lengthTarget,
-        });
-        if (fixed && !isRepetitive(fixed, recentPhrases)) reply = postProcessReply(fixed);
-      }
-
-      const tSend = Date.now();
-      await sendMessage(chatId, reply);
-      mark("sendTelegram", tSend);
-      saveMessage(chatId, "assistant", reply).catch((e) => console.error("[db] saveMessage(assistant) failed:", e));
-      rememberPhrase(supabase, chatId, reply).catch(() => {});
-
-      runMemoryPipeline(chatId, text, reply, history, memories).catch(() => {});
-      runAwarenessPipeline(chatId, text, reply, history).catch(() => {});
-      behaviourAfter(reply).catch(() => {});
-
-      timings.total = Date.now() - t0;
-      console.log(
-        `[timing] ${JSON.stringify(timings)} mood=${moodLabel(mood)} humor=${humor.level} streak=${streak} p=${activePersonality} deep=${deepMode} surprise=${surprise}`
-      );
+      await sendMessage(chatId, `שלום ${firstName}! בחר מי ידבר איתך:`, personalityKeyboard());
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (text === "/menu") {
+      await sendMessage(chatId, "מה בא לך לעשות?", { inline_keyboard: [[{ text: "⏰ תזכורת", callback_data: "menu_reminder" }], [{ text: "🎭 אישיות", callback_data: "menu_personality" }]] });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
+    if (user.state === "awaiting_reminder_text") {
+      await updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text });
+      await sendMessage(chatId, "מתי? כתוב שעה כמו 08:30.");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    if (String(user.state ?? "").startsWith("awaiting_reminder_time_")) {
+      const time = text.match(/^([0-1]?\d|2[0-3]):([0-5]\d)$/);
+      if (!time) {
+        await sendMessage(chatId, "תכתוב שעה בפורמט HH:MM, למשל 08:30.");
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      const type = String(user.state).replace("awaiting_reminder_time_", "") as "once" | "daily" | "weekly";
+      const due = israelTime(+time[1], +time[2]);
+      await supabase.from("reminders").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });
+      await updateUser(chatId, { state: "idle", pending_reminder_text: null });
+      await sendMessage(chatId, `רשמתי: "${user.pending_reminder_text}" ב-${time[0]}.`);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    const switchRequest = detectSwitchRequest(text);
+    if (switchRequest?.type === "personality") {
+      const changes = switchRequest.scope === "permanent"
+        ? { personality: switchRequest.key, temp_personality: null, temp_personality_until: null }
+        : { temp_personality: switchRequest.key, temp_personality_until: new Date(Date.now() + 2 * 3_600_000).toISOString() };
+      await updateUser(chatId, changes);
+      await sendMessage(chatId, `${PERSONALITIES[switchRequest.key]?.emoji ?? "💬"} סגור, לשעתיים הקרובות.`);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (switchRequest?.type === "tone") {
+      await updateUser(chatId, { tone_override: switchRequest.tone });
+      await sendMessage(chatId, "סגור.");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    const temporary = user.temp_personality && user.temp_personality_until && new Date(user.temp_personality_until).getTime() > Date.now();
+    const personality = (temporary ? user.temp_personality : user.personality) as string || "cynic";
+
+    if (detectDone(text)) {
+      const { data: reminders } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true);
+      const match = (reminders ?? []).find((reminder) => reminder.text.split(/\s+/).some((word: string) => word.length > 2 && text.includes(word)));
+      if (match) {
+        await sendMessage(chatId, `זה קשור ל"${match.text}"?`, { inline_keyboard: [[{ text: "✅ סיימתי", callback_data: `done_reminder_${match.id}` }, { text: "לא", callback_data: "dismiss" }]] });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    }
+
+    if (detectReminderIntent(text)) {
+      const parsed = parseReminder(text);
+      if (parsed) {
+        const { data: duplicates } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
+        const duplicate = (duplicates ?? []).find((item) => item.text.trim().toLowerCase() === parsed.task.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
+        if (duplicate) {
+          await sendMessage(chatId, `כבר יש לך תזכורת כזאת ל"${parsed.task}". לא הוספתי עוד אחת.`);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        await supabase.from("reminders").insert({ chat_id: chatId, text: parsed.task, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
+        const label = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
+        await sendMessage(chatId, `רשמתי: "${parsed.task}" ב-${label}.`);
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      // A strong trigger with no time: ask normally, do not claim the model is stuck.
+      await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    const [history, memoriesRaw, profile, goals, events, jokes, recentPhrases, activeReminders] = await Promise.all([
+      getHistory(chatId), fetchMemories(supabase, chatId), fetchProfile(supabase, chatId), fetchGoals(supabase, chatId), fetchEvents(supabase, chatId), fetchInsideJokes(supabase, chatId), fetchRecentPhrases(supabase, chatId),
+      supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
+    ]);
+    const memories = rankMemories(memoriesRaw);
+    const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
+    const pace = computePacing(text, lastBot, profile);
+
+    if (pace.instantReply) {
+      await sendMessage(chatId, pace.instantReply);
+      await saveMessage(chatId, "user", text);
+      await saveMessage(chatId, "assistant", pace.instantReply);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
+    const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes: 0, prevMood: user.mood });
+    const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
+    const deep = detectDeepMode(text, history);
+    const material = [...goals.map((g) => g.title), ...events.map((e) => e.title)];
+    const surprise = rollSurprise(material.length > 0, deep.deep);
+    const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
+
+    const layers = [
+      memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
+      coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (activeReminders.data ?? []).map((r: { text: string }) => r.text) }),
+      moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
+      deep.deep ? deepModeInstruction(deep.topic) : pace.instruction, surpriseInstruction(surprise, material), antiRepetitionInstruction(recentPhrases), decision.layer,
+    ];
+
+    await saveMessage(chatId, "user", text);
+    const reply = await askGemini(text, personality, "", history, layers);
+    let finalReply = reply;
+    const verdict = humanityCheck(reply, { deepMode: deep.deep, recent: recentPhrases, userText: text, lengthTarget: decision.lengthTarget });
+    if (!verdict.ok) {
+      const rewritten = await rewriteForHumanity((payload) => generateContentWithFallback(Deno.env.get("GEMINI_API_KEY") ?? "", payload), { reply, problems: verdict.problems, personalityPrompt: PERSONALITIES[personality]?.prompt ?? "", userText: text, lengthTarget: decision.lengthTarget });
+      if (rewritten && !isRepetitive(rewritten, recentPhrases)) finalReply = naturalize(rewritten);
+    }
+
+    await sendMessage(chatId, finalReply);
+    await saveMessage(chatId, "assistant", finalReply);
+    await rememberPhrase(supabase, chatId, finalReply);
+    await updateUser(chatId, { mood, mood_updated_at: new Date().toISOString() });
+    logBehavior(supabase, chatId, "message", { len: text.length }).catch(() => {});
+    if (isLaugh(text)) logBehavior(supabase, chatId, "laughed").catch(() => {});
+    learnFromBehavior(supabase, chatId, profile).catch(() => {});
+    runBackgroundPipelines(chatId, text, finalReply, history, memories, profile).catch(() => {});
+
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
-  } catch (err) {
-    console.error("Error:", err);
+  } catch (error) {
+    console.error("[telegram] fatal:", error);
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
   }
 });
