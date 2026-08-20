@@ -555,7 +555,7 @@ Deno.serve(async (req: Request) => {
     ];
 
     await saveMessage(chatId, "user", text);
-    const reply = await askGemini(text, personality, "", history, layers);
+    const reply = await askGemini(text, personality, history, "", layers);
     let finalReply = reply;
     const verdict = humanityCheck(reply, { deepMode: deep.deep, recent: recentPhrases, userText: text, lengthTarget: decision.lengthTarget });
     if (!verdict.ok) {
