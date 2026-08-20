@@ -6,17 +6,28 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+type Reminder = {
+  id: string;
+  chat_id: number;
+  text: string;
+  type: "once" | "daily" | "weekly";
+  time: string;
+  active: boolean;
+  confirm_needed: boolean | null;
+  nudge_sent_at: string | null;
+};
+
 async function sendTelegramMessage(chatId: number, text: string, keyboard?: object): Promise<boolean> {
   try {
     const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
     if (keyboard) body.reply_markup = keyboard;
-    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) {
-      console.error(`[check-reminders] Telegram ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    if (!response.ok) {
+      console.error(`[check-reminders] Telegram ${response.status}: ${(await response.text()).slice(0, 300)}`);
       return false;
     }
     return true;
@@ -52,65 +63,63 @@ function nextOccurrence(previous: Date, days: number): Date {
   return new Date(naive - nextOffset * 60_000);
 }
 
-// The task is stored as a complete Hebrew phrase, usually an infinitive
-// ("לקחת כדור", "להתקשר לרופא"). Templates never add a competing verb or
-// a leading "ל", preventing broken wording such as "לא עושה לקחת כדור".
 const TEMPLATES: Record<string, Array<(task: string) => string>> = {
   coach: [
-    (t) => `${t}. קדימה, אתה יודע שאתה יכול 💪`,
-    (t) => `הגיע הזמן: ${t}.`,
-    (t) => `${t}. ואז אפשר לסמן וי ולהמשיך הלאה.`,
+    (t) => `${t}. צעד קטן וסגרת.`,
+    (t) => `יאללה, ${t}.`,
+    (t) => `${t} ואז ממשיכים הלאה.`,
   ],
   cynic: [
-    (t) => `${t}? כן, זה עכשיו.`,
-    (t) => `${t}. זה לא ייעלם אם נתעלם ממנו.`,
-    (t) => `רגע האמת: ${t}.`,
+    (t) => `${t}. כן, גם היום.`,
+    (t) => `קטע מעצבן: ${t}.`,
+    (t) => `${t} לפני שזה נעלם לך מהראש.`,
   ],
   friend: [
-    (t) => `רק מזכיר בחיבה: ${t} 😊`,
-    (t) => `אחי, זוכר? ${t}.`,
-    (t) => `קטן עליך: ${t}.`,
+    (t) => `תזכורת קטנה: ${t}.`,
+    (t) => `רק שלא יברח לך: ${t}.`,
+    (t) => `${t}, אחי.`,
   ],
   sergeant: [
-    (t) => `דיווח: ${t}. בצע.`,
+    (t) => `${t}.`,
+    (t) => `זמן ל-${t}.`,
     (t) => `${t}. עכשיו.`,
-    (t) => `זמן ביצוע: ${t}.`,
   ],
   therapist: [
-    (t) => `רגע קטן לעצמך: ${t}, בלי לחץ.`,
-    (t) => `${t}. תן לזה מקום עכשיו.`,
-    (t) => `זה הזמן לעניין הקטן הזה: ${t}.`,
+    (t) => `תזכורת עדינה: ${t}.`,
+    (t) => `כשמתאים לך עכשיו: ${t}.`,
+    (t) => `${t}, בלי לחץ.`,
   ],
   hype: [
-    (t) => `יאללה 🔥 ${t}!`,
-    (t) => `הגיע הרגע: ${t} 🚀`,
-    (t) => `${t}. בקטנה, קדימה!`,
+    (t) => `יאללה, ${t} 🔥`,
+    (t) => `${t} — קטן עליך.`,
+    (t) => `זה הרגע ל-${t}.`,
   ],
   grandma: [
-    (t) => `מותק, אל תשכח: ${t}.`,
+    (t) => `מותק, ${t}.`,
+    (t) => `אל תשכח, ${t}.`,
     (t) => `נו חמוד, ${t}.`,
-    (t) => `${t}, טוב לך.`,
   ],
   philosopher: [
-    (t) => `${t}. גם פעולה קטנה היא פעולה.`,
-    (t) => `הרגע הזה מתאים ל-${t}.`,
-    (t) => `${t}. מתי אם לא עכשיו?`,
+    (t) => `${t}.`,
+    (t) => `אולי זה זמן טוב ל-${t}.`,
+    (t) => `פעולה קטנה: ${t}.`,
   ],
   frayer: [
-    (t) => `בוא נגמור עם זה: ${t}.`,
-    (t) => `${t}. פשוט תעשה, בלי להסתבך.`,
-    (t) => `עוד דבר קטן לסגור: ${t}.`,
+    (t) => `${t}. שתי שניות וסגרת פינה.`,
+    (t) => `רק ${t} וזה מאחוריך.`,
+    (t) => `תזכורת קטנה: ${t}.`,
   ],
   neighbor: [
-    (t) => `רק מציין: ${t} מחכה לך.`,
-    (t) => `${t}, שכן. אל תיתן לי לעקוף אותך בזה.`,
-    (t) => `היי שכן, אולי גם אתה: ${t}? 😏`,
+    (t) => `שכן, ${t}.`,
+    (t) => `רק מזכיר: ${t}.`,
+    (t) => `${t}, לפני שאני צריך להזכיר שוב 😏`,
   ],
 };
 
 function buildReminderMessage(personality: string, task: string): string {
-  const options = TEMPLATES[personality] ?? TEMPLATES.cynic;
-  return options[Math.floor(Math.random() * options.length)](task.trim());
+  const cleanTask = task.trim().replace(/[.。]+$/u, "");
+  const options = TEMPLATES[personality] ?? TEMPLATES.friend;
+  return options[Math.floor(Math.random() * options.length)](cleanTask);
 }
 
 function keyboardForReminder(id: string, needsConfirmation: boolean) {
@@ -138,22 +147,23 @@ Deno.serve(async () => {
     }
     if (!due?.length) return new Response(JSON.stringify({ ok: true, sent: 0 }), { status: 200 });
 
-    const chatIds = [...new Set(due.map((row) => row.chat_id))];
+    const reminders = due as Reminder[];
+    const chatIds = [...new Set(reminders.map((row) => row.chat_id))];
     const { data: users } = await supabase
       .from("users")
       .select("chat_id, personality")
       .in("chat_id", chatIds);
-    const personality = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.personality ?? "cynic"]));
+    const personalities = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.personality ?? "friend"]));
 
     let sent = 0;
     let failed = 0;
 
-    for (const reminder of due) {
+    for (const reminder of reminders) {
       try {
         const needsConfirmation = reminder.confirm_needed === true;
         const isNudge = needsConfirmation && Boolean(reminder.nudge_sent_at);
-        const base = buildReminderMessage(personality.get(reminder.chat_id) ?? "cynic", reminder.text);
-        const message = isNudge ? `לא ראיתי שסימנת. ${base}` : base;
+        const base = buildReminderMessage(personalities.get(reminder.chat_id) ?? "friend", reminder.text);
+        const message = isNudge ? `פספסת את זה? ${base}` : base;
 
         if (!await sendTelegramMessage(reminder.chat_id, message, keyboardForReminder(reminder.id, needsConfirmation))) {
           failed++;
@@ -161,8 +171,6 @@ Deno.serve(async () => {
         }
 
         if (reminder.type === "once" && needsConfirmation && !isNudge) {
-          // A one-time reminder can nudge once. Daily/weekly reminders always
-          // stay active and simply roll forward below.
           await supabase.from("reminders").update({
             nudge_sent_at: now.toISOString(),
             time: new Date(now.getTime() + 20 * 60_000).toISOString(),
@@ -171,15 +179,11 @@ Deno.serve(async () => {
           await supabase.from("reminders").update({ active: false }).eq("id", reminder.id);
         } else {
           const days = reminder.type === "weekly" ? 7 : 1;
-          await supabase
-            .from("reminders")
-            .update({
-              time: nextOccurrence(new Date(reminder.time), days).toISOString(),
-              nudge_sent_at: null,
-            })
-            .eq("id", reminder.id);
+          await supabase.from("reminders").update({
+            time: nextOccurrence(new Date(reminder.time), days).toISOString(),
+            nudge_sent_at: null,
+          }).eq("id", reminder.id);
         }
-
         sent++;
       } catch (error) {
         console.error(`[check-reminders] reminder ${reminder.id} failed:`, error);
