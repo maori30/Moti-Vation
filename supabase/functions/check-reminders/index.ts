@@ -63,63 +63,88 @@ function nextOccurrence(previous: Date, days: number): Date {
   return new Date(naive - nextOffset * 60_000);
 }
 
+// Full personality voice on every reminder, no topic exceptions — the user
+// wants their chosen personality (including its humor) applied consistently.
 const TEMPLATES: Record<string, Array<(task: string) => string>> = {
   coach: [
-    (t) => `${t}. צעד קטן וסגרת.`,
-    (t) => `יאללה, ${t}.`,
-    (t) => `${t} ואז ממשיכים הלאה.`,
+    (t) => `${t}. צעד קטן, וסגרת עוד משהו היום 💪`,
+    (t) => `יאללה, ${t} — ואז ממשיכים.`,
+    (t) => `${t}. תעשה את זה ותרגיש את ההבדל.`,
+    (t) => `הזמן הזה נועד בדיוק ל${t}. קדימה.`,
   ],
   cynic: [
     (t) => `${t}. כן, גם היום.`,
-    (t) => `קטע מעצבן: ${t}.`,
-    (t) => `${t} לפני שזה נעלם לך מהראש.`,
+    (t) => `${t} לפני שזה יברח לך מהראש כמו כל דבר אחר.`,
+    (t) => `אני לא אומר שאתה דוחה, אבל ${t} עדיין מחכה שם.`,
+    (t) => `נו, ${t}? זה לא ייעלם כי התעלמת ממנו.`,
   ],
   friend: [
-    (t) => `תזכורת קטנה: ${t}.`,
-    (t) => `רק שלא יברח לך: ${t}.`,
-    (t) => `${t}, אחי.`,
+    (t) => `רק שלא יברח לך: ${t} 😊`,
+    (t) => `${t}, אחי. שתי דקות ואתה חופשי.`,
+    (t) => `תזכורת קטנה וחמה: ${t}.`,
+    (t) => `זוכר ש${t}? עכשיו הזמן המושלם.`,
   ],
   sergeant: [
-    (t) => `${t}.`,
-    (t) => `זמן ל-${t}.`,
     (t) => `${t}. עכשיו.`,
+    (t) => `זמן ל${t}. בלי דיונים.`,
+    (t) => `${t}. תדווח כשסיימת.`,
+    (t) => `דיווח: ${t}. בצע.`,
   ],
   therapist: [
-    (t) => `תזכורת עדינה: ${t}.`,
-    (t) => `כשמתאים לך עכשיו: ${t}.`,
-    (t) => `${t}, בלי לחץ.`,
+    (t) => `תזכורת עדינה: ${t}, בלי לחץ.`,
+    (t) => `כשמתאים לך עכשיו — ${t}.`,
+    (t) => `${t}. רגע קטן לעצמך.`,
+    (t) => `איך מרגיש לעצור ולעשות עכשיו את ${t}?`,
   ],
   hype: [
     (t) => `יאללה, ${t} 🔥`,
-    (t) => `${t} — קטן עליך.`,
-    (t) => `זה הרגע ל-${t}.`,
+    (t) => `${t} — קטן עליך! 🚀`,
+    (t) => `זה הרגע ל${t}!`,
+    (t) => `בואו נעשה את זה: ${t} 💥`,
   ],
   grandma: [
     (t) => `מותק, ${t}.`,
-    (t) => `אל תשכח, ${t}.`,
-    (t) => `נו חמוד, ${t}.`,
+    (t) => `אל תשכח, ${t}, טוב לך.`,
+    (t) => `נו חמוד, ${t}?`,
+    (t) => `תעשה לי טובה ו${t}.`,
   ],
   philosopher: [
-    (t) => `${t}.`,
-    (t) => `אולי זה זמן טוב ל-${t}.`,
-    (t) => `פעולה קטנה: ${t}.`,
+    (t) => `${t}. גם דברים קטנים בונים יום.`,
+    (t) => `אולי זה הזמן ל${t}?`,
+    (t) => `פעולה קטנה, השפעה גדולה: ${t}.`,
+    (t) => `מתי אם לא עכשיו ל${t}?`,
   ],
   frayer: [
     (t) => `${t}. שתי שניות וסגרת פינה.`,
     (t) => `רק ${t} וזה מאחוריך.`,
-    (t) => `תזכורת קטנה: ${t}.`,
+    (t) => `תכל'ס, ${t} ונגמר הסיפור.`,
+    (t) => `עסקה פשוטה: ${t}, בלי ויכוחים.`,
   ],
   neighbor: [
     (t) => `שכן, ${t}.`,
-    (t) => `רק מזכיר: ${t}.`,
-    (t) => `${t}, לפני שאני צריך להזכיר שוב 😏`,
+    (t) => `רק מזכיר: ${t} מחכה לך. אני כבר הספקתי 😏`,
+    (t) => `${t}, לפני שאני צריך להזכיר שוב.`,
+    (t) => `היי שכן, אולי גם ${t}?`,
   ],
 };
 
+const DEFAULT_TEMPLATES = TEMPLATES.friend;
+
 function buildReminderMessage(personality: string, task: string): string {
   const cleanTask = task.trim().replace(/[.。]+$/u, "");
-  const options = TEMPLATES[personality] ?? TEMPLATES.friend;
+  const options = TEMPLATES[personality] ?? DEFAULT_TEMPLATES;
   return options[Math.floor(Math.random() * options.length)](cleanTask);
+}
+
+const NUDGE_PREFIXES = [
+  (base: string) => `פספסת את זה? ${base}`,
+  (base: string) => `אני לא אומר שאתה מתעלם ממני, אבל ${base}`,
+  (base: string) => `שוב אני. ${base}`,
+  (base: string) => `עדיין מחכה. ${base}`,
+];
+
+function buildNudgeMessage(base: string): string {
+  return NUDGE_PREFIXES[Math.floor(Math.random() * NUDGE_PREFIXES.length)](base);
 }
 
 function keyboardForReminder(id: string, needsConfirmation: boolean) {
@@ -160,10 +185,11 @@ Deno.serve(async () => {
 
     for (const reminder of reminders) {
       try {
+        const personality = personalities.get(reminder.chat_id) ?? "friend";
         const needsConfirmation = reminder.confirm_needed === true;
         const isNudge = needsConfirmation && Boolean(reminder.nudge_sent_at);
-        const base = buildReminderMessage(personalities.get(reminder.chat_id) ?? "friend", reminder.text);
-        const message = isNudge ? `פספסת את זה? ${base}` : base;
+        const base = buildReminderMessage(personality, reminder.text);
+        const message = isNudge ? buildNudgeMessage(base) : base;
 
         if (!await sendTelegramMessage(reminder.chat_id, message, keyboardForReminder(reminder.id, needsConfirmation))) {
           failed++;
