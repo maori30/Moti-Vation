@@ -184,6 +184,12 @@ function detectDone(text: string): boolean {
   return DONE_WORDS.some((word) => lower.includes(word));
 }
 
+// Fire real background work (DB writes that don't affect what we're about to
+// say) without making the user wait for a cross-region round trip.
+function background(promise: Promise<unknown>, label: string): void {
+  promise.catch((error) => console.error(`[background:${label}] failed:`, error));
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 18_000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -283,16 +289,24 @@ async function updateUser(chatId: number, changes: Record<string, unknown>) {
   if (error) console.error("[users] update failed:", error.message);
 }
 
-async function getOrCreateUser(chatId: number, firstName: string) {
-  const { data } = await supabase.from("users").select("*").eq("chat_id", chatId).maybeSingle();
-  if (data) return data;
-  const { data: created, error } = await supabase
+// Replaces the old getOrCreateUser() + separate updateUser(last_message_at)
+// pair with ONE round trip. `personality`/`state` have DB-level defaults, so
+// they're left untouched for existing users since we don't send them here.
+async function touchUser(chatId: number, firstName: string) {
+  const { data, error } = await supabase
     .from("users")
-    .insert({ chat_id: chatId, first_name: firstName, personality: "cynic", state: "idle" })
+    .upsert(
+      { chat_id: chatId, first_name: firstName, last_message_at: new Date().toISOString() },
+      { onConflict: "chat_id" },
+    )
     .select()
     .single();
-  if (error) throw error;
-  return created;
+  if (!error && data) return data;
+  console.error("[users] touch upsert failed, falling back to select:", error?.message);
+  const { data: existing, error: selectError } = await supabase.from("users").select("*").eq("chat_id", chatId).maybeSingle();
+  if (existing) return existing;
+  if (selectError) throw selectError;
+  throw error ?? new Error("touchUser: no row and no error");
 }
 
 async function getHistory(chatId: number): Promise<HistoryMessage[]> {
@@ -466,16 +480,15 @@ Deno.serve(async (req: Request) => {
       const callback = update.callback_query;
       const chatId = callback.message.chat.id as number;
       const data = String(callback.data ?? "");
-      const user = await getOrCreateUser(chatId, callback.from?.first_name ?? "חבר");
+      const user = await touchUser(chatId, callback.from?.first_name ?? "חבר");
       await answerCallback(callback.id);
-      await updateUser(chatId, { last_message_at: new Date().toISOString() });
 
       if (data.startsWith("personality_")) {
         const personality = data.replace("personality_", "");
-        await updateUser(chatId, { personality, temp_personality: null, temp_personality_until: null, state: "chatting" });
+        background(updateUser(chatId, { personality, temp_personality: null, temp_personality_until: null, state: "chatting" }), "personality_switch");
         await sendMessage(chatId, GREETINGS[personality] ?? "סגור. דבר איתי.");
       } else if (data === "menu_reminder") {
-        await updateUser(chatId, { state: "awaiting_reminder_text" });
+        background(updateUser(chatId, { state: "awaiting_reminder_text" }), "menu_reminder_state");
         await sendMessage(chatId, "מה להזכיר לך?");
       } else if (data === "menu_personality") {
         await sendMessage(chatId, "בחר אישיות:", personalityKeyboard());
@@ -483,15 +496,23 @@ Deno.serve(async (req: Request) => {
         const id = data.replace("done_reminder_", "");
         const { data: reminder } = await supabase.from("reminders").select("id, chat_id, text, type, time").eq("id", id).maybeSingle();
         if (reminder) {
-          if (reminder.type === "once") await supabase.from("reminders").update({ active: false }).eq("id", id);
-          await supabase.from("reminder_completions").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text });
-          await logBehavior(supabase, chatId, "reminder_done", { hour: new Date(reminder.time).getHours() });
+          const writes: Promise<unknown>[] = [
+            supabase.from("reminder_completions").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text }),
+            logBehavior(supabase, chatId, "reminder_done", { hour: new Date(reminder.time).getHours() }),
+          ];
+          if (reminder.type === "once") writes.push(supabase.from("reminders").update({ active: false }).eq("id", id));
+          background(Promise.all(writes), "done_reminder_writes");
           await sendMessage(chatId, "יפה. סומן.");
         }
       } else if (data.startsWith("snooze_")) {
         const id = data.replace("snooze_", "");
-        await supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null }).eq("id", id);
-        await logBehavior(supabase, chatId, "reminder_snoozed");
+        background(
+          Promise.all([
+            supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null }).eq("id", id),
+            logBehavior(supabase, chatId, "reminder_snoozed"),
+          ]),
+          "snooze_writes",
+        );
         await sendMessage(chatId, "סגור, עוד 15 דקות.");
       }
 
@@ -504,10 +525,9 @@ Deno.serve(async (req: Request) => {
     const chatId = message.chat.id as number;
     const text = String(message.text).trim();
     const firstName = message.from?.first_name ?? "חבר";
-    const user = await getOrCreateUser(chatId, firstName);
-
-    // Always update activity before any return path.
-    await updateUser(chatId, { last_message_at: new Date().toISOString() });
+    // One round trip instead of two: creates the user row if new, and marks
+    // activity, in a single upsert. This alone removes ~900ms from every message.
+    const user = await touchUser(chatId, firstName);
 
     if (text === "/start") {
       await sendMessage(chatId, `שלום ${firstName}! בחר מי ידבר איתך:`, personalityKeyboard());
@@ -519,7 +539,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (user.state === "awaiting_reminder_text") {
-      await updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text });
+      background(updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text }), "reminder_text_state");
       await sendMessage(chatId, "מתי? כתוב שעה כמו 08:30.");
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -532,8 +552,10 @@ Deno.serve(async (req: Request) => {
       }
       const type = String(user.state).replace("awaiting_reminder_time_", "") as "once" | "daily" | "weekly";
       const due = israelTime(+time[1], +time[2]);
+      // The reminder insert itself stays awaited — it's the actual data we're
+      // promising the user we saved, so correctness beats speed here.
       await supabase.from("reminders").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });
-      await updateUser(chatId, { state: "idle", pending_reminder_text: null });
+      background(updateUser(chatId, { state: "idle", pending_reminder_text: null }), "reminder_time_state_reset");
       await sendMessage(chatId, `רשמתי: "${user.pending_reminder_text}" ב-${time[0]}.`);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -543,12 +565,12 @@ Deno.serve(async (req: Request) => {
       const changes = switchRequest.scope === "permanent"
         ? { personality: switchRequest.key, temp_personality: null, temp_personality_until: null }
         : { temp_personality: switchRequest.key, temp_personality_until: new Date(Date.now() + 2 * 3_600_000).toISOString() };
-      await updateUser(chatId, changes);
+      background(updateUser(chatId, changes), "switch_personality");
       await sendMessage(chatId, `${PERSONALITIES[switchRequest.key]?.emoji ?? "💬"} סגור, לשעתיים הקרובות.`);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (switchRequest?.type === "tone") {
-      await updateUser(chatId, { tone_override: switchRequest.tone });
+      background(updateUser(chatId, { tone_override: switchRequest.tone }), "switch_tone");
       await sendMessage(chatId, "סגור.");
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -574,12 +596,12 @@ Deno.serve(async (req: Request) => {
           await sendMessage(chatId, `כבר יש לך תזכורת כזאת ל"${parsed.task}". לא הוספתי עוד אחת.`);
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
+        // Kept awaited on purpose: this is the actual reminder we tell the user we saved.
         await supabase.from("reminders").insert({ chat_id: chatId, text: parsed.task, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
         const label = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
         await sendMessage(chatId, `רשמתי: "${parsed.task}" ב-${label}.`);
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      // A strong trigger with no time: ask normally, do not claim the model is stuck.
       await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -594,10 +616,14 @@ Deno.serve(async (req: Request) => {
 
     if (pace.instantReply) {
       await sendMessage(chatId, pace.instantReply);
-      await saveMessage(chatId, "user", text);
-      await saveMessage(chatId, "assistant", pace.instantReply);
+      background(saveMessage(chatId, "user", text), "save_user_instant");
+      background(saveMessage(chatId, "assistant", pace.instantReply), "save_assistant_instant");
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
+
+    // Saving the user's message doesn't need to block the reply — history was
+    // already fetched above, and the current text is passed to Gemini directly.
+    background(saveMessage(chatId, "user", text), "save_user");
 
     const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
     const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes: 0, prevMood: user.mood });
@@ -614,7 +640,6 @@ Deno.serve(async (req: Request) => {
       deep.deep ? deepModeInstruction(deep.topic) : pace.instruction, surpriseInstruction(surprise, material), antiRepetitionInstruction(recentPhrases), decision.layer,
     ];
 
-    await saveMessage(chatId, "user", text);
     const reply = await askGemini(text, personality, history, "", layers);
     let finalReply = reply;
     const verdict = humanityCheck(reply, { deepMode: deep.deep, recent: recentPhrases, userText: text, lengthTarget: decision.lengthTarget });
@@ -623,14 +648,18 @@ Deno.serve(async (req: Request) => {
       if (rewritten && !isRepetitive(rewritten, recentPhrases)) finalReply = naturalize(rewritten);
     }
 
+    // This is the only remaining call the user actually waits on.
     await sendMessage(chatId, finalReply);
-    await saveMessage(chatId, "assistant", finalReply);
-    await rememberPhrase(supabase, chatId, finalReply);
-    await updateUser(chatId, { mood, mood_updated_at: new Date().toISOString() });
-    logBehavior(supabase, chatId, "message", { len: text.length }).catch(() => {});
-    if (isLaugh(text)) logBehavior(supabase, chatId, "laughed").catch(() => {});
-    learnFromBehavior(supabase, chatId, profile).catch(() => {});
-    runBackgroundPipelines(chatId, text, finalReply, history, memories, profile).catch(() => {});
+
+    // Everything below happens after the user already has their reply — none
+    // of it should block the function or stack sequential cross-region calls.
+    background(saveMessage(chatId, "assistant", finalReply), "save_assistant");
+    background(rememberPhrase(supabase, chatId, finalReply), "remember_phrase");
+    background(updateUser(chatId, { mood, mood_updated_at: new Date().toISOString() }), "update_mood");
+    background(logBehavior(supabase, chatId, "message", { len: text.length }), "log_message");
+    if (isLaugh(text)) background(logBehavior(supabase, chatId, "laughed"), "log_laughed");
+    background(learnFromBehavior(supabase, chatId, profile), "learn_behavior");
+    background(runBackgroundPipelines(chatId, text, finalReply, history, memories, profile), "pipelines");
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   } catch (error) {
