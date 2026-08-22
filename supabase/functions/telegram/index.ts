@@ -572,32 +572,6 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
   }
 }
 
-
-type ActiveReminder = { id: string; text: string; type: string; time: string };
-function reminderLabel(r: ActiveReminder) {
-  const time = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(r.time));
-  return r.type === "daily" ? "כל יום ב־" + time : r.type === "weekly" ? "כל שבוע ב־" + time : "ב־" + time;
-}
-async function showReminders(chatId: number) {
-  const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true).order("time");
-  const reminders = (data ?? []) as ActiveReminder[];
-  if (!reminders.length) { await sendMessage(chatId, "אין לך כרגע תזכורות פעילות."); return; }
-  const lines = reminders.map((r, i) => (i + 1) + ". " + r.text + " — " + reminderLabel(r));
-  const buttons = reminders.map(r => [{ text: "🗑️ מחק: " + r.text.slice(0, 24), callback_data: "ask_delete_reminder_" + r.id }]);
-  await sendMessage(chatId, "התזכורות שלך:" + String.fromCharCode(10) + lines.join(String.fromCharCode(10)), { inline_keyboard: buttons });
-}
-async function askDeleteReminder(chatId: number, reminder: ActiveReminder) {
-  await sendMessage(chatId, "למחוק את התזכורת:" + String.fromCharCode(10) + reminder.text + " — " + reminderLabel(reminder) + "?", { inline_keyboard: [[{ text: "🗑️ כן, למחוק", callback_data: "confirm_delete_reminder_" + reminder.id }, { text: "לבטל", callback_data: "cancel_delete_reminder" }]] });
-}
-async function findReminderForDeletion(chatId: number, text: string): Promise<ActiveReminder | null> {
-  const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
-  const reminders = (data ?? []) as ActiveReminder[];
-  if (!reminders.length) return null;
-  const query = text.replace(/מחק|תמחק|לבטל|תבטל|הסר|תסיר|את התזכורת|תזכורת|אותה|אותו/gu, "").trim().toLowerCase();
-  if (!query || /^(אותה|אותו)?$/u.test(query)) return reminders.length === 1 ? reminders[0] : null;
-  return reminders.find(r => query.split(/\s+/).some(w => w.length > 2 && r.text.toLowerCase().includes(w))) ?? null;
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return new Response("OK", { status: 200 });
 
@@ -633,16 +607,6 @@ Deno.serve(async (req: Request) => {
           background(Promise.all(writes), "done_reminder_writes");
           await sendMessage(chatId, pickPersonalized(DONE_REPLIES, activePersonality));
         }
-      } else if (data.startsWith("ask_delete_reminder_")) {
-        const id = data.replace("ask_delete_reminder_", "");
-        const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", id).eq("chat_id", chatId).eq("active", true).maybeSingle();
-        if (reminder) await askDeleteReminder(chatId, reminder as ActiveReminder);
-      } else if (data.startsWith("confirm_delete_reminder_")) {
-        const id = data.replace("confirm_delete_reminder_", "");
-        const { error } = await supabase.from("reminders").update({ active: false }).eq("id", id).eq("chat_id", chatId);
-        await sendMessage(chatId, error ? "לא הצלחתי למחוק. נסה שוב עוד רגע." : "נמחקה. לא אטריד אותך על זה יותר.");
-      } else if (data === "cancel_delete_reminder") {
-        await sendMessage(chatId, "סבבה, נשארת כמו שהיא.");
       } else if (data.startsWith("snooze_")) {
         const id = data.replace("snooze_", "");
         background(
@@ -715,13 +679,6 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    if (/^(/reminders|התזכורות שלי|תזכורות)$/u.test(text)) { await showReminders(chatId); return new Response(JSON.stringify({ ok: true }), { status: 200 }); }
-    if (/(מחק|תמחק|לבטל|תבטל|הסר|תסיר)/u.test(text) && /(תזכור|כדור|אותה|אותו|ה)/u.test(text)) {
-      const reminder = await findReminderForDeletion(chatId, text);
-      if (reminder) await askDeleteReminder(chatId, reminder);
-      else await sendMessage(chatId, "איזו תזכורת למחוק? כתוב "התזכורות שלי" ובחר בכפתור.");
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
     const personality = resolveActivePersonality(user);
 
     if (detectDone(text)) {
