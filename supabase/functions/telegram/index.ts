@@ -425,6 +425,18 @@ function israelTime(hour: number, minute: number, base = new Date(), addDays = 0
   return new Date(naive - timezoneOffset(new Date(naive)) * 60_000);
 }
 
+function reminderScheduleLabel(dueAt: Date, type: ParsedReminder["type"]): string {
+  const time = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(dueAt);
+  if (type === "daily") return "כל יום ב־" + time;
+  if (type === "weekly") return "כל שבוע ב־" + time;
+  const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+  const dueDay = dayKey.format(dueAt);
+  if (dueDay === dayKey.format(new Date())) return "היום ב־" + time;
+  if (dueDay === dayKey.format(new Date(Date.now() + 86400000))) return "מחר ב־" + time;
+  const date = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "numeric", month: "numeric" }).format(dueAt);
+  return "ב־" + date + " ב־" + time;
+}
+
 function parseReminder(text: string): ParsedReminder | null {
   const input = text.trim();
   const now = new Date();
@@ -432,7 +444,7 @@ function parseReminder(text: string): ParsedReminder | null {
   let dueAt: Date | null = null;
   let span = "";
 
-  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב-?|בשעה\s*)?(\d{1,2})(?::(\d{2})|\s*וחצי|\s*ורבע)?/);
+  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב\s*-?\s*|בשעה\s*)?(\d{1,2})(?::(\d{2})|\s*וחצי|\s*ורבע)?/);
   if (daily) {
     const hour = +daily[1];
     const minute = daily[2] ? +daily[2] : /וחצי/.test(daily[0]) ? 30 : /ורבע/.test(daily[0]) ? 15 : 0;
@@ -457,7 +469,7 @@ function parseReminder(text: string): ParsedReminder | null {
     const day = input.match(/מחרתיים|מחר|היום/);
     if (day) {
       const add = day[0] === "מחר" ? 1 : day[0] === "מחרתיים" ? 2 : 0;
-      const time = input.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
       dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);
       span = day[0] + (time ? time[0] : "");
     }
@@ -469,14 +481,14 @@ function parseReminder(text: string): ParsedReminder | null {
       const target = WEEKDAYS[weekday[1]];
       let add = (target - now.getDay() + 7) % 7;
       if (!add) add = 7;
-      const time = input.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
       dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);
       span = weekday[0] + (time ? time[0] : "");
     }
   }
 
   if (!dueAt) {
-    const time = input.match(/(?:ב-?|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+    const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
     if (time) {
       dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now);
       if (dueAt <= now) dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now, 1);
@@ -647,7 +659,7 @@ Deno.serve(async (req: Request) => {
       // promising the user we saved, so correctness beats speed here.
       await supabase.from("reminders").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });
       background(updateUser(chatId, { state: "idle", pending_reminder_text: null }), "reminder_time_state_reset");
-      const manualLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(due);
+      const manualLabel = reminderScheduleLabel(due, type);
       await sendMessage(chatId, pickReminderCreated(resolveActivePersonality(user), String(user.pending_reminder_text ?? "זה"), manualLabel));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -689,7 +701,7 @@ Deno.serve(async (req: Request) => {
         }
         // Kept awaited on purpose: this is the actual reminder we tell the user we saved.
         await supabase.from("reminders").insert({ chat_id: chatId, text: parsed.task, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
-        const label = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
+        const label = reminderScheduleLabel(parsed.dueAt, parsed.type);
         await sendMessage(chatId, pickReminderCreated(personality, parsed.task, label));
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
