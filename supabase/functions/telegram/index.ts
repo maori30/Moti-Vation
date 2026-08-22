@@ -168,6 +168,96 @@ const GREETINGS: Record<string, string> = {
   neighbor: "🏠 היי שכן, מה נשמע?",
 };
 
+// Per-personality confirmations for closing a reminder — natural, warm,
+// funny where it fits, never a generic "יפה. סומן." for everyone.
+const DONE_REPLIES: Record<string, string[]> = {
+  coach: ["יפה, סימנת. עוד ניצחון קטן על הרשימה 💪", "זהו, ירד מהראש. קדימה לדבר הבא.", "סגרת את זה. זה בדיוק איך שמתקדמים."],
+  cynic: ["טוב, אז בסוף כן. מי היה מאמין.", "סימנת. אני בהלם קל, בחיוב.", "יאללה, הוכחת שאתה לא רק מדבר."],
+  friend: ["יש! כל הכבוד 🤗", "סימנת, אלוף. אחת פחות בראש.", "יפה מאוד, זה כבר לא מרחף לך."],
+  sergeant: ["בוצע. תודה על הדיווח.", "אישור התקבל. הבא בתור.", "סומן. ממשיכים."],
+  therapist: ["יפה שסימנת. איך זה הרגיש?", "כל הכבוד שסגרת את זה.", "סימנת. תן לזה רגע להיכנס."],
+  hype: ["כן!! עשית את זה 🔥", "יאללה, עוד ניצחון!", "זהו, עברת את זה כמו בוס!"],
+  grandma: ["יופי מותק, כל הכבוד.", "נו סוף סוף, יפה שלך.", "סימנת, תבריא."],
+  philosopher: ["פעולה קטנה, אבל היא נספרת.", "סימנת. זה כל מה שנדרש.", "הרגע הזה עבר בהצלחה."],
+  frayer: ["תכל'ס, סגרת. יאללה.", "סימנת, זהו הסיפור.", "פינה סגורה, ממשיכים."],
+  neighbor: ["כל הכבוד שכן, הקדמת אותי הפעם 😏", "סימנת! נקודה לזכותך.", "יפה, עברת אותי בזה."],
+};
+
+// Per-personality acknowledgements for "snooze 15 minutes".
+const SNOOZE_REPLIES: Record<string, string[]> = {
+  coach: ["בסדר, עוד 15 דק' ואז יאללה.", "קיבלתי, נדבר עוד רגע קצר."],
+  cynic: ["כן כן, עוד 15 דקות. בטח.", "אוקיי, דחיינות רשמית לרבע שעה."],
+  friend: ["סבבה, מזכיר לך עוד רבע שעה 🤗", "אין בעיה, עוד 15 דק' ונדבר."],
+  sergeant: ["אישור. 15 דקות ואז שוב.", "נדחה ב-15. לא יותר."],
+  therapist: ["בטח, קח את הזמן. אזכיר עוד רבע שעה.", "בסדר, עוד קצת זמן ונחזור לזה."],
+  hype: ["יאללה, עוד 15 דק' וחוזרים לענייננו 🔥", "סבבה, לא הולך לשום מקום, נדבר עוד רגע!"],
+  grandma: ["בסדר מותק, עוד קצת ונזכיר לך.", "טוב טוב, עוד רבע שעה."],
+  philosopher: ["הזמן ימשיך לזרום, ניפגש בו עוד 15 דק'.", "בסדר, נעצור וניפגש שוב בקרוב."],
+  frayer: ["סבבה, עוד רבע שעה וממשיכים.", "אין קטע, 15 דק' ונדבר."],
+  neighbor: ["טוב שכן, עוד רבע שעה ואני שוב כאן 😏", "בסדר, נראה אותך עוד 15 דק'."],
+};
+
+// Per-personality confirmations for CREATING a new reminder. The task and
+// time are woven into a normal sentence — never quoted verbatim in quotes
+// like a database row, which is exactly what felt robotic before.
+const REMINDER_CREATED_REPLIES: Record<string, Array<(task: string, label: string) => string>> = {
+  coach: [
+    (t, l) => `סגרנו. ב-${l} אני מזכיר לך ${t} — וזהו, קדימה.`,
+    (t, l) => `רשום. ${l}, ${t}. אני אדאג שלא יברח לך.`,
+  ],
+  cynic: [
+    (t, l) => `רשמתי. ${l} אני אטרטר לך על ${t}, כי מן הסתם תשכח.`,
+    (t, l) => `נרשם. ${l}, ${t}. אל תגיד שלא הזהרתי אותך.`,
+  ],
+  friend: [
+    (t, l) => `סבבה, ב-${l} אני מזכיר לך ${t} 🤗`,
+    (t, l) => `רשמתי, אחי. ${l} תשמע ממני על ${t}.`,
+  ],
+  sergeant: [
+    (t, l) => `נרשם. ${l}, משימה: ${t}. תדע לצפות לזה.`,
+    (t, l) => `אישור. ${l} אני מזכיר ${t}. אין תירוצים.`,
+  ],
+  therapist: [
+    (t, l) => `רשמתי לי את זה. ב-${l} אזכיר לך ${t}, בלי לחץ.`,
+    (t, l) => `בסדר, שמרתי. ${l} נחזור ל${t} יחד.`,
+  ],
+  hype: [
+    (t, l) => `יאללה, רשמתי! ב-${l} מזכיר לך ${t} 🔥`,
+    (t, l) => `זהו, נרשם! ${l} נעשה את ${t} ביחד!`,
+  ],
+  grandma: [
+    (t, l) => `רשמתי מותק. ב-${l} אני אזכיר לך ${t}.`,
+    (t, l) => `טוב טוב, שמרתי. ${l} נו, ${t}.`,
+  ],
+  philosopher: [
+    (t, l) => `נרשם ברשומות. ב-${l} נזכיר את ${t}.`,
+    (t, l) => `שמרתי את הרגע הזה. ${l}, ${t} יחזור אליך.`,
+  ],
+  frayer: [
+    (t, l) => `סגור. ${l} אני על ${t}, בלי דיבורים.`,
+    (t, l) => `רשמתי, תכל'ס. ${l} נזכיר לך ${t}.`,
+  ],
+  neighbor: [
+    (t, l) => `רשמתי שכן. ב-${l} אני אדפוק לך על הדלת בקשר ל${t} 😏`,
+    (t, l) => `סגור. ${l} אני על ${t}, אל תגיד שלא הזהרתי.`,
+  ],
+};
+
+function pickPersonalized(map: Record<string, string[]>, personality: string): string {
+  const options = map[personality] ?? map.friend;
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+function pickReminderCreated(personality: string, task: string, label: string): string {
+  const options = REMINDER_CREATED_REPLIES[personality] ?? REMINDER_CREATED_REPLIES.friend;
+  return options[Math.floor(Math.random() * options.length)](task, label);
+}
+
+function resolveActivePersonality(user: Record<string, unknown>): string {
+  const temporary = user.temp_personality && user.temp_personality_until && new Date(user.temp_personality_until as string).getTime() > Date.now();
+  return ((temporary ? user.temp_personality : user.personality) as string) || "cynic";
+}
+
 const DONE_WORDS = ["סיימתי", "עשיתי", "לקחתי", "גמרתי", "טיפלתי", "שלחתי", "התקשרתי", "קניתי", "השלמתי"];
 const STRONG_REMINDER_TRIGGER = /תזכיר\s*לי|אל תשכח(?:\s*לי)?|תדע\s*להזכיר/;
 const REMINDER_TRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר|כל\s*(?:יום|בוקר|ערב|לילה)/;
@@ -481,6 +571,7 @@ Deno.serve(async (req: Request) => {
       const chatId = callback.message.chat.id as number;
       const data = String(callback.data ?? "");
       const user = await touchUser(chatId, callback.from?.first_name ?? "חבר");
+      const activePersonality = resolveActivePersonality(user);
       await answerCallback(callback.id);
 
       if (data.startsWith("personality_")) {
@@ -502,7 +593,7 @@ Deno.serve(async (req: Request) => {
           ];
           if (reminder.type === "once") writes.push(supabase.from("reminders").update({ active: false }).eq("id", id));
           background(Promise.all(writes), "done_reminder_writes");
-          await sendMessage(chatId, "יפה. סומן.");
+          await sendMessage(chatId, pickPersonalized(DONE_REPLIES, activePersonality));
         }
       } else if (data.startsWith("snooze_")) {
         const id = data.replace("snooze_", "");
@@ -513,7 +604,7 @@ Deno.serve(async (req: Request) => {
           ]),
           "snooze_writes",
         );
-        await sendMessage(chatId, "סגור, עוד 15 דקות.");
+        await sendMessage(chatId, pickPersonalized(SNOOZE_REPLIES, activePersonality));
       }
 
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -556,7 +647,8 @@ Deno.serve(async (req: Request) => {
       // promising the user we saved, so correctness beats speed here.
       await supabase.from("reminders").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });
       background(updateUser(chatId, { state: "idle", pending_reminder_text: null }), "reminder_time_state_reset");
-      await sendMessage(chatId, `רשמתי: "${user.pending_reminder_text}" ב-${time[0]}.`);
+      const manualLabel = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(due);
+      await sendMessage(chatId, pickReminderCreated(resolveActivePersonality(user), String(user.pending_reminder_text ?? "זה"), manualLabel));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
@@ -575,8 +667,7 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    const temporary = user.temp_personality && user.temp_personality_until && new Date(user.temp_personality_until).getTime() > Date.now();
-    const personality = (temporary ? user.temp_personality : user.personality) as string || "cynic";
+    const personality = resolveActivePersonality(user);
 
     if (detectDone(text)) {
       const { data: reminders } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true);
@@ -599,7 +690,7 @@ Deno.serve(async (req: Request) => {
         // Kept awaited on purpose: this is the actual reminder we tell the user we saved.
         await supabase.from("reminders").insert({ chat_id: chatId, text: parsed.task, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
         const label = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(parsed.dueAt);
-        await sendMessage(chatId, `רשמתי: "${parsed.task}" ב-${label}.`);
+        await sendMessage(chatId, pickReminderCreated(personality, parsed.task, label));
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
