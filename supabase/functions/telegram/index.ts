@@ -584,13 +584,10 @@ async function showReminders(chatId: number) {
   if (!reminders.length) { await sendMessage(chatId, "אין לך כרגע תזכורות פעילות."); return; }
   const lines = reminders.map((r, i) => (i + 1) + ". " + r.text + " — " + reminderLabel(r));
   const buttons = reminders.map(r => [{ text: "🗑️ מחק: " + r.text.slice(0, 24), callback_data: "ask_delete_reminder_" + r.id }]);
-  await sendMessage(chatId, "התזכורות שלך:
-" + lines.join("
-"), { inline_keyboard: buttons });
+  await sendMessage(chatId, "התזכורות שלך:" + String.fromCharCode(10) + lines.join(String.fromCharCode(10)), { inline_keyboard: buttons });
 }
 async function askDeleteReminder(chatId: number, reminder: ActiveReminder) {
-  await sendMessage(chatId, "למחוק את התזכורת:
-" + reminder.text + " — " + reminderLabel(reminder) + "?", { inline_keyboard: [[{ text: "🗑️ כן, למחוק", callback_data: "confirm_delete_reminder_" + reminder.id }, { text: "לבטל", callback_data: "cancel_delete_reminder" }]] });
+  await sendMessage(chatId, "למחוק את התזכורת:" + String.fromCharCode(10) + reminder.text + " — " + reminderLabel(reminder) + "?", { inline_keyboard: [[{ text: "🗑️ כן, למחוק", callback_data: "confirm_delete_reminder_" + reminder.id }, { text: "לבטל", callback_data: "cancel_delete_reminder" }]] });
 }
 async function findReminderForDeletion(chatId: number, text: string): Promise<ActiveReminder | null> {
   const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
