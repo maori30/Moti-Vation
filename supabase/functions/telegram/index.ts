@@ -92,8 +92,6 @@ const MODELS = [
 type HistoryMessage = { role: string; content: string; created_at?: string };
 type ParsedReminder = { dueAt: Date; task: string; type: "once" | "daily" | "weekly" };
 
-// Personality prompts rewritten for a natural Israeli WhatsApp voice: short replies,
-// real humor where it fits, zero corporate phrasing, zero "I'm here to help" energy.
 const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
   coach: {
     name: "המאמן",
@@ -401,7 +399,8 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-// Voice guardrails, tightened for a genuinely human/funny-when-appropriate feel.
+// Voice guardrails: natural, funny where it fits, and — critically — never
+// quoting reminder/goal/memory text verbatim mid-sentence like a database dump.
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const apiKey = Deno.env.get("GEMINI_API_KEY");
@@ -415,6 +414,7 @@ async function askGemini(text: string, personalityKey: string, history: HistoryM
 - הומור מותר ורצוי כשזה נופל טבעי — עקיצה אחת חדה עדיפה על כמה בדיחות חלשות. אבל בלי לצחוק על עניינים כבדים, בריאות, לחץ אמיתי או עצב.
 - אסור לכתוב "אני כאן בשבילך", "בהחלט", "אשמח לסייע", "מצוין", "כפי שציינת", או כל ניסוח שנשמע כמו תמיכה טכנית.
 - אל תפתח באמירת פתיחה רשמית. תדבר ישר לעניין כמו שחבר עונה בוואטסאפ.
+- אם אתה מתייחס לתזכורת, מטרה, אירוע או משהו שהמשתמש אמר בעבר — אל תצטט אותו מילה במילה או בגרשיים באמצע משפט, כאילו אתה מדביק טקסט ממסד נתונים. תגיד את זה במילים שלך, כחלק טבעי מהזרימה של השיחה, בדיוק כמו שחבר אמיתי היה מזכיר את זה מהזיכרון שלו ולא מקריא רשימה.
 - אם יש זיכרון או הקשר רלוונטי — תשתמש בו בטבעיות, בלי להכריז "אני זוכר ש...".
 
 הקשר בסיסי: ${context}
