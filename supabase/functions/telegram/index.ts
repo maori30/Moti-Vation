@@ -91,6 +91,7 @@ const MODELS = [
 
 type HistoryMessage = { role: string; content: string; created_at?: string };
 type ParsedReminder = { dueAt: Date; task: string; type: "once" | "daily" | "weekly" };
+type ActiveReminder = { id: string; text: string; type: string; time: string };
 
 const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
   coach: {
@@ -168,9 +169,7 @@ const GREETINGS: Record<string, string> = {
   neighbor: "🏠 היי שכן, מה נשמע?",
 };
 
-// Per-personality confirmations for closing a reminder — natural, warm,
-// funny where it fits, never a generic "יפה. סומן." for everyone.
-const DONE_REPLIES: Record<string, string[]> = {
+const DONEREPLIES: Record<string, string[]> = {
   coach: ["יפה, סימנת. עוד ניצחון קטן על הרשימה 💪", "זהו, ירד מהראש. קדימה לדבר הבא.", "סגרת את זה. זה בדיוק איך שמתקדמים."],
   cynic: ["טוב, אז בסוף כן. מי היה מאמין.", "סימנת. אני בהלם קל, בחיוב.", "יאללה, הוכחת שאתה לא רק מדבר."],
   friend: ["יש! כל הכבוד 🤗", "סימנת, אלוף. אחת פחות בראש.", "יפה מאוד, זה כבר לא מרחף לך."],
@@ -183,8 +182,7 @@ const DONE_REPLIES: Record<string, string[]> = {
   neighbor: ["כל הכבוד שכן, הקדמת אותי הפעם 😏", "סימנת! נקודה לזכותך.", "יפה, עברת אותי בזה."],
 };
 
-// Per-personality acknowledgements for "snooze 15 minutes".
-const SNOOZE_REPLIES: Record<string, string[]> = {
+const SNOOZEREPLIES: Record<string, string[]> = {
   coach: ["בסדר, עוד 15 דק' ואז יאללה.", "קיבלתי, נדבר עוד רגע קצר."],
   cynic: ["כן כן, עוד 15 דקות. בטח.", "אוקיי, דחיינות רשמית לרבע שעה."],
   friend: ["סבבה, מזכיר לך עוד רבע שעה 🤗", "אין בעיה, עוד 15 דק' ונדבר."],
@@ -197,12 +195,9 @@ const SNOOZE_REPLIES: Record<string, string[]> = {
   neighbor: ["טוב שכן, עוד רבע שעה ואני שוב כאן 😏", "בסדר, נראה אותך עוד 15 דק'."],
 };
 
-// Per-personality confirmations for CREATING a new reminder. The task and
-// time are woven into a normal sentence — never quoted verbatim in quotes
-// like a database row, which is exactly what felt robotic before.
-const REMINDER_CREATED_REPLIES: Record<string, Array<(task: string, label: string) => string>> = {
+const REMINDERCREATEDREPLIES: Record<string, Array<(task: string, label: string) => string>> = {
   coach: [
-    (t, l) => `סגרנו. ב-${l} אני מזכיר לך ${t} — וזהו, קדימה.`,
+    (t, l) => `סגרנו. ${l} אני מזכיר לך ${t}.`,
     (t, l) => `רשום. ${l}, ${t}. אני אדאג שלא יברח לך.`,
   ],
   cynic: [
@@ -210,35 +205,35 @@ const REMINDER_CREATED_REPLIES: Record<string, Array<(task: string, label: strin
     (t, l) => `נרשם. ${l}, ${t}. אל תגיד שלא הזהרתי אותך.`,
   ],
   friend: [
-    (t, l) => `סבבה, ב-${l} אני מזכיר לך ${t} 🤗`,
+    (t, l) => `סבבה, ${l} אני מזכיר לך ${t} 🤗`,
     (t, l) => `רשמתי, אחי. ${l} תשמע ממני על ${t}.`,
   ],
   sergeant: [
-    (t, l) => `נרשם. ${l}, משימה: ${t}. תדע לצפות לזה.`,
-    (t, l) => `אישור. ${l} אני מזכיר ${t}. אין תירוצים.`,
+    (t, l) => `נרשם. ${l}, משימה: ${t}.`,
+    (t, l) => `אישור. ${l} אני מזכיר לך ${t}.`,
   ],
   therapist: [
-    (t, l) => `רשמתי לי את זה. ב-${l} אזכיר לך ${t}, בלי לחץ.`,
-    (t, l) => `בסדר, שמרתי. ${l} נחזור ל${t} יחד.`,
+    (t, l) => `רשמתי לי את זה. ${l} אזכיר לך ${t}, בלי לחץ.`,
+    (t, l) => `בסדר, שמרתי. ${l} נחזור ל${t}.`,
   ],
   hype: [
-    (t, l) => `יאללה, רשמתי! ב-${l} מזכיר לך ${t} 🔥`,
-    (t, l) => `זהו, נרשם! ${l} נעשה את ${t} ביחד!`,
+    (t, l) => `יאללה, רשמתי! ${l} מזכיר לך ${t} 🔥`,
+    (t, l) => `זהו, נרשם! ${l} נעשה את ${t}.`,
   ],
   grandma: [
-    (t, l) => `רשמתי מותק. ב-${l} אני אזכיר לך ${t}.`,
-    (t, l) => `טוב טוב, שמרתי. ${l} נו, ${t}.`,
+    (t, l) => `רשמתי מותק. ${l} אני אזכיר לך ${t}.`,
+    (t, l) => `טוב טוב, שמרתי. ${l}, נו, ${t}.`,
   ],
   philosopher: [
-    (t, l) => `נרשם ברשומות. ב-${l} נזכיר את ${t}.`,
-    (t, l) => `שמרתי את הרגע הזה. ${l}, ${t} יחזור אליך.`,
+    (t, l) => `נרשם. ${l} נחזור ל${t}.`,
+    (t, l) => `שמרתי את זה. ${l}, ${t}.`,
   ],
   frayer: [
-    (t, l) => `סגור. ${l} אני על ${t}, בלי דיבורים.`,
-    (t, l) => `רשמתי, תכל'ס. ${l} נזכיר לך ${t}.`,
+    (t, l) => `סגור. ${l} אני מזכיר לך ${t}.`,
+    (t, l) => `רשמתי. ${l} זה אצלך — ${t}.`,
   ],
   neighbor: [
-    (t, l) => `רשמתי שכן. ב-${l} אני אדפוק לך על הדלת בקשר ל${t} 😏`,
+    (t, l) => `רשמתי שכן. ${l} אני אדפוק לך על הדלת בקשר ל${t} 😏`,
     (t, l) => `סגור. ${l} אני על ${t}, אל תגיד שלא הזהרתי.`,
   ],
 };
@@ -249,7 +244,7 @@ function pickPersonalized(map: Record<string, string[]>, personality: string): s
 }
 
 function pickReminderCreated(personality: string, task: string, label: string): string {
-  const options = REMINDER_CREATED_REPLIES[personality] ?? REMINDER_CREATED_REPLIES.friend;
+  const options = REMINDERCREATEDREPLIES[personality] ?? REMINDERCREATEDREPLIES.friend;
   return options[Math.floor(Math.random() * options.length)](task, label);
 }
 
@@ -258,24 +253,22 @@ function resolveActivePersonality(user: Record<string, unknown>): string {
   return ((temporary ? user.temp_personality : user.personality) as string) || "cynic";
 }
 
-const DONE_WORDS = ["סיימתי", "עשיתי", "לקחתי", "גמרתי", "טיפלתי", "שלחתי", "התקשרתי", "קניתי", "השלמתי"];
-const STRONG_REMINDER_TRIGGER = /תזכיר\s*לי|אל תשכח(?:\s*לי)?|תדע\s*להזכיר/;
-const REMINDER_TRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר|כל\s*(?:יום|בוקר|ערב|לילה)/;
-const TIME_OR_ANCHOR_SIGNAL = /(עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב-?\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
+const DONEWORDS = ["סיימתי", "עשיתי", "לקחתי", "גמרתי", "טיפלתי", "שלחתי", "התקשרתי", "קניתי", "השלמתי"];
+const STRONGREMINDERTRIGGER = /תזכיר\s*לי|אל תשכח(?:\s*לי)?|תדע\s*להזכיר/;
+const REMINDERTRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר|כל\s*(?:יום|בוקר|ערב|לילה)/;
+const TIMEORANCHORSIGNAL = /(עוד\s*\d+\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב\s*-?\s*\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
 const WEEKDAYS: Record<string, number> = { ראשון: 0, שני: 1, שלישי: 2, רביעי: 3, חמישי: 4, שישי: 5, שבת: 6 };
 
 function detectReminderIntent(text: string): boolean {
   const lower = text.toLowerCase();
-  return STRONG_REMINDER_TRIGGER.test(lower) || (REMINDER_TRIGGER.test(lower) && TIME_OR_ANCHOR_SIGNAL.test(lower));
+  return STRONGREMINDERTRIGGER.test(lower) || (REMINDERTRIGGER.test(lower) && TIMEORANCHORSIGNAL.test(lower));
 }
 
 function detectDone(text: string): boolean {
   const lower = text.toLowerCase();
-  return DONE_WORDS.some((word) => lower.includes(word));
+  return DONEWORDS.some((word) => lower.includes(word));
 }
 
-// Fire real background work (DB writes that don't affect what we're about to
-// say) without making the user wait for a cross-region round trip.
 function background(promise: Promise<unknown>, label: string): void {
   promise.catch((error) => console.error(`[background:${label}] failed:`, error));
 }
@@ -318,7 +311,6 @@ function modelConfig(model: string, base: Record<string, unknown>, tokenBoost: n
   return config;
 }
 
-// Important: keeps responseMimeType for JSON extraction calls.
 async function generateContentWithFallback(
   apiKey: string,
   bodyBase: Record<string, unknown>,
@@ -379,9 +371,6 @@ async function updateUser(chatId: number, changes: Record<string, unknown>) {
   if (error) console.error("[users] update failed:", error.message);
 }
 
-// Replaces the old getOrCreateUser() + separate updateUser(last_message_at)
-// pair with ONE round trip. `personality`/`state` have DB-level defaults, so
-// they're left untouched for existing users since we don't send them here.
 async function touchUser(chatId: number, firstName: string) {
   const { data, error } = await supabase
     .from("users")
@@ -427,14 +416,48 @@ function israelTime(hour: number, minute: number, base = new Date(), addDays = 0
 
 function reminderScheduleLabel(dueAt: Date, type: ParsedReminder["type"]): string {
   const time = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(dueAt);
-  if (type === "daily") return "כל יום ב־" + time;
-  if (type === "weekly") return "כל שבוע ב־" + time;
+  if (type === "daily") return `כל יום ב־${time}`;
+  if (type === "weekly") return `כל שבוע ב־${time}`;
   const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
   const dueDay = dayKey.format(dueAt);
-  if (dueDay === dayKey.format(new Date())) return "היום ב־" + time;
-  if (dueDay === dayKey.format(new Date(Date.now() + 86400000))) return "מחר ב־" + time;
+  if (dueDay === dayKey.format(new Date())) return `היום ב־${time}`;
+  if (dueDay === dayKey.format(new Date(Date.now() + 86_400_000))) return `מחר ב־${time}`;
   const date = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "numeric", month: "numeric" }).format(dueAt);
-  return "ב־" + date + " ב־" + time;
+  return `ב־${date} ב־${time}`;
+}
+
+function reminderLabel(r: ActiveReminder): string {
+  const time = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(r.time));
+  return r.type === "daily" ? `כל יום ב־${time}` : r.type === "weekly" ? `כל שבוע ב־${time}` : `ב־${time}`;
+}
+
+async function showReminders(chatId: number) {
+  const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true).order("time");
+  const reminders = (data ?? []) as ActiveReminder[];
+  if (!reminders.length) {
+    await sendMessage(chatId, "אין לך כרגע תזכורות פעילות.");
+    return;
+  }
+  const lines = reminders.map((r, i) => `${i + 1}. ${r.text} — ${reminderLabel(r)}`);
+  const buttons = reminders.map((r) => [{ text: `🗑️ מחק: ${r.text.slice(0, 24)}`, callback_data: `ask_delete_reminder_${r.id}` }]);
+  await sendMessage(chatId, `התזכורות שלך:\n${lines.join("\n")}`, { inline_keyboard: buttons });
+}
+
+async function askDeleteReminder(chatId: number, reminder: ActiveReminder) {
+  await sendMessage(chatId, `למחוק את התזכורת:\n${reminder.text} — ${reminderLabel(reminder)}?`, {
+    inline_keyboard: [
+      [{ text: "🗑️ כן, למחוק", callback_data: `confirm_delete_reminder_${reminder.id}` }, { text: "לבטל", callback_data: "cancel_delete_reminder" }],
+    ],
+  });
+}
+
+async function findReminderForDeletion(chatId: number, text: string): Promise<ActiveReminder | null> {
+  const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
+  const reminders = (data ?? []) as ActiveReminder[];
+  if (!reminders.length) return null;
+  const query = text.replace(/מחק|תמחק|לבטל|תבטל|הסר|תסיר|את התזכורת|תזכורת|אותה|אותו/gu, "").trim().toLowerCase();
+  if (!query || /^(אותה|אותו)?$/u.test(query)) return reminders.length === 1 ? reminders[0] : null;
+  return reminders.find((r) => query.split(/\s+/).some((w) => w.length > 2 && r.text.toLowerCase().includes(w))) ?? null;
 }
 
 function parseReminder(text: string): ParsedReminder | null {
@@ -455,7 +478,7 @@ function parseReminder(text: string): ParsedReminder | null {
   }
 
   if (!dueAt) {
-    const relative = input.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה|שעות|שעה|ימים|יום)/);
+    const relative = input.match(/(?:עוד|בעוד)\s*(\\d+)\s*(דקות|דקה|שעות|שעה|ימים|יום)/);
     if (relative) {
       const amount = +relative[1];
       const unit = relative[2];
@@ -497,7 +520,7 @@ function parseReminder(text: string): ParsedReminder | null {
   }
 
   if (!dueAt || !span) return null;
-  const task = input.replace(REMINDER_TRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim() || "תזכורת";
+  const task = input.replace(REMINDERTRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim() || "תזכורת";
   return { dueAt, task, type };
 }
 
@@ -515,8 +538,6 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-// Voice guardrails: natural, funny where it fits, and — critically — never
-// quoting reminder/goal/memory text verbatim mid-sentence like a database dump.
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const apiKey = Deno.env.get("GEMINI_API_KEY");
@@ -605,7 +626,7 @@ Deno.serve(async (req: Request) => {
           ];
           if (reminder.type === "once") writes.push(supabase.from("reminders").update({ active: false }).eq("id", id));
           background(Promise.all(writes), "done_reminder_writes");
-          await sendMessage(chatId, pickPersonalized(DONE_REPLIES, activePersonality));
+          await sendMessage(chatId, pickPersonalized(DONEREPLIES, activePersonality));
         }
       } else if (data.startsWith("snooze_")) {
         const id = data.replace("snooze_", "");
@@ -616,7 +637,17 @@ Deno.serve(async (req: Request) => {
           ]),
           "snooze_writes",
         );
-        await sendMessage(chatId, pickPersonalized(SNOOZE_REPLIES, activePersonality));
+        await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality));
+      } else if (data.startsWith("ask_delete_reminder_")) {
+        const id = data.replace("ask_delete_reminder_", "");
+        const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", id).eq("chat_id", chatId).eq("active", true).maybeSingle();
+        if (reminder) await askDeleteReminder(chatId, reminder as ActiveReminder);
+      } else if (data.startsWith("confirm_delete_reminder_")) {
+        const id = data.replace("confirm_delete_reminder_", "");
+        const { error } = await supabase.from("reminders").update({ active: false }).eq("id", id).eq("chat_id", chatId);
+        await sendMessage(chatId, error ? "לא הצלחתי למחוק. נסה שוב עוד רגע." : "נמחקה. לא אטריד אותך על זה יותר.");
+      } else if (data === "cancel_delete_reminder") {
+        await sendMessage(chatId, "סבבה, נשארת כמו שהיא.");
       }
 
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -628,8 +659,6 @@ Deno.serve(async (req: Request) => {
     const chatId = message.chat.id as number;
     const text = String(message.text).trim();
     const firstName = message.from?.first_name ?? "חבר";
-    // One round trip instead of two: creates the user row if new, and marks
-    // activity, in a single upsert. This alone removes ~900ms from every message.
     const user = await touchUser(chatId, firstName);
 
     if (text === "/start") {
@@ -655,8 +684,6 @@ Deno.serve(async (req: Request) => {
       }
       const type = String(user.state).replace("awaiting_reminder_time_", "") as "once" | "daily" | "weekly";
       const due = israelTime(+time[1], +time[2]);
-      // The reminder insert itself stays awaited — it's the actual data we're
-      // promising the user we saved, so correctness beats speed here.
       await supabase.from("reminders").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });
       background(updateUser(chatId, { state: "idle", pending_reminder_text: null }), "reminder_time_state_reset");
       const manualLabel = reminderScheduleLabel(due, type);
@@ -676,6 +703,21 @@ Deno.serve(async (req: Request) => {
     if (switchRequest?.type === "tone") {
       background(updateUser(chatId, { tone_override: switchRequest.tone }), "switch_tone");
       await sendMessage(chatId, "סגור.");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    if (/^(\/reminders|התזכורות שלי|תזכורות)$/u.test(text)) {
+      await showReminders(chatId);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    if (/(מחק|תמחק|לבטל|תבטל|הסר|תסיר)/u.test(text) && /(תזכור|כדור|אותה|אותו|ה)/u.test(text)) {
+      const reminder = await findReminderForDeletion(chatId, text);
+      if (reminder) {
+        await askDeleteReminder(chatId, reminder);
+      } else {
+        await sendMessage(chatId, "איזו תזכורת למחוק? כתוב \"התזכורות שלי\" ובחר בכפתור.");
+      }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
@@ -699,7 +741,6 @@ Deno.serve(async (req: Request) => {
           await sendMessage(chatId, `כבר יש לך תזכורת כזאת ל"${parsed.task}". לא הוספתי עוד אחת.`);
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
-        // Kept awaited on purpose: this is the actual reminder we tell the user we saved.
         await supabase.from("reminders").insert({ chat_id: chatId, text: parsed.task, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
         const label = reminderScheduleLabel(parsed.dueAt, parsed.type);
         await sendMessage(chatId, pickReminderCreated(personality, parsed.task, label));
@@ -724,8 +765,6 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    // Saving the user's message doesn't need to block the reply — history was
-    // already fetched above, and the current text is passed to Gemini directly.
     background(saveMessage(chatId, "user", text), "save_user");
 
     const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
@@ -751,11 +790,8 @@ Deno.serve(async (req: Request) => {
       if (rewritten && !isRepetitive(rewritten, recentPhrases)) finalReply = naturalize(rewritten);
     }
 
-    // This is the only remaining call the user actually waits on.
     await sendMessage(chatId, finalReply);
 
-    // Everything below happens after the user already has their reply — none
-    // of it should block the function or stack sequential cross-region calls.
     background(saveMessage(chatId, "assistant", finalReply), "save_assistant");
     background(rememberPhrase(supabase, chatId, finalReply), "remember_phrase");
     background(updateUser(chatId, { mood, mood_updated_at: new Date().toISOString() }), "update_mood");
