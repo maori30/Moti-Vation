@@ -26,7 +26,7 @@ jobs:
       - name: Deploy ${{ matrix.function }}
         run: |
           supabase functions deploy ${{ matrix.function }} \
-            --project-ref ozpgqhtnlnrxffauemdd \
+            --project-ref hulthqpmolqtwvdwyoej \
             --no-verify-jwt
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SB_ACCESS_TOKEN }}
