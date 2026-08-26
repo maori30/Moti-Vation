@@ -73,20 +73,26 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const HISTORY_LIMIT = 12;
+const GEMINI_TIMEOUT_MS = 7_000;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const BLOCKED_MODELS = new Set<string>();
 const NO_THINKING_SUPPORT = new Set<string>();
-let resolvedModel: string | null = null;
+let resolvedPrimaryModel: string | null = null;
+let resolvedBackupModel: string | null = null;
 let resolvedAt = 0;
 
-const MODELS = [
+const PRIMARY_CANDIDATES = [
   Deno.env.get("GEMINI_MODEL")?.trim(),
+  "gemini-2.5-flash",
   "gemini-flash-latest",
   "gemini-3-flash-preview",
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
+].filter(Boolean) as string[];
+
+const BACKUP_CANDIDATES = [
+  Deno.env.get("GEMINI_BACKUP_MODEL")?.trim(),
+  "gemini-2.5-flash-lite",
+  "gemini-flash-lite-latest",
 ].filter(Boolean) as string[];
 
 type HistoryMessage = { role: string; content: string; created_at?: string };
@@ -167,6 +173,19 @@ const GREETINGS: Record<string, string> = {
   philosopher: "🧐 מה הביא אותך לכאן דווקא עכשיו?",
   frayer: "😏 תכל'ס, מה על השולחן?",
   neighbor: "🏠 היי שכן, מה נשמע?",
+};
+
+const FALLBACK_REPLIES: Record<string, string[]> = {
+  coach: ["המוח שלי תפס שקט לשנייה. תזרוק שוב — נרוץ על זה 💪", "רגע, נתקע לי החוט. תכתוב שוב."],
+  cynic: ["המוח שלי נתקע לרגע. תזרוק שוב.", "רגע, אפילו אני הייתי בהלם לשנייה. מה אמרת?"],
+  friend: ["רגע אחי, פספסתי אותך לשנייה. תכתוב שוב? 🤗", "נתקע לי רגע. מה אמרת?"],
+  sergeant: ["תקלה בקשר. חזור על ההודעה.", "לא נקלט. שדר שוב."],
+  therapist: ["רגע, נתקעתי לשנייה. תוכל לכתוב שוב?", "פספסתי את הרגע הזה. ספר שוב."],
+  hype: ["רגע, עפתי מהמסלול לשנייה! תזרוק שוב 🔥", "שנייה וחוזר — תכתוב שוב!"],
+  grandma: ["אוי מותק, נתקע לי המכשיר לרגע. תגיד שוב?", "לא שמעתי טוב, חמוד. תכתוב עוד פעם."],
+  philosopher: ["המחשבה נקטעה לרגע. תזרוק שוב.", "הרגע הזה ברח. בוא ננסה שוב."],
+  frayer: ["רגע, נתקעתי. דבר שוב.", "תכל'ס נתקע לשנייה. זרוק עוד פעם."],
+  neighbor: ["רגע שכן, נפל לי הקו לשנייה. תגיד שוב 😏", "פספסתי אותך, תזרוק שוב."],
 };
 
 const DONEREPLIES: Record<string, string[]> = {
@@ -273,6 +292,18 @@ function background(promise: Promise<unknown>, label: string): void {
   promise.catch((error) => console.error(`[background:${label}] failed:`, error));
 }
 
+async function sendChatAction(chatId: number, action = "typing") {
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendChatAction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, action }),
+    });
+  } catch (error) {
+    console.error("[telegram] sendChatAction failed:", error);
+  }
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 18_000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -280,21 +311,27 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 18_0
   finally { clearTimeout(timer); }
 }
 
-async function resolveModel(force = false): Promise<string> {
-  if (resolvedModel && !force && !BLOCKED_MODELS.has(resolvedModel) && Date.now() - resolvedAt < 5 * 60_000) return resolvedModel;
+async function resolveModelPair(force = false): Promise<{ primary: string; backup: string | null }> {
+  if (resolvedPrimaryModel && !force && !BLOCKED_MODELS.has(resolvedPrimaryModel) && Date.now() - resolvedAt < 5 * 60_000) {
+    return { primary: resolvedPrimaryModel, backup: resolvedBackupModel };
+  }
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) throw new Error("GEMINI_API_KEY is missing");
-  const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${key}`, {});
+  const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${key}`, {}, 6_000);
   if (!response.ok) throw new Error(`models.list HTTP ${response.status}`);
   const json = await response.json();
   const available = (json.models ?? [])
     .filter((model: any) => (model.supportedGenerationMethods ?? []).includes("generateContent"))
     .map((model: any) => String(model.name).replace(/^models\//, ""));
-  const model = [...MODELS, ...available].find((candidate) => available.includes(candidate) && !BLOCKED_MODELS.has(candidate));
-  if (!model) throw new Error("No Gemini generateContent model available");
-  resolvedModel = model;
+
+  const primary = [...PRIMARY_CANDIDATES, ...available].find((c) => available.includes(c) && !BLOCKED_MODELS.has(c));
+  if (!primary) throw new Error("No primary Gemini model available");
+  const backup = [...BACKUP_CANDIDATES, ...available].find((c) => available.includes(c) && c !== primary && !BLOCKED_MODELS.has(c)) ?? null;
+
+  resolvedPrimaryModel = primary;
+  resolvedBackupModel = backup;
   resolvedAt = Date.now();
-  return model;
+  return { primary, backup };
 }
 
 function modelConfig(model: string, base: Record<string, unknown>, tokenBoost: number, noThinking: boolean) {
@@ -318,10 +355,15 @@ async function generateContentWithFallback(
   tokenBoost = 0,
   noThinking = false,
 ): Promise<{ ok: true; data: any } | { ok: false }> {
-  if (attempt >= 4) return { ok: false };
+  if (attempt >= 2) return { ok: false };
   let model: string;
-  try { model = await resolveModel(attempt > 0); }
-  catch (error) { console.error("[gemini] resolve model failed", error); return { ok: false }; }
+  try {
+    const pair = await resolveModelPair(attempt > 0);
+    model = attempt === 0 ? pair.primary : (pair.backup ?? pair.primary);
+  } catch (error) {
+    console.error("[gemini] resolve model failed", error);
+    return { ok: false };
+  }
 
   const baseConfig = (bodyBase.generationConfig as Record<string, unknown>) ?? {};
   const body = { ...bodyBase, generationConfig: modelConfig(model, baseConfig, tokenBoost, noThinking) };
@@ -330,14 +372,10 @@ async function generateContentWithFallback(
     const response = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      GEMINI_TIMEOUT_MS,
     );
     if (response.ok) {
       const data = await response.json();
-      const reason = data?.candidates?.[0]?.finishReason;
-      const hasText = data?.candidates?.[0]?.content?.parts?.some((part: { text?: string }) => (part.text ?? "").trim());
-      if (reason === "MAX_TOKENS" && attempt < 3 && tokenBoost < 800) {
-        return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost + (hasText ? 300 : 700), noThinking);
-      }
       return { ok: true, data };
     }
     const errorText = await response.text();
@@ -347,13 +385,13 @@ async function generateContentWithFallback(
     }
     if (response.status === 404 || response.status === 403) {
       BLOCKED_MODELS.add(model);
-      if (resolvedModel === model) resolvedModel = null;
+      if (resolvedPrimaryModel === model) resolvedPrimaryModel = null;
     }
     console.error(`[gemini] ${model} HTTP ${response.status}: ${errorText.slice(0, 500)}`);
     return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, noThinking);
   } catch (error) {
-    console.error(`[gemini] ${model} network error`, error);
-    return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, noThinking);
+    console.error(`[gemini] ${model} network error or timeout:`, error);
+    return { ok: false };
   }
 }
 
@@ -478,7 +516,7 @@ function parseReminder(text: string): ParsedReminder | null {
   }
 
   if (!dueAt) {
-    const relative = input.match(/(?:עוד|בעוד)\s*(\\d+)\s*(דקות|דקה|שעות|שעה|ימים|יום)/);
+    const relative = input.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה|שעות|שעה|ימים|יום)/);
     if (relative) {
       const amount = +relative[1];
       const unit = relative[2];
@@ -541,7 +579,7 @@ async function answerCallback(id: string) {
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const apiKey = Deno.env.get("GEMINI_API_KEY");
-  if (!apiKey) return "אין לי כרגע חיבור ל-Gemini. תנסה שוב עוד רגע.";
+  if (!apiKey) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
 
   const prompt = `אתה ${personality.name}. ${personality.prompt}
 
@@ -566,12 +604,12 @@ ${layers.filter(Boolean).join("\n\n")}`;
   const result = await generateContentWithFallback(apiKey, {
     systemInstruction: { parts: [{ text: prompt }] },
     contents,
-    generationConfig: { temperature: 0.85, topP: 0.9, maxOutputTokens: 700 },
+    generationConfig: { temperature: 0.85, topP: 0.9, maxOutputTokens: 350 },
   });
 
-  if (!result.ok) return "לא הצלחתי לענות עכשיו. תשלח שוב עוד רגע.";
+  if (!result.ok) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
   const raw = result.data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
-  return naturalize(raw || "לא הצלחתי לענות עכשיו. תשלח שוב עוד רגע.");
+  return naturalize(raw || pickPersonalized(FALLBACK_REPLIES, personalityKey));
 }
 
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
@@ -659,6 +697,9 @@ Deno.serve(async (req: Request) => {
     const chatId = message.chat.id as number;
     const text = String(message.text).trim();
     const firstName = message.from?.first_name ?? "חבר";
+
+    background(sendChatAction(chatId, "typing"), "initial_typing");
+
     const user = await touchUser(chatId, firstName);
 
     if (text === "/start") {
@@ -750,55 +791,101 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    const [history, memoriesRaw, profile, goals, events, jokes, recentPhrases, activeReminders] = await Promise.all([
-      getHistory(chatId), fetchMemories(supabase, chatId), fetchProfile(supabase, chatId), fetchGoals(supabase, chatId), fetchEvents(supabase, chatId), fetchInsideJokes(supabase, chatId), fetchRecentPhrases(supabase, chatId),
-      supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
-    ]);
-    const memories = rankMemories(memoriesRaw);
-    const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
-    const pace = computePacing(text, lastBot, profile);
+    const isSimpleMessage = text.length <= 18 && !/רוצה|מטרה|מרגיש|קשה|תסביר|איך|למה|תעזור/u.test(text);
 
-    if (pace.instantReply) {
-      await sendMessage(chatId, pace.instantReply);
-      background(saveMessage(chatId, "user", text), "save_user_instant");
-      background(saveMessage(chatId, "assistant", pace.instantReply), "save_assistant_instant");
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    let history: HistoryMessage[] = [];
+    let memories: Memory[] = [];
+    let profile: Profile = { chat_id: chatId, address_style: null, humor_level: 0.5, topics: [], habits: [], active_hours: [], procrastinates: [], reminder_wins: {}, reply_len_avg: 0, prefers_short: false, blend: {} };
+    let goals: any[] = [];
+    let events: any[] = [];
+    let jokes: any[] = [];
+    let recentPhrases: any[] = [];
+    let layers: string[] = [];
+    let pace: any = { kind: "normal", instruction: "" };
+
+    if (isSimpleMessage) {
+      const [histData, profData, remData] = await Promise.all([
+        getHistory(chatId),
+        fetchProfile(supabase, chatId),
+        supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
+      ]);
+      history = histData;
+      profile = profData;
+      const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
+      pace = computePacing(text, lastBot, profile);
+
+      if (pace.instantReply) {
+        await sendMessage(chatId, pace.instantReply);
+        background(saveMessage(chatId, "user", text), "save_user_instant");
+        background(saveMessage(chatId, "assistant", pace.instantReply), "save_assistant_instant");
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+
+      layers = [
+        profileContext(profile),
+        coreferenceInstruction(text, history),
+        pace.instruction,
+        "הודעה קצרה ופשוטה. תענה קצר וטבעי, משפט אחד לכל היותר.",
+      ];
+    } else {
+      const [histData, memRaw, profData, goalsData, eventsData, jokesData, phrasesData, remData] = await Promise.all([
+        getHistory(chatId),
+        fetchMemories(supabase, chatId),
+        fetchProfile(supabase, chatId),
+        fetchGoals(supabase, chatId),
+        fetchEvents(supabase, chatId),
+        fetchInsideJokes(supabase, chatId),
+        fetchRecentPhrases(supabase, chatId),
+        supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
+      ]);
+      history = histData;
+      memories = rankMemories(memRaw);
+      profile = profData;
+      goals = goalsData;
+      events = eventsData;
+      jokes = jokesData;
+      recentPhrases = phrasesData;
+
+      const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
+      pace = computePacing(text, lastBot, profile);
+
+      if (pace.instantReply) {
+        await sendMessage(chatId, pace.instantReply);
+        background(saveMessage(chatId, "user", text), "save_user_instant");
+        background(saveMessage(chatId, "assistant", pace.instantReply), "save_assistant_instant");
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+
+      const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
+      const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes: 0, prevMood: user.mood });
+      const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
+      const deep = detectDeepMode(text, history);
+      const material = [...goals.map((g: any) => g.title), ...events.map((e: any) => e.title)];
+      const surprise = rollSurprise(material.length > 0, deep.deep);
+      const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
+
+      layers = [
+        memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
+        coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (remData.data ?? []).map((r: { text: string }) => r.text) }),
+        moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
+        deep.deep ? deepModeInstruction(deep.topic) : pace.instruction, surpriseInstruction(surprise, material), antiRepetitionInstruction(recentPhrases), decision.layer,
+      ];
     }
 
     background(saveMessage(chatId, "user", text), "save_user");
 
-    const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
-    const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes: 0, prevMood: user.mood });
-    const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
-    const deep = detectDeepMode(text, history);
-    const material = [...goals.map((g) => g.title), ...events.map((e) => e.title)];
-    const surprise = rollSurprise(material.length > 0, deep.deep);
-    const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
-
-    const layers = [
-      memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
-      coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (activeReminders.data ?? []).map((r: { text: string }) => r.text) }),
-      moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
-      deep.deep ? deepModeInstruction(deep.topic) : pace.instruction, surpriseInstruction(surprise, material), antiRepetitionInstruction(recentPhrases), decision.layer,
-    ];
-
     const reply = await askGemini(text, personality, history, "", layers);
-    let finalReply = reply;
-    const verdict = humanityCheck(reply, { deepMode: deep.deep, recent: recentPhrases, userText: text, lengthTarget: decision.lengthTarget });
-    if (!verdict.ok) {
-      const rewritten = await rewriteForHumanity((payload) => generateContentWithFallback(Deno.env.get("GEMINI_API_KEY") ?? "", payload), { reply, problems: verdict.problems, personalityPrompt: PERSONALITIES[personality]?.prompt ?? "", userText: text, lengthTarget: decision.lengthTarget });
-      if (rewritten && !isRepetitive(rewritten, recentPhrases)) finalReply = naturalize(rewritten);
-    }
 
-    await sendMessage(chatId, finalReply);
+    await sendMessage(chatId, reply);
 
-    background(saveMessage(chatId, "assistant", finalReply), "save_assistant");
-    background(rememberPhrase(supabase, chatId, finalReply), "remember_phrase");
-    background(updateUser(chatId, { mood, mood_updated_at: new Date().toISOString() }), "update_mood");
+    background(saveMessage(chatId, "assistant", reply), "save_assistant");
+    background(rememberPhrase(supabase, chatId, reply), "remember_phrase");
     background(logBehavior(supabase, chatId, "message", { len: text.length }), "log_message");
     if (isLaugh(text)) background(logBehavior(supabase, chatId, "laughed"), "log_laughed");
     background(learnFromBehavior(supabase, chatId, profile), "learn_behavior");
-    background(runBackgroundPipelines(chatId, text, finalReply, history, memories, profile), "pipelines");
+    if (!isSimpleMessage) {
+      background(runBackgroundPipelines(chatId, text, reply, history, memories, profile), "pipelines");
+    }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   } catch (error) {
