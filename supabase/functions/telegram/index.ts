@@ -72,28 +72,16 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-const HISTORY_LIMIT = 12;
-const GEMINI_TIMEOUT_MS = 7_000;
+
+// Optimized per recommendations: lean history (6 msgs) for lightning-fast replies
+const HISTORY_LIMIT = 6;
+const GEMINI_TIMEOUT_MS = 10_000;
+
+// Direct locked models: no dynamic network resolution delay
+const PRIMARY_MODEL = Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
+const BACKGROUND_MODEL = Deno.env.get("GEMINI_BACKUP_MODEL")?.trim() || "gemini-2.5-flash-lite";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const BLOCKED_MODELS = new Set<string>();
-const NO_THINKING_SUPPORT = new Set<string>();
-let resolvedPrimaryModel: string | null = null;
-let resolvedBackupModel: string | null = null;
-let resolvedAt = 0;
-
-const PRIMARY_CANDIDATES = [
-  Deno.env.get("GEMINI_MODEL")?.trim(),
-  "gemini-2.5-flash",
-  "gemini-flash-latest",
-  "gemini-3-flash-preview",
-].filter(Boolean) as string[];
-
-const BACKUP_CANDIDATES = [
-  Deno.env.get("GEMINI_BACKUP_MODEL")?.trim(),
-  "gemini-2.5-flash-lite",
-  "gemini-flash-lite-latest",
-].filter(Boolean) as string[];
 
 type HistoryMessage = { role: string; content: string; created_at?: string };
 type ParsedReminder = { dueAt: Date; task: string; type: "once" | "daily" | "weekly" };
@@ -174,6 +162,25 @@ const GREETINGS: Record<string, string> = {
   frayer: "😏 תכל'ס, מה על השולחן?",
   neighbor: "🏠 היי שכן, מה נשמע?",
 };
+
+// Conversational instant responses for casual check-ins ("מה איתך", "מה קורה", "מה נשמע")
+const QUICK_CHITCHAT: Record<string, string[]> = {
+  coach: ["הכל טוב, עובדים. מה היעד הבא שלך היום? 💪", "מצוין. מה על הפרק עכשיו?", "חזק. מוכן לדבר הבא?"],
+  cynic: ["הכל טוב, בעיקר מנסה לא לקנא בלו\"ז הריק שלך 😏", "חי ונושם. מה איתך, קרה משהו מעניין או כרגיל?", "סוחב. מה קורה אצלך?"],
+  friend: ["הכל טוב אחי! מה איתך, איך עובר היום? 🤗", "אחלה לגמרי, שמח ששאלת. מה אצלך?", "הכל בסדר גמור! מה חדש?"],
+  sergeant: ["תקין. דווח מה הסטטוס שלך.", "מצב שגרה. מה המשימה הבאה?", "עומד בזמנים. מה איתך?"],
+  therapist: ["הכל רגוע אצלי, תודה ששאלת. איך אתה מרגיש היום?", "שקט וטוב. מה שלומך הבוקר?", "הכל בסדר. איך עובר עליך היום?"],
+  hype: ["מעולה ובשיא האנרגיה! מה איתך היום? 🔥", "אש! מוכן לטרוף את היום? 🚀", "הכל מצוין! מה קורה?"],
+  grandma: ["ברוך השם מותק, העיקר הבריאות. מה איתך, אכלת משהו?", "הכל בסדר חמוד. מה שלומך הבוקר?", "טוב מותק, תודה ששאלת. איך אתה מרגיש?"],
+  philosopher: ["הזמן זורם כהרגלו. מה שלומך ברגע הזה?", "הכל שקט. מה מעסיק את המחשבות שלך היום?", "הכל בסדר. מה מביא אותך לכאן עכשיו?"],
+  frayer: ["תכל'ס הכל טוב. מה הדיבור אצלך?", "סוגר פינות כרגיל. מה קורה איתך?", "הכל טוב, זורם. מה חדש?"],
+  neighbor: ["הכל טוב שכן, השכונה שקטה לשם שינוי 😏 מה אצלך?", "מצוין שכן! מה קורה אצלך למעלה?", "בסדר גמור! מה המצב?"],
+};
+
+function detectCasualChitchat(text: string): boolean {
+  const clean = text.trim().replace(/[?.,!־\-]+/g, "").replace(/\s+/g, " ");
+  return /^(מה איתך|מה קורה|מה נשמע|מה שלומך|מה המצב|הכל טוב מה איתך|בסדר מה איתך|אוקיי מה איתך|אוקי מה איתך|סבבה מה איתך|היי מה קורה|היי מה נשמע|הי מה קורה)$/u.test(clean);
+}
 
 const FALLBACK_REPLIES: Record<string, string[]> = {
   coach: ["המוח שלי תפס שקט לשנייה. תזרוק שוב — נרוץ על זה 💪", "רגע, נתקע לי החוט. תכתוב שוב."],
@@ -304,95 +311,58 @@ async function sendChatAction(chatId: number, action = "typing") {
   }
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 18_000): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 10_000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(url, { ...init, signal: controller.signal }); }
   finally { clearTimeout(timer); }
 }
 
-async function resolveModelPair(force = false): Promise<{ primary: string; backup: string | null }> {
-  if (resolvedPrimaryModel && !force && !BLOCKED_MODELS.has(resolvedPrimaryModel) && Date.now() - resolvedAt < 5 * 60_000) {
-    return { primary: resolvedPrimaryModel, backup: resolvedBackupModel };
-  }
-  const key = Deno.env.get("GEMINI_API_KEY");
-  if (!key) throw new Error("GEMINI_API_KEY is missing");
-  const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${key}`, {}, 6_000);
-  if (!response.ok) throw new Error(`models.list HTTP ${response.status}`);
-  const json = await response.json();
-  const available = (json.models ?? [])
-    .filter((model: any) => (model.supportedGenerationMethods ?? []).includes("generateContent"))
-    .map((model: any) => String(model.name).replace(/^models\//, ""));
-
-  const primary = [...PRIMARY_CANDIDATES, ...available].find((c) => available.includes(c) && !BLOCKED_MODELS.has(c));
-  if (!primary) throw new Error("No primary Gemini model available");
-  const backup = [...BACKUP_CANDIDATES, ...available].find((c) => available.includes(c) && c !== primary && !BLOCKED_MODELS.has(c)) ?? null;
-
-  resolvedPrimaryModel = primary;
-  resolvedBackupModel = backup;
-  resolvedAt = Date.now();
-  return { primary, backup };
-}
-
-function modelConfig(model: string, base: Record<string, unknown>, tokenBoost: number, noThinking: boolean) {
-  const maxOutputTokens = Number(base.maxOutputTokens ?? 700) + tokenBoost;
-  const config: Record<string, unknown> = {
-    ...base,
-    temperature: base.temperature ?? 0.85,
-    topP: base.topP ?? 0.9,
-    maxOutputTokens,
-  };
-  if (/gemini-(2\.5|3)/.test(model) && !noThinking && !NO_THINKING_SUPPORT.has(model)) {
-    config.thinkingConfig = { thinkingBudget: 0 };
-  }
-  return config;
-}
-
-async function generateContentWithFallback(
+async function directCallGemini(
+  model: string,
   apiKey: string,
-  bodyBase: Record<string, unknown>,
-  attempt = 0,
-  tokenBoost = 0,
-  noThinking = false,
+  body: Record<string, unknown>,
+  timeoutMs = 10_000,
 ): Promise<{ ok: true; data: any } | { ok: false }> {
-  if (attempt >= 2) return { ok: false };
-  let model: string;
-  try {
-    const pair = await resolveModelPair(attempt > 0);
-    model = attempt === 0 ? pair.primary : (pair.backup ?? pair.primary);
-  } catch (error) {
-    console.error("[gemini] resolve model failed", error);
-    return { ok: false };
-  }
-
-  const baseConfig = (bodyBase.generationConfig as Record<string, unknown>) ?? {};
-  const body = { ...bodyBase, generationConfig: modelConfig(model, baseConfig, tokenBoost, noThinking) };
-
   try {
     const response = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
-      GEMINI_TIMEOUT_MS,
+      timeoutMs,
     );
     if (response.ok) {
       const data = await response.json();
       return { ok: true, data };
     }
-    const errorText = await response.text();
-    if (response.status === 400 && !noThinking && /thinking/i.test(errorText)) {
-      NO_THINKING_SUPPORT.add(model);
-      return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, true);
-    }
-    if (response.status === 404 || response.status === 403) {
-      BLOCKED_MODELS.add(model);
-      if (resolvedPrimaryModel === model) resolvedPrimaryModel = null;
-    }
-    console.error(`[gemini] ${model} HTTP ${response.status}: ${errorText.slice(0, 500)}`);
-    return generateContentWithFallback(apiKey, bodyBase, attempt + 1, tokenBoost, noThinking);
+    console.error(`[gemini:${model}] HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    return { ok: false };
   } catch (error) {
-    console.error(`[gemini] ${model} network error or timeout:`, error);
+    console.error(`[gemini:${model}] network/timeout error:`, error);
     return { ok: false };
   }
+}
+
+async function generateContentFast(
+  apiKey: string,
+  bodyBase: Record<string, unknown>,
+): Promise<{ ok: true; data: any } | { ok: false }> {
+  const config = {
+    ...((bodyBase.generationConfig as Record<string, unknown>) ?? {}),
+    temperature: 0.85,
+    topP: 0.9,
+    maxOutputTokens: 300,
+    thinkingConfig: { thinkingBudget: 0 },
+  };
+  const body = { ...bodyBase, generationConfig: config };
+
+  // 1. Try Primary model directly
+  let result = await directCallGemini(PRIMARY_MODEL, apiKey, body, GEMINI_TIMEOUT_MS);
+  if (result.ok) return result;
+
+  // 2. Fast fallback to Background Lite model
+  console.warn(`[gemini] falling back to ${BACKGROUND_MODEL}`);
+  result = await directCallGemini(BACKGROUND_MODEL, apiKey, body, 6_000);
+  return result;
 }
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
@@ -419,11 +389,10 @@ async function touchUser(chatId: number, firstName: string) {
     .select()
     .single();
   if (!error && data) return data;
-  console.error("[users] touch upsert failed, falling back to select:", error?.message);
   const { data: existing, error: selectError } = await supabase.from("users").select("*").eq("chat_id", chatId).maybeSingle();
   if (existing) return existing;
   if (selectError) throw selectError;
-  throw error ?? new Error("touchUser: no row and no error");
+  throw error ?? new Error("touchUser: no row");
 }
 
 async function getHistory(chatId: number): Promise<HistoryMessage[]> {
@@ -505,7 +474,7 @@ function parseReminder(text: string): ParsedReminder | null {
   let dueAt: Date | null = null;
   let span = "";
 
-  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב\s*-?\s*|בשעה\s*)?(\d{1,2})(?::(\d{2})|\s*וחצי|\s*ורבע)?/);
+  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב\s*-?\s*|בשעה\s*)?(\\d{1,2})(?::(\\d{2})|\\s*וחצי|\\s*ורבע)?/);
   if (daily) {
     const hour = +daily[1];
     const minute = daily[2] ? +daily[2] : /וחצי/.test(daily[0]) ? 30 : /ורבע/.test(daily[0]) ? 15 : 0;
@@ -601,10 +570,10 @@ ${layers.filter(Boolean).join("\n\n")}`;
     { role: "user", parts: [{ text }] },
   ];
 
-  const result = await generateContentWithFallback(apiKey, {
+  const result = await generateContentFast(apiKey, {
     systemInstruction: { parts: [{ text: prompt }] },
     contents,
-    generationConfig: { temperature: 0.85, topP: 0.9, maxOutputTokens: 350 },
+    generationConfig: { temperature: 0.85, topP: 0.9, maxOutputTokens: 300 },
   });
 
   if (!result.ok) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
@@ -612,18 +581,21 @@ ${layers.filter(Boolean).join("\n\n")}`;
   return naturalize(raw || pickPersonalized(FALLBACK_REPLIES, personalityKey));
 }
 
+// Layer 2: Background extraction running silently after sending message
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
-    const extraction = await runExtraction((payload) => generateContentWithFallback(Deno.env.get("GEMINI_API_KEY") ?? "", payload), { userText: text, replyText: reply, history, known: memories });
+    const caller = (payload: any) => directCallGemini(BACKGROUND_MODEL, Deno.env.get("GEMINI_API_KEY") ?? "", payload, 8_000);
+
+    const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });
     await upsertMemories(supabase, chatId, extraction.memories);
     await forgetMemories(supabase, chatId, extraction.forget);
     await scheduleFollowUps(supabase, chatId, extraction.followUps);
 
-    const awareness = await runAwarenessExtraction((payload) => generateContentWithFallback(Deno.env.get("GEMINI_API_KEY") ?? "", payload), { userText: text, replyText: reply, history });
+    const awareness = await runAwarenessExtraction(caller, { userText: text, replyText: reply, history });
     await upsertEvents(supabase, chatId, awareness.events);
     await bumpInsideJokes(supabase, chatId, awareness.jokes);
 
-    const profileExtraction = await runProfileExtraction((payload) => generateContentWithFallback(Deno.env.get("GEMINI_API_KEY") ?? "", payload), { userText: text, replyText: reply, history, profile });
+    const profileExtraction = await runProfileExtraction(caller, { userText: text, replyText: reply, history, profile });
     if (Object.keys(profileExtraction.patch).length) await saveProfile(supabase, chatId, profileExtraction.patch);
     await upsertGoals(supabase, chatId, profileExtraction.goals);
   } catch (error) {
@@ -701,6 +673,7 @@ Deno.serve(async (req: Request) => {
     background(sendChatAction(chatId, "typing"), "initial_typing");
 
     const user = await touchUser(chatId, firstName);
+    const personality = resolveActivePersonality(user);
 
     if (text === "/start") {
       await sendMessage(chatId, `שלום ${firstName}! בחר מי ידבר איתך:`, personalityKeyboard());
@@ -762,7 +735,17 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    const personality = resolveActivePersonality(user);
+    // Casual Chitchat Fast-Path (0 latency)
+    if (detectCasualChitchat(text)) {
+      const options = QUICK_CHITCHAT[personality] ?? QUICK_CHITCHAT.cynic;
+      const quickReply = options[Math.floor(Math.random() * options.length)];
+      await sendMessage(chatId, quickReply);
+      background(saveMessage(chatId, "user", text), "save_user_chitchat");
+      background(saveMessage(chatId, "assistant", quickReply), "save_assistant_chitchat");
+      background(rememberPhrase(supabase, chatId, quickReply), "remember_phrase_chitchat");
+      background(logBehavior(supabase, chatId, "message", { len: text.length }), "log_msg_chitchat");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
 
     if (detectDone(text)) {
       const { data: reminders } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true);
@@ -791,7 +774,7 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    const isSimpleMessage = text.length <= 18 && !/רוצה|מטרה|מרגיש|קשה|תסביר|איך|למה|תעזור/u.test(text);
+    const isSimpleMessage = text.length <= 22 && !/רוצה|מטרה|מרגיש|קשה|תסביר|איך|למה|תעזור|תזכיר|תמחק/u.test(text);
 
     let history: HistoryMessage[] = [];
     let memories: Memory[] = [];
@@ -804,10 +787,9 @@ Deno.serve(async (req: Request) => {
     let pace: any = { kind: "normal", instruction: "" };
 
     if (isSimpleMessage) {
-      const [histData, profData, remData] = await Promise.all([
+      const [histData, profData] = await Promise.all([
         getHistory(chatId),
         fetchProfile(supabase, chatId),
-        supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
       ]);
       history = histData;
       profile = profData;
