@@ -73,13 +73,12 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
-// 6 most recent messages to prevent token bloat and keep latency low
 const HISTORY_LIMIT = 6;
 const GEMINI_TIMEOUT_MS = 10_000;
 
-// Direct model binding
+// Solid, reliable models without unsupported thinking parameters
 const PRIMARY_MODEL = Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
-const BACKGROUND_MODEL = Deno.env.get("GEMINI_BACKUP_MODEL")?.trim() || "gemini-2.5-flash-lite";
+const BACKUP_MODEL = Deno.env.get("GEMINI_BACKUP_MODEL")?.trim() || "gemini-2.5-flash-lite";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -163,23 +162,23 @@ const GREETINGS: Record<string, string> = {
   neighbor: "🏠 היי שכן, מה נשמע?",
 };
 
-// Conversational instant responses for casual check-ins (0 network latency)
+// Conversational instant responses for casual check-ins (0 latency)
 const QUICK_CHITCHAT: Record<string, string[]> = {
-  coach: ["הכל טוב, עובדים. מה היעד הבא שלך היום? 💪", "מצוין. מה על הפרק עכשיו?", "חזק. מוכן לדבר הבא?"],
-  cynic: ["הכל טוב, בעיקר מנסה לא לקנא בלו\"ז הריק שלך 😏", "חי ונושם. מה איתך, קרה משהו מעניין או כרגיל?", "סוחב. מה קורה אצלך?"],
-  friend: ["הכל טוב אחי! מה איתך, איך עובר היום? 🤗", "אחלה לגמרי, שמח ששאלת. מה אצלך?", "הכל בסדר גמור! מה חדש?"],
-  sergeant: ["תקין. דווח מה הסטטוס שלך.", "מצב שגרה. מה המשימה הבאה?", "עומד בזמנים. מה איתך?"],
-  therapist: ["הכל רגוע אצלי, תודה ששאלת. איך אתה מרגיש היום?", "שקט וטוב. מה שלומך הבוקר?", "הכל בסדר. איך עובר עליך היום?"],
-  hype: ["מעולה ובשיא האנרגיה! מה איתך היום? 🔥", "אש! מוכן לטרוף את היום? 🚀", "הכל מצוין! מה קורה?"],
-  grandma: ["ברוך השם מותק, העיקר הבריאות. מה איתך, אכלת משהו?", "הכל בסדר חמוד. מה שלומך הבוקר?", "טוב מותק, תודה ששאלת. איך אתה מרגיש?"],
-  philosopher: ["הזמן זורם כהרגלו. מה שלומך ברגע הזה?", "הכל שקט. מה מעסיק את המחשבות שלך היום?", "הכל בסדר. מה מביא אותך לכאן עכשיו?"],
-  frayer: ["תכל'ס הכל טוב. מה הדיבור אצלך?", "סוגר פינות כרגיל. מה קורה איתך?", "הכל טוב, זורם. מה חדש?"],
-  neighbor: ["הכל טוב שכן, השכונה שקטה לשם שינוי 😏 מה אצלך?", "מצוין שכן! מה קורה אצלך למעלה?", "בסדר גמור! מה המצב?"],
+  coach: ["הכל טוב, עובדים. מה היעד הבא שלך היום? 💪", "שומע אותך חזק. מה על הפרק עכשיו?"],
+  cynic: ["הכל טוב, בעיקר מנסה לא לקנא בלו\"ז הריק שלך 😏", "שומע, חי ונושם. מה איתך?"],
+  friend: ["הכל טוב אחי! מה איתך, איך עובר היום? 🤗", "שומע אותך לגמרי! מה חדש?"],
+  sergeant: ["תקין. דווח מה הסטטוס שלך.", "שומע. מה המשימה הבאה?"],
+  therapist: ["הכל רגוע אצלי, תודה ששאלת. איך אתה מרגיש היום?", "שומע אותך. מה שלומך?"],
+  hype: ["מעולה ובשיא האנרגיה! מה איתך היום? 🔥", "שומעעע! מוכן להפציץ? 🚀"],
+  grandma: ["ברוך השם מותק, העיקר הבריאות. מה איתך, אכלת משהו?", "שומעת חמוד שלי, מה שלומך?"],
+  philosopher: ["הזמן זורם כהרגלו. מה שלומך ברגע הזה?", "שומע. מה מעסיק אותך עכשיו?"],
+  frayer: ["תכל'ס הכל טוב. מה הדיבור אצלך?", "שומע אחי. מה קורה?"],
+  neighbor: ["הכל טוב שכן, השכונה שקטה לשם שינוי 😏 מה אצלך?", "שומע שכן! מה המצב למעלה?"],
 };
 
 function detectCasualChitchat(text: string): boolean {
   const clean = text.trim().replace(/[?.,!־\-]+/g, "").replace(/\s+/g, " ");
-  return /^(מה איתך|מה קורה|מה נשמע|מה שלומך|מה המצב|הכל טוב מה איתך|בסדר מה איתך|אוקיי מה איתך|אוקי מה איתך|סבבה מה איתך|היי מה קורה|היי מה נשמע|הי מה קורה)$/u.test(clean);
+  return /^(מה איתך|מה קורה|מה נשמע|מה שלומך|מה המצב|הכל טוב מה איתך|בסדר מה איתך|אוקיי מה איתך|אוקי מה איתך|סבבה מה איתך|היי מה קורה|היי מה נשמע|הי מה קורה|שומע|שומעת|שונע|שומע אחי|היי|הי|הלו|שלום)$/u.test(clean);
 }
 
 const FALLBACK_REPLIES: Record<string, string[]> = {
@@ -336,11 +335,12 @@ async function directCallGemini(
       const data = await response.json();
       return { ok: true, data, latencyMs };
     }
-    console.error(`[gemini:${model}] HTTP ${response.status} (${latencyMs}ms): ${(await response.text()).slice(0, 300)}`);
+    const errText = await response.text();
+    console.error(`[gemini:${model}] HTTP ${response.status} (${latencyMs}ms): ${errText.slice(0, 300)}`);
     return { ok: false, latencyMs };
   } catch (error) {
     const latencyMs = Math.round(performance.now() - start);
-    console.error(`[gemini:${model}] error (${latencyMs}ms):`, error);
+    console.error(`[gemini:${model}] network/timeout error (${latencyMs}ms):`, error);
     return { ok: false, latencyMs };
   }
 }
@@ -354,7 +354,6 @@ async function generateContentFast(
     temperature: 0.85,
     topP: 0.9,
     maxOutputTokens: 250,
-    thinkingConfig: { thinkingBudget: 0 },
   };
   const body = { ...bodyBase, generationConfig: config };
 
@@ -362,9 +361,9 @@ async function generateContentFast(
   const primaryResult = await directCallGemini(PRIMARY_MODEL, apiKey, body, GEMINI_TIMEOUT_MS);
   if (primaryResult.ok) return primaryResult;
 
-  // 2. Backup lite model
-  console.warn(`[gemini] fallback to ${BACKGROUND_MODEL}`);
-  return await directCallGemini(BACKGROUND_MODEL, apiKey, body, 6_000);
+  // 2. Backup model
+  console.warn(`[gemini] falling back to ${BACKUP_MODEL}`);
+  return await directCallGemini(BACKUP_MODEL, apiKey, body, 6_000);
 }
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
@@ -547,7 +546,6 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-// Lean and human prompt: No forced jokes, natural conversational Hebrew
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const apiKey = Deno.env.get("GEMINI_API_KEY");
@@ -584,7 +582,7 @@ ${layers.filter(Boolean).join("\n")}`;
 // Background layer: Extract memories, profile and goals silently without delaying user reply
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
-    const caller = (payload: any) => directCallGemini(BACKGROUND_MODEL, Deno.env.get("GEMINI_API_KEY") ?? "", payload, 8_000);
+    const caller = (payload: any) => directCallGemini(BACKUP_MODEL, Deno.env.get("GEMINI_API_KEY") ?? "", payload, 8_000);
 
     const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });
     await upsertMemories(supabase, chatId, extraction.memories);
@@ -824,7 +822,7 @@ Deno.serve(async (req: Request) => {
         supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
       ]);
       history = histData;
-      memories = rankMemories(memRaw).slice(0, 4); // Max 4 top memories to keep prompt ultra-lean
+      memories = rankMemories(memRaw).slice(0, 4);
       profile = profData;
       goals = goalsData.slice(0, 3);
       events = eventsData.slice(0, 3);
