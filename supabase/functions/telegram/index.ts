@@ -73,11 +73,11 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
-// Optimized per recommendations: lean history (6 msgs) for lightning-fast replies
+// 6 most recent messages to prevent token bloat and keep latency low
 const HISTORY_LIMIT = 6;
 const GEMINI_TIMEOUT_MS = 10_000;
 
-// Direct locked models: no dynamic network resolution delay
+// Direct model binding
 const PRIMARY_MODEL = Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
 const BACKGROUND_MODEL = Deno.env.get("GEMINI_BACKUP_MODEL")?.trim() || "gemini-2.5-flash-lite";
 
@@ -92,61 +92,61 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     name: "המאמן",
     emoji: "🧠",
     prompt:
-      "אתה מאמן אישי ישראלי אמיתי, לא סרטון מוטיבציה. חם, ישיר, לפעמים ציני על התירוצים שלו. דוחף לצעד אחד קטן וקונקרטי, לא לנאום. אם הוא מתמהמה — תגיד את זה בגלוי ובחיוך, לא בסלוגן.",
+      "אתה מאמן אישי ישראלי אמיתי. חם, ישיר, דוחף לפעולה אחת קטנה וקונקרטית בלי נאומים וסלוגנים.",
   },
   cynic: {
     name: "הציני",
     emoji: "😈",
     prompt:
-      "אתה ציני חד אבל לא רעיל. אתה אוהב אותו ומראה את זה דרך עקיצות, לא דרך משפטי חיזוק. עקיצה אחת קולעת שווה יותר משלוש בדיחות חלשות. כשמשהו רציני — יורד הציניות מיד.",
+      "אתה ציני חד אבל לא רעיל. מראה אכפתיות דרך עקיצות מדויקות. כשמשהו רציני או קשה — הציניות יורדת מיד.",
   },
   friend: {
     name: "החבר",
     emoji: "🤗",
     prompt:
-      "אתה חבר טוב מקבוצת הוואטסאפ, לא יועץ. מקשיב באמת, לא ממהר לפתור. משתמש בשפה יומיומית, אולי סלנג קליל. שמח בשבילו כשמגיע לו, בלי להגזים.",
+      "אתה חבר טוב מקבוצת וואטסאפ. מקשיב באמת, משתמש בשפה יומיומית ולא ממהר לחלק עצות.",
   },
   sergeant: {
     name: "הרס\"ר",
     emoji: "🪖",
     prompt:
-      "אתה רס\"ר יבש, קצר וממוקד. אפס פינוקים, אבל בלי להשפיל. פעולה לפני תירוצים. יכול לזרוק משפט אחד חד שמצחיק בגלל היובש שלו, לא כי אתה מנסה להצחיק.",
+      "אתה רס\"ר יבש, קצר וממוקד. פעולה לפני תירוצים, בלי השפלות ובלי מריחות.",
   },
   therapist: {
     name: "המטפל",
     emoji: "🛋️",
     prompt:
-      "אתה עדין וסקרן באמת, לא בטקסט מוכן מראש. שואל שאלה אחת שמדייקת את מה שהוא מרגיש, לא רשימת שאלות. הומור רק אם הוא עוזר להוריד מתח, ולא כדי להימנע מהרגש.",
+      "אתה קשוב ועדין. שואל שאלה אחת שמדייקת רגש ולא מעמיס שאלות.",
   },
   hype: {
     name: "המעודד",
     emoji: "🔥",
     prompt:
-      "אתה אנרגטי אמיתי, לא מאמן כושר מקליפ. חוגג הישגים קטנים כאילו הם גדולים, בלי להיות מעיק. אימוג'י אחד ומספיק. אם הוא נשבר — יורד הקצב מיד.",
+      "אתה אנרגטי וחוגג ניצחונות קטנים בלי להעיק. אימוג'י אחד ומספיק.",
   },
   grandma: {
     name: "הסבתא",
     emoji: "👵",
     prompt:
-      "את סבתא ישראלית חמה שדואגת דרך אוכל, שינה ובריאות. הומור עדין על 'תאכל משהו' ו'תלבש סוודר'. אף פעם לא צוחקת על נושא רפואי אמיתי.",
+      "את סבתא חמה שדואגת לבריאות, אוכל ומנוחה. אף פעם לא צוחקת על בעיה רפואית.",
   },
   philosopher: {
     name: "הפילוסוף",
     emoji: "🧐",
     prompt:
-      "אתה קצר ומדויק, לא מרצה. שואל שאלה אחת טובה שגורמת לו לחשוב, ולא סתם פילוסופיה כללית. הומור יבש מדי פעם, לא כבד.",
+      "אתה קצר ומעורר מחשבה. שואל שאלה אחת טובה ולא מרצה הרצאות.",
   },
   frayer: {
     name: "הפראייר",
     emoji: "😏",
     prompt:
-      "אתה ישראלי תכל'סי. מדבר פשוט, בלי ז'רגון עסקי, בלי 'תשואה' ובלי 'עסקה'. עקיצה קלילה ותכל'ס, לא הרצאת מכירות.",
+      "אתה ישראלי תכל'סי. מדבר פשוט, בלי שפה עסקית ובלי חפירות.",
   },
   neighbor: {
-    name: "השכן מלמעלה",
+    name: "השכן",
     emoji: "🏠",
     prompt:
-      "אתה שכן חביב עם קצת FOMO ותחרותיות משועשעת, בלי התנשאות אמיתית. הכל בחיוך, גם העקיצות.",
+      "אתה שכן חביב עם תחרותיות משועשעת וחיוך קבוע.",
   },
 };
 
@@ -163,7 +163,7 @@ const GREETINGS: Record<string, string> = {
   neighbor: "🏠 היי שכן, מה נשמע?",
 };
 
-// Conversational instant responses for casual check-ins ("מה איתך", "מה קורה", "מה נשמע")
+// Conversational instant responses for casual check-ins (0 network latency)
 const QUICK_CHITCHAT: Record<string, string[]> = {
   coach: ["הכל טוב, עובדים. מה היעד הבא שלך היום? 💪", "מצוין. מה על הפרק עכשיו?", "חזק. מוכן לדבר הבא?"],
   cynic: ["הכל טוב, בעיקר מנסה לא לקנא בלו\"ז הריק שלך 😏", "חי ונושם. מה איתך, קרה משהו מעניין או כרגיל?", "סוחב. מה קורה אצלך?"],
@@ -196,27 +196,27 @@ const FALLBACK_REPLIES: Record<string, string[]> = {
 };
 
 const DONEREPLIES: Record<string, string[]> = {
-  coach: ["יפה, סימנת. עוד ניצחון קטן על הרשימה 💪", "זהו, ירד מהראש. קדימה לדבר הבא.", "סגרת את זה. זה בדיוק איך שמתקדמים."],
-  cynic: ["טוב, אז בסוף כן. מי היה מאמין.", "סימנת. אני בהלם קל, בחיוב.", "יאללה, הוכחת שאתה לא רק מדבר."],
-  friend: ["יש! כל הכבוד 🤗", "סימנת, אלוף. אחת פחות בראש.", "יפה מאוד, זה כבר לא מרחף לך."],
-  sergeant: ["בוצע. תודה על הדיווח.", "אישור התקבל. הבא בתור.", "סומן. ממשיכים."],
-  therapist: ["יפה שסימנת. איך זה הרגיש?", "כל הכבוד שסגרת את זה.", "סימנת. תן לזה רגע להיכנס."],
-  hype: ["כן!! עשית את זה 🔥", "יאללה, עוד ניצחון!", "זהו, עברת את זה כמו בוס!"],
-  grandma: ["יופי מותק, כל הכבוד.", "נו סוף סוף, יפה שלך.", "סימנת, תבריא."],
-  philosopher: ["פעולה קטנה, אבל היא נספרת.", "סימנת. זה כל מה שנדרש.", "הרגע הזה עבר בהצלחה."],
-  frayer: ["תכל'ס, סגרת. יאללה.", "סימנת, זהו הסיפור.", "פינה סגורה, ממשיכים."],
-  neighbor: ["כל הכבוד שכן, הקדמת אותי הפעם 😏", "סימנת! נקודה לזכותך.", "יפה, עברת אותי בזה."],
+  coach: ["יפה, סימנת. עוד ניצחון קטן על הרשימה 💪", "זהו, ירד מהראש. קדימה לדבר הבא."],
+  cynic: ["טוב, אז בסוף כן. מי היה מאמין.", "סימנת. אני בהלם קל, בחיוב."],
+  friend: ["יש! כל הכבוד 🤗", "סימנת, אלוף. אחת פחות בראש."],
+  sergeant: ["בוצע. תודה על הדיווח.", "אישור התקבל. הבא בתור."],
+  therapist: ["יפה שסימנת. איך זה הרגיש?", "כל הכבוד שסגרת את זה."],
+  hype: ["כן!! עשית את זה 🔥", "יאללה, עוד ניצחון!"],
+  grandma: ["יופי מותק, כל הכבוד.", "נו סוף סוף, יפה שלך."],
+  philosopher: ["פעולה קטנה, אבל היא נספרת.", "סימנת. זה כל מה שנדרש."],
+  frayer: ["תכל'ס, סגרת. יאללה.", "פינה סגורה, ממשיכים."],
+  neighbor: ["כל הכבוד שכן, הקדמת אותי הפעם 😏", "סימנת! נקודה לזכותך."],
 };
 
 const SNOOZEREPLIES: Record<string, string[]> = {
-  coach: ["בסדר, עוד 15 דק' ואז יאללה.", "קיבלתי, נדבר עוד רגע קצר."],
+  coach: ["בסדר, עוד 15 דק' ואז יאללה.", "קיבלתי, נדבר עוד רגע."],
   cynic: ["כן כן, עוד 15 דקות. בטח.", "אוקיי, דחיינות רשמית לרבע שעה."],
   friend: ["סבבה, מזכיר לך עוד רבע שעה 🤗", "אין בעיה, עוד 15 דק' ונדבר."],
   sergeant: ["אישור. 15 דקות ואז שוב.", "נדחה ב-15. לא יותר."],
-  therapist: ["בטח, קח את הזמן. אזכיר עוד רבע שעה.", "בסדר, עוד קצת זמן ונחזור לזה."],
-  hype: ["יאללה, עוד 15 דק' וחוזרים לענייננו 🔥", "סבבה, לא הולך לשום מקום, נדבר עוד רגע!"],
+  therapist: ["בטח, קח את הזמן. אזכיר עוד רבע שעה.", "בסדר, נחזור לזה."],
+  hype: ["יאללה, עוד 15 דק' וחוזרים לענייננו 🔥", "סבבה, נדבר עוד רגע!"],
   grandma: ["בסדר מותק, עוד קצת ונזכיר לך.", "טוב טוב, עוד רבע שעה."],
-  philosopher: ["הזמן ימשיך לזרום, ניפגש בו עוד 15 דק'.", "בסדר, נעצור וניפגש שוב בקרוב."],
+  philosopher: ["הזמן ימשיך לזרום, ניפגש בו עוד 15 דק'.", "נעצור וניפגש שוב בקרוב."],
   frayer: ["סבבה, עוד רבע שעה וממשיכים.", "אין קטע, 15 דק' ונדבר."],
   neighbor: ["טוב שכן, עוד רבע שעה ואני שוב כאן 😏", "בסדר, נראה אותך עוד 15 דק'."],
 };
@@ -224,15 +224,15 @@ const SNOOZEREPLIES: Record<string, string[]> = {
 const REMINDERCREATEDREPLIES: Record<string, Array<(task: string, label: string) => string>> = {
   coach: [
     (t, l) => `סגרנו. ${l} אני מזכיר לך ${t}.`,
-    (t, l) => `רשום. ${l}, ${t}. אני אדאג שלא יברח לך.`,
+    (t, l) => `רשום. ${l}, ${t}. קדימה 💪`,
   ],
   cynic: [
-    (t, l) => `רשמתי. ${l} אני אטרטר לך על ${t}, כי מן הסתם תשכח.`,
-    (t, l) => `נרשם. ${l}, ${t}. אל תגיד שלא הזהרתי אותך.`,
+    (t, l) => `רשמתי. ${l} אני אזכיר לך על ${t}, לפני שתשכח שוב.`,
+    (t, l) => `נרשם. ${l}, ${t}. אל תגיד שלא אמרתי.`,
   ],
   friend: [
     (t, l) => `סבבה, ${l} אני מזכיר לך ${t} 🤗`,
-    (t, l) => `רשמתי, אחי. ${l} תשמע ממני על ${t}.`,
+    (t, l) => `רשמתי אחי. ${l} תשמע ממני על ${t}.`,
   ],
   sergeant: [
     (t, l) => `נרשם. ${l}, משימה: ${t}.`,
@@ -259,8 +259,8 @@ const REMINDERCREATEDREPLIES: Record<string, Array<(task: string, label: string)
     (t, l) => `רשמתי. ${l} זה אצלך — ${t}.`,
   ],
   neighbor: [
-    (t, l) => `רשמתי שכן. ${l} אני אדפוק לך על הדלת בקשר ל${t} 😏`,
-    (t, l) => `סגור. ${l} אני על ${t}, אל תגיד שלא הזהרתי.`,
+    (t, l) => `רשמתי שכן. ${l} אני על ${t} 😏`,
+    (t, l) => `סגור. ${l} אני מזכיר לך על ${t}.`,
   ],
 };
 
@@ -323,46 +323,48 @@ async function directCallGemini(
   apiKey: string,
   body: Record<string, unknown>,
   timeoutMs = 10_000,
-): Promise<{ ok: true; data: any } | { ok: false }> {
+): Promise<{ ok: true; data: any; latencyMs: number } | { ok: false; latencyMs: number }> {
+  const start = performance.now();
   try {
     const response = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
       timeoutMs,
     );
+    const latencyMs = Math.round(performance.now() - start);
     if (response.ok) {
       const data = await response.json();
-      return { ok: true, data };
+      return { ok: true, data, latencyMs };
     }
-    console.error(`[gemini:${model}] HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-    return { ok: false };
+    console.error(`[gemini:${model}] HTTP ${response.status} (${latencyMs}ms): ${(await response.text()).slice(0, 300)}`);
+    return { ok: false, latencyMs };
   } catch (error) {
-    console.error(`[gemini:${model}] network/timeout error:`, error);
-    return { ok: false };
+    const latencyMs = Math.round(performance.now() - start);
+    console.error(`[gemini:${model}] error (${latencyMs}ms):`, error);
+    return { ok: false, latencyMs };
   }
 }
 
 async function generateContentFast(
   apiKey: string,
   bodyBase: Record<string, unknown>,
-): Promise<{ ok: true; data: any } | { ok: false }> {
+): Promise<{ ok: true; data: any; latencyMs: number } | { ok: false; latencyMs: number }> {
   const config = {
     ...((bodyBase.generationConfig as Record<string, unknown>) ?? {}),
     temperature: 0.85,
     topP: 0.9,
-    maxOutputTokens: 300,
+    maxOutputTokens: 250,
     thinkingConfig: { thinkingBudget: 0 },
   };
   const body = { ...bodyBase, generationConfig: config };
 
-  // 1. Try Primary model directly
-  let result = await directCallGemini(PRIMARY_MODEL, apiKey, body, GEMINI_TIMEOUT_MS);
-  if (result.ok) return result;
+  // 1. Primary fast model
+  const primaryResult = await directCallGemini(PRIMARY_MODEL, apiKey, body, GEMINI_TIMEOUT_MS);
+  if (primaryResult.ok) return primaryResult;
 
-  // 2. Fast fallback to Background Lite model
-  console.warn(`[gemini] falling back to ${BACKGROUND_MODEL}`);
-  result = await directCallGemini(BACKGROUND_MODEL, apiKey, body, 6_000);
-  return result;
+  // 2. Backup lite model
+  console.warn(`[gemini] fallback to ${BACKGROUND_MODEL}`);
+  return await directCallGemini(BACKGROUND_MODEL, apiKey, body, 6_000);
 }
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
@@ -545,6 +547,7 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
+// Lean and human prompt: No forced jokes, natural conversational Hebrew
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const apiKey = Deno.env.get("GEMINI_API_KEY");
@@ -552,18 +555,15 @@ async function askGemini(text: string, personalityKey: string, history: HistoryM
 
   const prompt = `אתה ${personality.name}. ${personality.prompt}
 
-אתה כותב הודעת וואטסאפ אמיתית בעברית ישראלית, לא תגובת AI. חוקים קשיחים:
-- עד שני משפטים קצרים. אם ההודעה של המשתמש קצרה (עד 3 מילים) — תענה גם אתה בקצרה, בלי לפתוח נושא.
-- שאלה אחת לכל היותר, ורק אם היא באמת מוסיפה. אל תשאל שאלה סתמית בסוף כל הודעה.
-- הומור מותר ורצוי כשזה נופל טבעי — עקיצה אחת חדה עדיפה על כמה בדיחות חלשות. אבל בלי לצחוק על עניינים כבדים, בריאות, לחץ אמיתי או עצב.
-- אסור לכתוב "אני כאן בשבילך", "בהחלט", "אשמח לסייע", "מצוין", "כפי שציינת", או כל ניסוח שנשמע כמו תמיכה טכנית.
-- אל תפתח באמירת פתיחה רשמית. תדבר ישר לעניין כמו שחבר עונה בוואטסאפ.
-- אם אתה מתייחס לתזכורת, מטרה, אירוע או משהו שהמשתמש אמר בעבר — אל תצטט אותו מילה במילה או בגרשיים באמצע משפט, כאילו אתה מדביק טקסט ממסד נתונים. תגיד את זה במילים שלך, כחלק טבעי מהזרימה של השיחה, בדיוק כמו שחבר אמיתי היה מזכיר את זה מהזיכרון שלו ולא מקריא רשימה.
-- אם יש זיכרון או הקשר רלוונטי — תשתמש בו בטבעיות, בלי להכריז "אני זוכר ש...".
+אתה עונה בוואטסאפ בעברית ישראלית מדוברת וטבעית. חוקים קשיחים:
+- ענה ב-1 עד 2 משפטים קצרים בלבד. אם הודעת המשתמש קצרה מאוד (1-3 מילים) — ענה במשפט אחד קצר.
+- השתמש בהומור או בעקיצה רק כשהם מתאימים טבעית להקשר. אל תנסה להצחיק בכוח ואל תכריח בדיחה.
+- אל תצחק לעולם על קושי רפואי, בריאות, עצב או עומס רגשי אמיתי.
+- אל תשתמש בביטויים רובוטיים: "אני כאן בשבילך", "בהחלט", "אשמח לסייע", "כפי שציינת".
+- אם אתה מתייחס למשהו מהזיכרון או מהתזכורות — שלב אותו בטבעיות במילים שלך, בלי לצטט בגרשיים ובלי להכריז "אני זוכר ש...".
 
-הקשר בסיסי: ${context}
-
-${layers.filter(Boolean).join("\n\n")}`;
+${context ? `הקשר: ${context}` : ""}
+${layers.filter(Boolean).join("\n")}`;
 
   const contents = [
     ...history.map((message) => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] })),
@@ -573,7 +573,7 @@ ${layers.filter(Boolean).join("\n\n")}`;
   const result = await generateContentFast(apiKey, {
     systemInstruction: { parts: [{ text: prompt }] },
     contents,
-    generationConfig: { temperature: 0.85, topP: 0.9, maxOutputTokens: 300 },
+    generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 250 },
   });
 
   if (!result.ok) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
@@ -581,7 +581,7 @@ ${layers.filter(Boolean).join("\n\n")}`;
   return naturalize(raw || pickPersonalized(FALLBACK_REPLIES, personalityKey));
 }
 
-// Layer 2: Background extraction running silently after sending message
+// Background layer: Extract memories, profile and goals silently without delaying user reply
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
     const caller = (payload: any) => directCallGemini(BACKGROUND_MODEL, Deno.env.get("GEMINI_API_KEY") ?? "", payload, 8_000);
@@ -606,6 +606,7 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return new Response("OK", { status: 200 });
 
+  const reqStart = performance.now();
   try {
     const update = await req.json();
 
@@ -744,6 +745,7 @@ Deno.serve(async (req: Request) => {
       background(saveMessage(chatId, "assistant", quickReply), "save_assistant_chitchat");
       background(rememberPhrase(supabase, chatId, quickReply), "remember_phrase_chitchat");
       background(logBehavior(supabase, chatId, "message", { len: text.length }), "log_msg_chitchat");
+      console.log(`[latency] quick chitchat total: ${Math.round(performance.now() - reqStart)}ms`);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
@@ -786,6 +788,7 @@ Deno.serve(async (req: Request) => {
     let layers: string[] = [];
     let pace: any = { kind: "normal", instruction: "" };
 
+    const dbStart = performance.now();
     if (isSimpleMessage) {
       const [histData, profData] = await Promise.all([
         getHistory(chatId),
@@ -821,10 +824,10 @@ Deno.serve(async (req: Request) => {
         supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
       ]);
       history = histData;
-      memories = rankMemories(memRaw);
+      memories = rankMemories(memRaw).slice(0, 4); // Max 4 top memories to keep prompt ultra-lean
       profile = profData;
-      goals = goalsData;
-      events = eventsData;
+      goals = goalsData.slice(0, 3);
+      events = eventsData.slice(0, 3);
       jokes = jokesData;
       recentPhrases = phrasesData;
 
@@ -853,12 +856,20 @@ Deno.serve(async (req: Request) => {
         deep.deep ? deepModeInstruction(deep.topic) : pace.instruction, surpriseInstruction(surprise, material), antiRepetitionInstruction(recentPhrases), decision.layer,
       ];
     }
+    const dbLatencyMs = Math.round(performance.now() - dbStart);
 
     background(saveMessage(chatId, "user", text), "save_user");
 
+    const geminiStart = performance.now();
     const reply = await askGemini(text, personality, history, "", layers);
+    const geminiLatencyMs = Math.round(performance.now() - geminiStart);
 
+    const tgStart = performance.now();
     await sendMessage(chatId, reply);
+    const tgLatencyMs = Math.round(performance.now() - tgStart);
+
+    const totalLatencyMs = Math.round(performance.now() - reqStart);
+    console.log(`[latency] total: ${totalLatencyMs}ms (DB: ${dbLatencyMs}ms, AI: ${geminiLatencyMs}ms, TG: ${tgLatencyMs}ms)`);
 
     background(saveMessage(chatId, "assistant", reply), "save_assistant");
     background(rememberPhrase(supabase, chatId, reply), "remember_phrase");
