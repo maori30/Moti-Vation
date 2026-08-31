@@ -70,6 +70,8 @@ import {
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
 const HISTORY_LIMIT = 8;
@@ -293,23 +295,22 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 12_0
   finally { clearTimeout(timer); }
 }
 
-// Multi-tier Gemini calling: try multiple modern Gemini endpoints (v1 & v1beta)
-const ENDPOINTS = [
-  { version: "v1beta", model: "gemini-1.5-flash" },
-  { version: "v1", model: "gemini-1.5-flash" },
-  { version: "v1beta", model: "gemini-1.5-flash-8b" },
-  { version: "v1beta", model: "gemini-2.0-flash" },
-  { version: "v1beta", model: "gemini-1.5-pro" },
+// Multi-tier Gemini calling: supports standard official Gemini models in order
+const MODERN_MODELS = [
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-latest",
+  "gemini-1.5-pro",
+  "gemini-1.5-flash-8b",
 ];
 
-async function callGeminiEndpoint(
-  endpoint: { version: string; model: string },
+async function callGoogleGemini(
+  model: string,
   apiKey: string,
   body: Record<string, unknown>,
   timeoutMs = 10_000,
 ): Promise<{ ok: true; data: any } | { ok: false }> {
   try {
-    const url = `https://generativelanguage.googleapis.com/${endpoint.version}/models/${endpoint.model}:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     const response = await fetchWithTimeout(
       url,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
@@ -319,11 +320,11 @@ async function callGeminiEndpoint(
       const data = await response.json();
       return { ok: true, data };
     }
-    const errText = await response.text();
-    console.warn(`[gemini:${endpoint.version}/${endpoint.model}] HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    const err = await response.text();
+    console.warn(`[gemini:${model}] HTTP ${response.status}: ${err.slice(0, 200)}`);
     return { ok: false };
   } catch (err) {
-    console.warn(`[gemini:${endpoint.version}/${endpoint.model}] exception:`, err);
+    console.warn(`[gemini:${model}] request error:`, err);
     return { ok: false };
   }
 }
@@ -342,8 +343,8 @@ async function generateContentResilient(
     },
   };
 
-  for (const endpoint of ENDPOINTS) {
-    const res = await callGeminiEndpoint(endpoint, apiKey, body, 7_000);
+  for (const model of MODERN_MODELS) {
+    const res = await callGoogleGemini(model, apiKey, body, 7_000);
     if (res.ok) return res;
   }
   return { ok: false };
@@ -529,17 +530,17 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-// Full contextual human conversation prompt
+// 100% Real contextual human AI generator (no hardcoded canned responses)
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
-  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  const apiKey = GEMINI_API_KEY;
   if (!apiKey) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
 
   const prompt = `אתה ${personality.name}. ${personality.prompt}
 
-אתה עונה בוואטסאפ בעברית ישראלית חיה, טבעית ומדוברת:
-- תגיב תמיד ישירות למה שהמשתמש שאל או כתב ברצף השיחה.
-- ענה ב-1 עד 2 משפטים קצרים וחדים, בלי לחזור על עצמך ובלי תשובות מנותקות.
+אתה עונה בוואטסאפ בעברית ישראלית חיה, טבעית, חכמה ומדוברת:
+- תגיב תמיד לעומק ולתוכן של מה שהמשתמש כתב ברצף השיחה.
+- ענה ב-1 עד 2 משפטים קצרים בלבד. אל תחזור על עצמך ואל תשתמש בתשובות מנותקות.
 - אסור להשתמש בביטויים רובוטיים: "אני כאן בשבילך", "אשמח לסייע", "כפי שציינת".
 
 ${context ? `הקשר: ${context}` : ""}
@@ -563,8 +564,7 @@ ${layers.filter(Boolean).join("\n")}`;
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
     const caller = async (payload: any) => {
-      const apiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
-      return generateContentResilient(apiKey, payload);
+      return generateContentResilient(GEMINI_API_KEY, payload);
     };
 
     const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });
@@ -790,9 +790,16 @@ Deno.serve(async (req: Request) => {
 
     background(saveMessage(chatId, "user", text), "save_user");
 
+    const geminiStart = performance.now();
     const reply = await askGemini(text, personality, history, "", layers);
+    const geminiLatencyMs = Math.round(performance.now() - geminiStart);
 
+    const tgStart = performance.now();
     await sendMessage(chatId, reply);
+    const tgLatencyMs = Math.round(performance.now() - tgStart);
+
+    const totalLatencyMs = Math.round(performance.now() - reqStart);
+    console.log(`[latency] total: ${totalLatencyMs}ms (AI: ${geminiLatencyMs}ms, TG: ${tgLatencyMs}ms)`);
 
     background(saveMessage(chatId, "assistant", reply), "save_assistant");
     background(rememberPhrase(supabase, chatId, reply), "remember_phrase");
