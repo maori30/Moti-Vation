@@ -70,28 +70,12 @@ import {
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
-// Retain last 8 messages for full human conversational continuity
 const HISTORY_LIMIT = 8;
 const GEMINI_TIMEOUT_MS = 14_000;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-const BLOCKED_MODELS = new Set<string>();
-let resolvedPrimaryModel: string | null = null;
-let resolvedBackupModel: string | null = null;
-let resolvedAt = 0;
-
-const CANDIDATE_MODELS = [
-  Deno.env.get("GEMINI_MODEL")?.trim(),
-  "gemini-1.5-flash",
-  "gemini-1.5-flash-8b",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-lite-preview",
-  "gemini-1.5-pro",
-].filter(Boolean) as string[];
 
 type HistoryMessage = { role: string; content: string; created_at?: string };
 type ParsedReminder = { dueAt: Date; task: string; type: "once" | "daily" | "weekly" };
@@ -309,84 +293,60 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 12_0
   finally { clearTimeout(timer); }
 }
 
-async function resolveAvailableModel(apiKey: string): Promise<{ primary: string; backup: string }> {
-  if (resolvedPrimaryModel && Date.now() - resolvedAt < 10 * 60_000 && !BLOCKED_MODELS.has(resolvedPrimaryModel)) {
-    return { primary: resolvedPrimaryModel, backup: resolvedBackupModel || "gemini-1.5-flash-8b" };
-  }
-  try {
-    const res = await fetchWithTimeout(`https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${apiKey}`, {}, 6_000);
-    if (res.ok) {
-      const data = await res.json();
-      const names = (data.models ?? [])
-        .filter((m: any) => (m.supportedGenerationMethods ?? []).includes("generateContent"))
-        .map((m: any) => String(m.name).replace(/^models\//, ""));
-      
-      const found = CANDIDATE_MODELS.filter((m) => names.includes(m) && !BLOCKED_MODELS.has(m));
-      if (found.length >= 1) {
-        resolvedPrimaryModel = found[0];
-        resolvedBackupModel = found[1] || found[0];
-        resolvedAt = Date.now();
-        console.log(`[gemini] discovered models: primary=${resolvedPrimaryModel}, backup=${resolvedBackupModel}`);
-        return { primary: resolvedPrimaryModel, backup: resolvedBackupModel };
-      }
-    }
-  } catch (err) {
-    console.error("[gemini] model discovery failed:", err);
-  }
-  return { primary: "gemini-1.5-flash", backup: "gemini-1.5-flash-8b" };
-}
+// Multi-tier Gemini calling: try multiple modern Gemini endpoints (v1 & v1beta)
+const ENDPOINTS = [
+  { version: "v1beta", model: "gemini-1.5-flash" },
+  { version: "v1", model: "gemini-1.5-flash" },
+  { version: "v1beta", model: "gemini-1.5-flash-8b" },
+  { version: "v1beta", model: "gemini-2.0-flash" },
+  { version: "v1beta", model: "gemini-1.5-pro" },
+];
 
-async function directCallGemini(
-  model: string,
+async function callGeminiEndpoint(
+  endpoint: { version: string; model: string },
   apiKey: string,
   body: Record<string, unknown>,
-  timeoutMs = 12_000,
-): Promise<{ ok: true; data: any; latencyMs: number } | { ok: false; latencyMs: number }> {
-  const start = performance.now();
+  timeoutMs = 10_000,
+): Promise<{ ok: true; data: any } | { ok: false }> {
   try {
+    const url = `https://generativelanguage.googleapis.com/${endpoint.version}/models/${endpoint.model}:generateContent?key=${apiKey}`;
     const response = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`,
+      url,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
       timeoutMs,
     );
-    const latencyMs = Math.round(performance.now() - start);
     if (response.ok) {
       const data = await response.json();
-      return { ok: true, data, latencyMs };
+      return { ok: true, data };
     }
     const errText = await response.text();
-    if (response.status === 404 || response.status === 403) {
-      BLOCKED_MODELS.add(model);
-      resolvedPrimaryModel = null;
-    }
-    console.error(`[gemini:${model}] HTTP ${response.status} (${latencyMs}ms): ${errText.slice(0, 300)}`);
-    return { ok: false, latencyMs };
-  } catch (error) {
-    const latencyMs = Math.round(performance.now() - start);
-    console.error(`[gemini:${model}] network/timeout error (${latencyMs}ms):`, error);
-    return { ok: false, latencyMs };
+    console.warn(`[gemini:${endpoint.version}/${endpoint.model}] HTTP ${response.status}: ${errText.slice(0, 200)}`);
+    return { ok: false };
+  } catch (err) {
+    console.warn(`[gemini:${endpoint.version}/${endpoint.model}] exception:`, err);
+    return { ok: false };
   }
 }
 
-async function generateContentFast(
+async function generateContentResilient(
   apiKey: string,
   bodyBase: Record<string, unknown>,
-): Promise<{ ok: true; data: any; latencyMs: number } | { ok: false; latencyMs: number }> {
-  const config = {
-    ...((bodyBase.generationConfig as Record<string, unknown>) ?? {}),
-    temperature: 0.85,
-    topP: 0.9,
-    maxOutputTokens: 350,
+): Promise<{ ok: true; data: any } | { ok: false }> {
+  const body = {
+    ...bodyBase,
+    generationConfig: {
+      temperature: 0.85,
+      topP: 0.9,
+      maxOutputTokens: 350,
+      ...((bodyBase.generationConfig as Record<string, unknown>) ?? {}),
+    },
   };
-  const body = { ...bodyBase, generationConfig: config };
 
-  const { primary, backup } = await resolveAvailableModel(apiKey);
-
-  const primaryResult = await directCallGemini(primary, apiKey, body, GEMINI_TIMEOUT_MS);
-  if (primaryResult.ok) return primaryResult;
-
-  console.warn(`[gemini] fallback to ${backup}`);
-  return await directCallGemini(backup, apiKey, body, 8_000);
+  for (const endpoint of ENDPOINTS) {
+    const res = await callGeminiEndpoint(endpoint, apiKey, body, 7_000);
+    if (res.ok) return res;
+  }
+  return { ok: false };
 }
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
@@ -569,7 +529,7 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-// 100% Real human conversational prompt
+// Full contextual human conversation prompt
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const apiKey = Deno.env.get("GEMINI_API_KEY");
@@ -577,11 +537,10 @@ async function askGemini(text: string, personalityKey: string, history: HistoryM
 
   const prompt = `אתה ${personality.name}. ${personality.prompt}
 
-אתה עונה בוואטסאפ בעברית ישראלית אותנטית, טבעית, חיה וקולחת.
-- ענה כמו בן אדם אמיתי שמתכתב, ב-1 עד 2 משפטים. תגיב תמיד לעומק ולתוכן של מה שהמשתמש כתב עכשיו ברצף השיחה.
-- אם המשתמש שואל "בסדר איך אתה?", "מה נתקת?", "שומע?" — ענה לו ישירות על השאלה שלו בטבעיות ובאישיות שלך, אל תתחמק ואל תענה תשובה מנותקת.
-- השתמש בהומור, עקיצה או פרגון כשזה מתאים. אל תשתמש בשפה רובוטית או פורמלית לעולם.
-- אל תשתמש בביטויים כמו "אני כאן בשבילך", "אשמח לעזור", "כפי שציינת".
+אתה עונה בוואטסאפ בעברית ישראלית חיה, טבעית ומדוברת:
+- תגיב תמיד ישירות למה שהמשתמש שאל או כתב ברצף השיחה.
+- ענה ב-1 עד 2 משפטים קצרים וחדים, בלי לחזור על עצמך ובלי תשובות מנותקות.
+- אסור להשתמש בביטויים רובוטיים: "אני כאן בשבילך", "אשמח לסייע", "כפי שציינת".
 
 ${context ? `הקשר: ${context}` : ""}
 ${layers.filter(Boolean).join("\n")}`;
@@ -591,10 +550,9 @@ ${layers.filter(Boolean).join("\n")}`;
     { role: "user", parts: [{ text }] },
   ];
 
-  const result = await generateContentFast(apiKey, {
+  const result = await generateContentResilient(apiKey, {
     systemInstruction: { parts: [{ text: prompt }] },
     contents,
-    generationConfig: { temperature: 0.85, topP: 0.9, maxOutputTokens: 300 },
   });
 
   if (!result.ok) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
@@ -606,8 +564,7 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
   try {
     const caller = async (payload: any) => {
       const apiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
-      const { backup } = await resolveAvailableModel(apiKey);
-      return directCallGemini(backup, apiKey, payload, 8_000);
+      return generateContentResilient(apiKey, payload);
     };
 
     const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });
@@ -808,7 +765,7 @@ Deno.serve(async (req: Request) => {
     const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
     const pace = computePacing(text, lastBot, profile);
 
-    // Only purely mechanical laughter or single emoji triggers micro-pacing instant reply
+    // Instant reply only on pure laugh emojis (e.g. "חחח", "😂")
     if (pace.instantReply && isLaugh(text)) {
       await sendMessage(chatId, pace.instantReply);
       background(saveMessage(chatId, "user", text), "save_user_instant");
