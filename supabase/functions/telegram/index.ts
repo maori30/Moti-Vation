@@ -72,15 +72,24 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-
-const HISTORY_LIMIT = 6;
-const GEMINI_TIMEOUT_MS = 10_000;
-
-// High stability Google AI Studio models
-const PRIMARY_MODEL = Deno.env.get("GEMINI_MODEL")?.trim() || "gemini-1.5-flash";
-const BACKUP_MODEL = Deno.env.get("GEMINI_BACKUP_MODEL")?.trim() || "gemini-1.5-flash-8b";
+const HISTORY_LIMIT = 8;
+const GEMINI_TIMEOUT_MS = 14_000;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const BLOCKED_MODELS = new Set<string>();
+let resolvedPrimaryModel: string | null = null;
+let resolvedBackupModel: string | null = null;
+let resolvedAt = 0;
+
+const CANDIDATE_MODELS = [
+  Deno.env.get("GEMINI_MODEL")?.trim(),
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-8b",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite-preview",
+  "gemini-1.5-pro",
+].filter(Boolean) as string[];
 
 type HistoryMessage = { role: string; content: string; created_at?: string };
 type ParsedReminder = { dueAt: Date; task: string; type: "once" | "daily" | "weekly" };
@@ -310,18 +319,45 @@ async function sendChatAction(chatId: number, action = "typing") {
   }
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 10_000): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 12_000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(url, { ...init, signal: controller.signal }); }
   finally { clearTimeout(timer); }
 }
 
+async function resolveAvailableModel(apiKey: string): Promise<{ primary: string; backup: string }> {
+  if (resolvedPrimaryModel && Date.now() - resolvedAt < 10 * 60_000 && !BLOCKED_MODELS.has(resolvedPrimaryModel)) {
+    return { primary: resolvedPrimaryModel, backup: resolvedBackupModel || "gemini-1.5-flash-8b" };
+  }
+  try {
+    const res = await fetchWithTimeout(`https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models?key=${apiKey}`, {}, 6_000);
+    if (res.ok) {
+      const data = await res.json();
+      const names = (data.models ?? [])
+        .filter((m: any) => (m.supportedGenerationMethods ?? []).includes("generateContent"))
+        .map((m: any) => String(m.name).replace(/^models\//, ""));
+      
+      const found = CANDIDATE_MODELS.filter((m) => names.includes(m) && !BLOCKED_MODELS.has(m));
+      if (found.length >= 1) {
+        resolvedPrimaryModel = found[0];
+        resolvedBackupModel = found[1] || found[0];
+        resolvedAt = Date.now();
+        console.log(`[gemini] discovered models: primary=${resolvedPrimaryModel}, backup=${resolvedBackupModel}`);
+        return { primary: resolvedPrimaryModel, backup: resolvedBackupModel };
+      }
+    }
+  } catch (err) {
+    console.error("[gemini] model discovery failed:", err);
+  }
+  return { primary: "gemini-1.5-flash", backup: "gemini-1.5-flash-8b" };
+}
+
 async function directCallGemini(
   model: string,
   apiKey: string,
   body: Record<string, unknown>,
-  timeoutMs = 10_000,
+  timeoutMs = 12_000,
 ): Promise<{ ok: true; data: any; latencyMs: number } | { ok: false; latencyMs: number }> {
   const start = performance.now();
   try {
@@ -336,6 +372,10 @@ async function directCallGemini(
       return { ok: true, data, latencyMs };
     }
     const errText = await response.text();
+    if (response.status === 404 || response.status === 403) {
+      BLOCKED_MODELS.add(model);
+      resolvedPrimaryModel = null;
+    }
     console.error(`[gemini:${model}] HTTP ${response.status} (${latencyMs}ms): ${errText.slice(0, 300)}`);
     return { ok: false, latencyMs };
   } catch (error) {
@@ -357,13 +397,15 @@ async function generateContentFast(
   };
   const body = { ...bodyBase, generationConfig: config };
 
-  // 1. Primary standard model
-  const primaryResult = await directCallGemini(PRIMARY_MODEL, apiKey, body, GEMINI_TIMEOUT_MS);
+  const { primary, backup } = await resolveAvailableModel(apiKey);
+
+  // 1. Primary Model Call
+  const primaryResult = await directCallGemini(primary, apiKey, body, GEMINI_TIMEOUT_MS);
   if (primaryResult.ok) return primaryResult;
 
-  // 2. Backup lite model
-  console.warn(`[gemini] falling back to ${BACKUP_MODEL}`);
-  return await directCallGemini(BACKUP_MODEL, apiKey, body, 6_000);
+  // 2. Backup Model Call
+  console.warn(`[gemini] fallback to ${backup}`);
+  return await directCallGemini(backup, apiKey, body, 8_000);
 }
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
@@ -581,7 +623,11 @@ ${layers.filter(Boolean).join("\n")}`;
 
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
-    const caller = (payload: any) => directCallGemini(BACKUP_MODEL, Deno.env.get("GEMINI_API_KEY") ?? "", payload, 8_000);
+    const caller = async (payload: any) => {
+      const apiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
+      const { backup } = await resolveAvailableModel(apiKey);
+      return directCallGemini(backup, apiKey, payload, 8_000);
+    };
 
     const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });
     await upsertMemories(supabase, chatId, extraction.memories);
