@@ -72,6 +72,8 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
+
+// Retain last 8 messages for full human conversational continuity
 const HISTORY_LIMIT = 8;
 const GEMINI_TIMEOUT_MS = 14_000;
 
@@ -170,25 +172,6 @@ const GREETINGS: Record<string, string> = {
   frayer: "😏 תכל'ס, מה על השולחן?",
   neighbor: "🏠 היי שכן, מה נשמע?",
 };
-
-// Conversational instant responses for casual check-ins (0 latency)
-const QUICK_CHITCHAT: Record<string, string[]> = {
-  coach: ["הכל טוב, עובדים. מה היעד הבא שלך היום? 💪", "שומע אותך חזק. מה על הפרק עכשיו?", "יפה! קדימה לדבר הבא 💪"],
-  cynic: ["הכל טוב, בעיקר מנסה לא לקנא בלו\"ז הריק שלך 😏", "שומע, חי ונושם. מה איתך?", "יפה, יפה. מה עכשיו?"],
-  friend: ["הכל טוב אחי! מה איתך, איך עובר היום? 🤗", "שומע אותך לגמרי! מה חדש?", "יופי אחי, מה הלאה?"],
-  sergeant: ["תקין. דווח מה הסטטוס שלך.", "שומע. מה המשימה הבאה?", "אישור. המשך ביצוע."],
-  therapist: ["הכל רגוע אצלי, תודה ששאלת. איך אתה מרגיש היום?", "שומע אותך. מה שלומך?", "שמח לשמוע. מה עובר עליך?"],
-  hype: ["מעולה ובשיא האנרגיה! מה איתך היום? 🔥", "שומעעע! מוכן להפציץ? 🚀", "יששש! מה היעד הבא? 🔥"],
-  grandma: ["ברוך השם מותק, העיקר הבריאות. מה איתך, אכלת משהו?", "שומעת חמוד שלי, מה שלומך?", "יופי מותק, העיקר שטוב לך."],
-  philosopher: ["הזמן זורם כהרגלו. מה שלומך ברגע הזה?", "שומע. מה מעסיק אותך עכשיו?", "יפה. לאן ממשיכים מכאן?"],
-  frayer: ["תכל'ס הכל טוב. מה הדיבור אצלך?", "שומע אחי. מה קורה?", "סגור פינה. מה הלאה?"],
-  neighbor: ["הכל טוב שכן, השכונה שקטה לשם שינוי 😏 מה אצלך?", "שומע שכן! מה המצב למעלה?", "יפה שכן! הקדמת אותי 😏"],
-};
-
-function detectCasualChitchat(text: string): boolean {
-  const clean = text.trim().replace(/[?.,!־\-]+/g, "").replace(/\s+/g, " ");
-  return /^(מה איתך|מה קורה|מה נשמע|מה שלומך|מה המצב|הכל טוב מה איתך|בסדר מה איתך|אוקיי מה איתך|אוקי מה איתך|סבבה מה איתך|היי מה קורה|היי מה נשמע|הי מה קורה|שומע|שומעת|שונע|שומע אחי|היי|הי|הלו|שלום|יפה|שיפה|יפה מאוד|אחלה|סבבה|סגור)$/u.test(clean);
-}
 
 const FALLBACK_REPLIES: Record<string, string[]> = {
   coach: ["המוח שלי תפס שקט לשנייה. תזרוק שוב — נרוץ על זה 💪", "רגע, נתקע לי החוט. תכתוב שוב."],
@@ -393,17 +376,15 @@ async function generateContentFast(
     ...((bodyBase.generationConfig as Record<string, unknown>) ?? {}),
     temperature: 0.85,
     topP: 0.9,
-    maxOutputTokens: 250,
+    maxOutputTokens: 350,
   };
   const body = { ...bodyBase, generationConfig: config };
 
   const { primary, backup } = await resolveAvailableModel(apiKey);
 
-  // 1. Primary Model Call
   const primaryResult = await directCallGemini(primary, apiKey, body, GEMINI_TIMEOUT_MS);
   if (primaryResult.ok) return primaryResult;
 
-  // 2. Backup Model Call
   console.warn(`[gemini] fallback to ${backup}`);
   return await directCallGemini(backup, apiKey, body, 8_000);
 }
@@ -588,6 +569,7 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
+// 100% Real human conversational prompt
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const apiKey = Deno.env.get("GEMINI_API_KEY");
@@ -595,12 +577,11 @@ async function askGemini(text: string, personalityKey: string, history: HistoryM
 
   const prompt = `אתה ${personality.name}. ${personality.prompt}
 
-אתה עונה בוואטסאפ בעברית ישראלית מדוברת וטבעית. חוקים קשיחים:
-- ענה ב-1 עד 2 משפטים קצרים בלבד. אם הודעת המשתמש קצרה מאוד (1-3 מילים) — ענה במשפט אחד קצר.
-- השתמש בהומור או בעקיצה רק כשהם מתאימים טבעית להקשר. אל תנסה להצחיק בכוח ואל תכריח בדיחה.
-- אל תצחק לעולם על קושי רפואי, בריאות, עצב או עומס רגשי אמיתי.
-- אל תשתמש בביטויים רובוטיים: "אני כאן בשבילך", "בהחלט", "אשמח לסייע", "כפי שציינת".
-- אם אתה מתייחס למשהו מהזיכרון או מהתזכורות — שלב אותו בטבעיות במילים שלך, בלי לצטט בגרשיים ובלי להכריז "אני זוכר ש...".
+אתה עונה בוואטסאפ בעברית ישראלית אותנטית, טבעית, חיה וקולחת.
+- ענה כמו בן אדם אמיתי שמתכתב, ב-1 עד 2 משפטים. תגיב תמיד לעומק ולתוכן של מה שהמשתמש כתב עכשיו ברצף השיחה.
+- אם המשתמש שואל "בסדר איך אתה?", "מה נתקת?", "שומע?" — ענה לו ישירות על השאלה שלו בטבעיות ובאישיות שלך, אל תתחמק ואל תענה תשובה מנותקת.
+- השתמש בהומור, עקיצה או פרגון כשזה מתאים. אל תשתמש בשפה רובוטית או פורמלית לעולם.
+- אל תשתמש בביטויים כמו "אני כאן בשבילך", "אשמח לעזור", "כפי שציינת".
 
 ${context ? `הקשר: ${context}` : ""}
 ${layers.filter(Boolean).join("\n")}`;
@@ -613,7 +594,7 @@ ${layers.filter(Boolean).join("\n")}`;
   const result = await generateContentFast(apiKey, {
     systemInstruction: { parts: [{ text: prompt }] },
     contents,
-    generationConfig: { temperature: 0.8, topP: 0.9, maxOutputTokens: 250 },
+    generationConfig: { temperature: 0.85, topP: 0.9, maxOutputTokens: 300 },
   });
 
   if (!result.ok) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
@@ -779,19 +760,6 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    // Casual Chitchat Fast-Path (0 latency)
-    if (detectCasualChitchat(text)) {
-      const options = QUICK_CHITCHAT[personality] ?? QUICK_CHITCHAT.cynic;
-      const quickReply = options[Math.floor(Math.random() * options.length)];
-      await sendMessage(chatId, quickReply);
-      background(saveMessage(chatId, "user", text), "save_user_chitchat");
-      background(saveMessage(chatId, "assistant", quickReply), "save_assistant_chitchat");
-      background(rememberPhrase(supabase, chatId, quickReply), "remember_phrase_chitchat");
-      background(logBehavior(supabase, chatId, "message", { len: text.length }), "log_msg_chitchat");
-      console.log(`[latency] quick chitchat total: ${Math.round(performance.now() - reqStart)}ms`);
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-
     if (detectDone(text)) {
       const { data: reminders } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true);
       const match = (reminders ?? []).find((reminder) => reminder.text.split(/\s+/).some((word: string) => word.length > 2 && text.includes(word)));
@@ -819,109 +787,62 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    const isSimpleMessage = text.length <= 22 && !/רוצה|מטרה|מרגיש|קשה|תסביר|איך|למה|תעזור|תזכיר|תמחק/u.test(text);
+    const [histData, memRaw, profData, goalsData, eventsData, jokesData, phrasesData, remData] = await Promise.all([
+      getHistory(chatId),
+      fetchMemories(supabase, chatId),
+      fetchProfile(supabase, chatId),
+      fetchGoals(supabase, chatId),
+      fetchEvents(supabase, chatId),
+      fetchInsideJokes(supabase, chatId),
+      fetchRecentPhrases(supabase, chatId),
+      supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
+    ]);
+    const history = histData;
+    const memories = rankMemories(memRaw).slice(0, 5);
+    const profile = profData;
+    const goals = goalsData.slice(0, 3);
+    const events = eventsData.slice(0, 3);
+    const jokes = jokesData;
+    const recentPhrases = phrasesData;
 
-    let history: HistoryMessage[] = [];
-    let memories: Memory[] = [];
-    let profile: Profile = { chat_id: chatId, address_style: null, humor_level: 0.5, topics: [], habits: [], active_hours: [], procrastinates: [], reminder_wins: {}, reply_len_avg: 0, prefers_short: false, blend: {} };
-    let goals: any[] = [];
-    let events: any[] = [];
-    let jokes: any[] = [];
-    let recentPhrases: any[] = [];
-    let layers: string[] = [];
-    let pace: any = { kind: "normal", instruction: "" };
+    const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
+    const pace = computePacing(text, lastBot, profile);
 
-    const dbStart = performance.now();
-    if (isSimpleMessage) {
-      const [histData, profData] = await Promise.all([
-        getHistory(chatId),
-        fetchProfile(supabase, chatId),
-      ]);
-      history = histData;
-      profile = profData;
-      const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
-      pace = computePacing(text, lastBot, profile);
-
-      if (pace.instantReply) {
-        await sendMessage(chatId, pace.instantReply);
-        background(saveMessage(chatId, "user", text), "save_user_instant");
-        background(saveMessage(chatId, "assistant", pace.instantReply), "save_assistant_instant");
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
-
-      layers = [
-        profileContext(profile),
-        coreferenceInstruction(text, history),
-        pace.instruction,
-        "הודעה קצרה ופשוטה. תענה קצר וטבעי, משפט אחד לכל היותר.",
-      ];
-    } else {
-      const [histData, memRaw, profData, goalsData, eventsData, jokesData, phrasesData, remData] = await Promise.all([
-        getHistory(chatId),
-        fetchMemories(supabase, chatId),
-        fetchProfile(supabase, chatId),
-        fetchGoals(supabase, chatId),
-        fetchEvents(supabase, chatId),
-        fetchInsideJokes(supabase, chatId),
-        fetchRecentPhrases(supabase, chatId),
-        supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
-      ]);
-      history = histData;
-      memories = rankMemories(memRaw).slice(0, 4);
-      profile = profData;
-      goals = goalsData.slice(0, 3);
-      events = eventsData.slice(0, 3);
-      jokes = jokesData;
-      recentPhrases = phrasesData;
-
-      const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
-      pace = computePacing(text, lastBot, profile);
-
-      if (pace.instantReply) {
-        await sendMessage(chatId, pace.instantReply);
-        background(saveMessage(chatId, "user", text), "save_user_instant");
-        background(saveMessage(chatId, "assistant", pace.instantReply), "save_assistant_instant");
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
-
-      const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
-      const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes: 0, prevMood: user.mood });
-      const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
-      const deep = detectDeepMode(text, history);
-      const material = [...goals.map((g: any) => g.title), ...events.map((e: any) => e.title)];
-      const surprise = rollSurprise(material.length > 0, deep.deep);
-      const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
-
-      layers = [
-        memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
-        coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (remData.data ?? []).map((r: { text: string }) => r.text) }),
-        moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
-        deep.deep ? deepModeInstruction(deep.topic) : pace.instruction, surpriseInstruction(surprise, material), antiRepetitionInstruction(recentPhrases), decision.layer,
-      ];
+    // Only purely mechanical laughter or single emoji triggers micro-pacing instant reply
+    if (pace.instantReply && isLaugh(text)) {
+      await sendMessage(chatId, pace.instantReply);
+      background(saveMessage(chatId, "user", text), "save_user_instant");
+      background(saveMessage(chatId, "assistant", pace.instantReply), "save_assistant_instant");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
-    const dbLatencyMs = Math.round(performance.now() - dbStart);
+
+    const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
+    const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes: 0, prevMood: user.mood });
+    const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
+    const deep = detectDeepMode(text, history);
+    const material = [...goals.map((g: any) => g.title), ...events.map((e: any) => e.title)];
+    const surprise = rollSurprise(material.length > 0, deep.deep);
+    const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
+
+    const layers = [
+      memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
+      coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (remData.data ?? []).map((r: { text: string }) => r.text) }),
+      moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
+      deep.deep ? deepModeInstruction(deep.topic) : pace.instruction, surpriseInstruction(surprise, material), antiRepetitionInstruction(recentPhrases), decision.layer,
+    ];
 
     background(saveMessage(chatId, "user", text), "save_user");
 
-    const geminiStart = performance.now();
     const reply = await askGemini(text, personality, history, "", layers);
-    const geminiLatencyMs = Math.round(performance.now() - geminiStart);
 
-    const tgStart = performance.now();
     await sendMessage(chatId, reply);
-    const tgLatencyMs = Math.round(performance.now() - tgStart);
-
-    const totalLatencyMs = Math.round(performance.now() - reqStart);
-    console.log(`[latency] total: ${totalLatencyMs}ms (DB: ${dbLatencyMs}ms, AI: ${geminiLatencyMs}ms, TG: ${tgLatencyMs}ms)`);
 
     background(saveMessage(chatId, "assistant", reply), "save_assistant");
     background(rememberPhrase(supabase, chatId, reply), "remember_phrase");
     background(logBehavior(supabase, chatId, "message", { len: text.length }), "log_message");
     if (isLaugh(text)) background(logBehavior(supabase, chatId, "laughed"), "log_laughed");
     background(learnFromBehavior(supabase, chatId, profile), "learn_behavior");
-    if (!isSimpleMessage) {
-      background(runBackgroundPipelines(chatId, text, reply, history, memories, profile), "pipelines");
-    }
+    background(runBackgroundPipelines(chatId, text, reply, history, memories, profile), "pipelines");
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   } catch (error) {
