@@ -74,8 +74,6 @@ const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
 const HISTORY_LIMIT = 8;
-const GEMINI_TIMEOUT_MS = 14_000;
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 type HistoryMessage = { role: string; content: string; created_at?: string };
@@ -156,19 +154,6 @@ const GREETINGS: Record<string, string> = {
   philosopher: "🧐 מה הביא אותך לכאן דווקא עכשיו?",
   frayer: "😏 תכל'ס, מה על השולחן?",
   neighbor: "🏠 היי שכן, מה נשמע?",
-};
-
-const FALLBACK_REPLIES: Record<string, string[]> = {
-  coach: ["המוח שלי תפס שקט לשנייה. תזרוק שוב — נרוץ על זה 💪", "רגע, נתקע לי החוט. תכתוב שוב."],
-  cynic: ["המוח שלי נתקע לרגע. תזרוק שוב.", "רגע, אפילו אני הייתי בהלם לשנייה. מה אמרת?"],
-  friend: ["רגע אחי, פספסתי אותך לשנייה. תכתוב שוב? 🤗", "נתקע לי רגע. מה אמרת?"],
-  sergeant: ["תקלה בקשר. חזור על ההודעה.", "לא נקלט. שדר שוב."],
-  therapist: ["רגע, נתקעתי לשנייה. תוכל לכתוב שוב?", "פספסתי את הרגע הזה. ספר שוב."],
-  hype: ["רגע, עפתי מהמסלול לשנייה! תזרוק שוב 🔥", "שנייה וחוזר — תכתוב שוב!"],
-  grandma: ["אוי מותק, נתקע לי המכשיר לרגע. תגיד שוב?", "לא שמעתי טוב, חמוד. תכתוב עוד פעם."],
-  philosopher: ["המחשבה נקטעה לרגע. תזרוק שוב.", "הרגע הזה ברח. בוא ננסה שוב."],
-  frayer: ["רגע, נתקעתי. דבר שוב.", "תכל'ס נתקע לשנייה. זרוק עוד פעם."],
-  neighbor: ["רגע שכן, נפל לי הקו לשנייה. תגיד שוב 😏", "פספסתי אותך, תזרוק שוב."],
 };
 
 const DONEREPLIES: Record<string, string[]> = {
@@ -294,60 +279,128 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 12_0
   finally { clearTimeout(timer); }
 }
 
-// Multi-tier Gemini calling: tries v1 and v1beta on official models in sequence
-const ENDPOINTS = [
-  { version: "v1beta", model: "gemini-1.5-flash" },
-  { version: "v1", model: "gemini-1.5-flash" },
-  { version: "v1beta", model: "gemini-1.5-flash-8b" },
-  { version: "v1beta", model: "gemini-2.0-flash" },
-  { version: "v1beta", model: "gemini-1.5-pro" },
-];
+// Convert conversation to OpenAI compatible message format
+function buildOpenAiMessages(systemPrompt: string, history: HistoryMessage[], text: string) {
+  const messages: Array<{ role: string; content: string }> = [
+    { role: "system", content: systemPrompt },
+  ];
+  for (const msg of history) {
+    messages.push({
+      role: msg.role === "assistant" ? "assistant" : "user",
+      content: msg.content,
+    });
+  }
+  messages.push({ role: "user", content: text });
+  return messages;
+}
 
-async function callGoogleGemini(
-  endpoint: { version: string; model: string },
+// Unified call to Google Gemini via both OpenAI compatibility API and native Google API
+async function callGeminiOpenAiCompat(
   apiKey: string,
-  body: Record<string, unknown>,
-  timeoutMs = 10_000,
-): Promise<{ ok: true; data: any } | { ok: false }> {
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  timeoutMs = 9_000,
+): Promise<{ ok: true; content: string } | { ok: false }> {
   try {
-    const url = `https://generativelanguage.googleapis.com/${endpoint.version}/models/${endpoint.model}:generateContent?key=${apiKey}`;
-    const response = await fetchWithTimeout(
+    const url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    const res = await fetchWithTimeout(
       url,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.85,
+          max_tokens: 350,
+        }),
+      },
       timeoutMs,
     );
-    if (response.ok) {
-      const data = await response.json();
-      return { ok: true, data };
+    if (res.ok) {
+      const data = await res.json();
+      const content = data?.choices?.[0]?.message?.content?.trim();
+      if (content) return { ok: true, content };
     }
-    const err = await response.text();
-    console.warn(`[gemini:${endpoint.version}/${endpoint.model}] HTTP ${response.status}: ${err.slice(0, 200)}`);
+    console.warn(`[gemini-openai:${model}] HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     return { ok: false };
   } catch (err) {
-    console.warn(`[gemini:${endpoint.version}/${endpoint.model}] request error:`, err);
+    console.warn(`[gemini-openai:${model}] error:`, err);
     return { ok: false };
   }
 }
 
-async function generateContentResilient(
+async function callGeminiNative(
   apiKey: string,
-  bodyBase: Record<string, unknown>,
-): Promise<{ ok: true; data: any } | { ok: false }> {
-  const body = {
-    ...bodyBase,
-    generationConfig: {
-      temperature: 0.85,
-      topP: 0.9,
-      maxOutputTokens: 350,
-      ...((bodyBase.generationConfig as Record<string, unknown>) ?? {}),
-    },
-  };
-
-  for (const endpoint of ENDPOINTS) {
-    const res = await callGoogleGemini(endpoint, apiKey, body, 7_000);
-    if (res.ok) return res;
+  model: string,
+  prompt: string,
+  history: HistoryMessage[],
+  text: string,
+  timeoutMs = 9_000,
+): Promise<{ ok: true; content: string } | { ok: false }> {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const contents = [
+      ...history.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+      { role: "user", parts: [{ text }] },
+    ];
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: prompt }] },
+          contents,
+          generationConfig: { temperature: 0.85, maxOutputTokens: 350 },
+        }),
+      },
+      timeoutMs,
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const content = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("").trim();
+      if (content) return { ok: true, content };
+    }
+    console.warn(`[gemini-native:${model}] HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return { ok: false };
+  } catch (err) {
+    console.warn(`[gemini-native:${model}] error:`, err);
+    return { ok: false };
   }
-  return { ok: false };
+}
+
+// Resilient AI generator running top tier models in sequence
+async function generateAiReply(
+  prompt: string,
+  history: HistoryMessage[],
+  text: string,
+): Promise<string | null> {
+  const apiKey = GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  const messages = buildOpenAiMessages(prompt, history, text);
+
+  // 1. Try Gemini 2.0 Flash via OpenAI Endpoint (Highest intelligence & speed)
+  let res = await callGeminiOpenAiCompat(apiKey, "gemini-2.0-flash", messages, 8_000);
+  if (res.ok) return res.content;
+
+  // 2. Try Gemini 1.5 Flash via OpenAI Endpoint
+  res = await callGeminiOpenAiCompat(apiKey, "gemini-1.5-flash", messages, 8_000);
+  if (res.ok) return res.content;
+
+  // 3. Try Gemini 1.5 Pro via OpenAI Endpoint
+  res = await callGeminiOpenAiCompat(apiKey, "gemini-1.5-pro", messages, 8_000);
+  if (res.ok) return res.content;
+
+  // 4. Native Google Endpoint Fallback
+  const nativeRes = await callGeminiNative(apiKey, "gemini-1.5-flash", prompt, history, text, 8_000);
+  if (nativeRes.ok) return nativeRes.content;
+
+  return null;
 }
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
@@ -530,41 +583,40 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-// 100% Real contextual human AI generator (NO canned fast-path replies)
+// 100% Context-driven authentic human Israeli chat
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
-  const apiKey = GEMINI_API_KEY;
-  if (!apiKey) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
 
   const prompt = `אתה ${personality.name}. ${personality.prompt}
 
-אתה עונה בוואטסאפ בעברית ישראלית חיה, טבעית, חכמה ומדוברת:
-- תגיב תמיד לעומק ולתוכן של מה שהמשתמש כתב ברצף השיחה.
-- ענה ב-1 עד 2 משפטים קצרים בלבד. אל תחזור על עצמך ואל תשתמש בתשובות מנותקות.
+אתה עונה בוואטסאפ בעברית ישראלית חיה, שנונה, טבעית ומדוברת:
+- תגיב תמיד ישירות למה שהמשתמש שאל או כתב ברצף השיחה.
+- ענה ב-1 עד 2 משפטים קצרים בלבד. אל תהיה יבש ואל תשתמש בתשובות שבלוניות.
 - אסור להשתמש בביטויים רובוטיים: "אני כאן בשבילך", "אשמח לסייע", "כפי שציינת".
 
 ${context ? `הקשר: ${context}` : ""}
 ${layers.filter(Boolean).join("\n")}`;
 
-  const contents = [
-    ...history.map((message) => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] })),
-    { role: "user", parts: [{ text }] },
-  ];
+  const generated = await generateAiReply(prompt, history, text);
+  if (!generated) {
+    const options = [
+      "אני איתך. מה קורה?",
+      "פה לגמרי, מה על הפרק?",
+      "שומע אותך מצוין. מה אמרת?",
+    ];
+    return options[Math.floor(Math.random() * options.length)];
+  }
 
-  const result = await generateContentResilient(apiKey, {
-    systemInstruction: { parts: [{ text: prompt }] },
-    contents,
-  });
-
-  if (!result.ok) return pickPersonalized(FALLBACK_REPLIES, personalityKey);
-  const raw = result.data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
-  return naturalize(raw || pickPersonalized(FALLBACK_REPLIES, personalityKey));
+  return naturalize(generated);
 }
 
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
     const caller = async (payload: any) => {
-      return generateContentResilient(GEMINI_API_KEY, payload);
+      const messages = [{ role: "user", content: JSON.stringify(payload) }];
+      const res = await callGeminiOpenAiCompat(GEMINI_API_KEY, "gemini-1.5-flash", messages, 8_000);
+      if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };
+      return { ok: false };
     };
 
     const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });
@@ -765,7 +817,7 @@ Deno.serve(async (req: Request) => {
     const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
     const pace = computePacing(text, lastBot, profile);
 
-    // Instant reply only on pure laugh emojis (e.g. "חחח", "😂")
+    // Instant reply strictly for single laughter triggers ("חחח", "😂")
     if (pace.instantReply && isLaugh(text)) {
       await sendMessage(chatId, pace.instantReply);
       background(saveMessage(chatId, "user", text), "save_user_instant");
@@ -790,16 +842,9 @@ Deno.serve(async (req: Request) => {
 
     background(saveMessage(chatId, "user", text), "save_user");
 
-    const geminiStart = performance.now();
     const reply = await askGemini(text, personality, history, "", layers);
-    const geminiLatencyMs = Math.round(performance.now() - geminiStart);
 
-    const tgStart = performance.now();
     await sendMessage(chatId, reply);
-    const tgLatencyMs = Math.round(performance.now() - tgStart);
-
-    const totalLatencyMs = Math.round(performance.now() - reqStart);
-    console.log(`[latency] total: ${totalLatencyMs}ms (AI: ${geminiLatencyMs}ms, TG: ${tgLatencyMs}ms)`);
 
     background(saveMessage(chatId, "assistant", reply), "save_assistant");
     background(rememberPhrase(supabase, chatId, reply), "remember_phrase");
