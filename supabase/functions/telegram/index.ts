@@ -71,7 +71,6 @@ const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
-const GEMINI_API_VERSION = "v1beta";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
 const HISTORY_LIMIT = 8;
@@ -295,22 +294,23 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 12_0
   finally { clearTimeout(timer); }
 }
 
-// Multi-tier Gemini calling: supports standard official Gemini models in order
-const MODERN_MODELS = [
-  "gemini-1.5-flash",
-  "gemini-1.5-flash-latest",
-  "gemini-1.5-pro",
-  "gemini-1.5-flash-8b",
+// Multi-tier Gemini calling: tries v1 and v1beta on official models in sequence
+const ENDPOINTS = [
+  { version: "v1beta", model: "gemini-1.5-flash" },
+  { version: "v1", model: "gemini-1.5-flash" },
+  { version: "v1beta", model: "gemini-1.5-flash-8b" },
+  { version: "v1beta", model: "gemini-2.0-flash" },
+  { version: "v1beta", model: "gemini-1.5-pro" },
 ];
 
 async function callGoogleGemini(
-  model: string,
+  endpoint: { version: string; model: string },
   apiKey: string,
   body: Record<string, unknown>,
   timeoutMs = 10_000,
 ): Promise<{ ok: true; data: any } | { ok: false }> {
   try {
-    const url = `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/${endpoint.version}/models/${endpoint.model}:generateContent?key=${apiKey}`;
     const response = await fetchWithTimeout(
       url,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
@@ -321,10 +321,10 @@ async function callGoogleGemini(
       return { ok: true, data };
     }
     const err = await response.text();
-    console.warn(`[gemini:${model}] HTTP ${response.status}: ${err.slice(0, 200)}`);
+    console.warn(`[gemini:${endpoint.version}/${endpoint.model}] HTTP ${response.status}: ${err.slice(0, 200)}`);
     return { ok: false };
   } catch (err) {
-    console.warn(`[gemini:${model}] request error:`, err);
+    console.warn(`[gemini:${endpoint.version}/${endpoint.model}] request error:`, err);
     return { ok: false };
   }
 }
@@ -343,8 +343,8 @@ async function generateContentResilient(
     },
   };
 
-  for (const model of MODERN_MODELS) {
-    const res = await callGoogleGemini(model, apiKey, body, 7_000);
+  for (const endpoint of ENDPOINTS) {
+    const res = await callGoogleGemini(endpoint, apiKey, body, 7_000);
     if (res.ok) return res;
   }
   return { ok: false };
@@ -530,7 +530,7 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-// 100% Real contextual human AI generator (no hardcoded canned responses)
+// 100% Real contextual human AI generator (NO canned fast-path replies)
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
   const apiKey = GEMINI_API_KEY;
