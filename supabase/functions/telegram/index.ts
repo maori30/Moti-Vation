@@ -294,7 +294,7 @@ function buildOpenAiMessages(systemPrompt: string, history: HistoryMessage[], te
   return messages;
 }
 
-// Unified call to Google Gemini via OpenAI-compatibility endpoint (Cleanest and most robust API)
+// Unified call to Google Gemini via OpenAI-compatibility endpoint
 async function callGeminiOpenAiCompat(
   apiKey: string,
   model: string,
