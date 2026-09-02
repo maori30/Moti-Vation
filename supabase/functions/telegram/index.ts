@@ -294,7 +294,7 @@ function buildOpenAiMessages(systemPrompt: string, history: HistoryMessage[], te
   return messages;
 }
 
-// Unified call to Google Gemini via both OpenAI compatibility API and native Google API
+// Unified call to Google Gemini via OpenAI-compatibility endpoint (Cleanest and most robust API)
 async function callGeminiOpenAiCompat(
   apiKey: string,
   model: string,
@@ -325,7 +325,8 @@ async function callGeminiOpenAiCompat(
       const content = data?.choices?.[0]?.message?.content?.trim();
       if (content) return { ok: true, content };
     }
-    console.warn(`[gemini-openai:${model}] HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const err = await res.text();
+    console.warn(`[gemini-openai:${model}] HTTP ${res.status}: ${err.slice(0, 200)}`);
     return { ok: false };
   } catch (err) {
     console.warn(`[gemini-openai:${model}] error:`, err);
@@ -333,6 +334,7 @@ async function callGeminiOpenAiCompat(
   }
 }
 
+// Native Google Endpoint Call
 async function callGeminiNative(
   apiKey: string,
   model: string,
@@ -365,7 +367,6 @@ async function callGeminiNative(
       const content = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("").trim();
       if (content) return { ok: true, content };
     }
-    console.warn(`[gemini-native:${model}] HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     return { ok: false };
   } catch (err) {
     console.warn(`[gemini-native:${model}] error:`, err);
