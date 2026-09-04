@@ -649,7 +649,8 @@ ${layers.filter(Boolean).join("\n")}`;
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
     const caller = async (payload: any) => {
-      const res = await callGoogleGeminiModel(GEMINI_API_KEY, "gemini-1.5-flash", "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
+      const model = await extractionModel(GEMINI_API_KEY);
+      const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
       if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };
       return { ok: false };
     };
