@@ -367,15 +367,15 @@ async function listAvailableModels(apiKey: string): Promise<string[] | null> {
     const data = await res.json();
     const names = (data?.models ?? [])
       .filter((m: any) => (m?.supportedGenerationMethods ?? []).includes("generateContent"))
-      .map((m: any) => String(m?.name ?? "").replace(/^models\//, ""));
+      .map((m: any) => String(m?.name ?? \"\").replace(/^models\\//, \"\"));
     if (names.length) {
       availableModels = names;
       availableCheckedAt = Date.now();
-      console.log(`[gemini] available models: ${names.slice(0, 12).join(", ")}`);
+      console.log(`[gemini] available models: ${names.slice(0, 12).join(\", \")}`);
     }
     return availableModels;
   } catch (err) {
-    console.error("[gemini] model discovery failed:", err);
+    console.error(\"[gemini] model discovery failed:\", err);
     return availableModels;
   }
 }
@@ -387,14 +387,13 @@ function candidateModels(available: string[] | null): string[] {
     if (deadUntil > now) return false;
     return !available || available.includes(model);
   });
-  // If discovery says none of our preferred names exist, fall back to whatever flash models the key has.
   if (!preferred.length && available?.length) {
-    return available.filter((m) => /flash/.test(m) && !/1\.5|8b|thinking|image|tts|embedding/.test(m)).slice(0, 3);
+    return available.filter((m) => /flash/.test(m) && !/1\\.5|8b|thinking|image|tts|embedding/.test(m)).slice(0, 3);
   }
   const ordered = goodModel && preferred.includes(goodModel)
     ? [goodModel, ...preferred.filter((m) => m !== goodModel)]
     : preferred;
-  return ordered.length ? ordered : ["gemini-2.5-flash"];
+  return ordered.length ? ordered : [\"gemini-2.5-flash\"];
 }
 
 // Generate AI reply, trying the current-generation Gemini models in order.
@@ -405,11 +404,10 @@ async function generateAiReply(
 ): Promise<{ content: string; debug?: string } | null> {
   const apiKey = GEMINI_API_KEY;
   if (!apiKey) {
-    console.error("[gemini-critical] GEMINI_API_KEY is empty in Supabase Environment Secrets!");
+    console.error(\"[gemini-critical] GEMINI_API_KEY is empty in Supabase Environment Secrets!\");
     return null;
   }
 
-  // Use the cached list when we have one; only block on discovery if we've never checked.
   const available = availableModels ?? await listAvailableModels(apiKey);
   if (availableModels) void listAvailableModels(apiKey);
 
@@ -420,11 +418,10 @@ async function generateAiReply(
       modelHealth.set(model, 0);
       return { content: res.content, debug: model };
     }
-    // 404/403 = model gone or not allowed for this key: park it for an hour.
     if (res.status === 404 || res.status === 403 || res.status === 400) {
       modelHealth.set(model, Date.now() + 3_600_000);
       if (goodModel === model) goodModel = null;
-      availableCheckedAt = 0; // force a fresh discovery next time
+      availableCheckedAt = 0;
     }
   }
 
@@ -433,57 +430,55 @@ async function generateAiReply(
 
 async function extractionModel(apiKey: string): Promise<string> {
   const available = availableModels ?? await listAvailableModels(apiKey);
-  const light = ["gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash"];
+  const light = [\"gemini-2.5-flash-lite\", \"gemini-flash-lite-latest\", \"gemini-flash-latest\", \"gemini-2.5-flash\"];
   return light.find((m) => !available || available.includes(m)) ?? candidateModels(available)[0];
 }
 
-
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
-  const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
+  const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: \"HTML\" };
   if (keyboard) body.reply_markup = keyboard;
   const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    method: \"POST\", headers: { \"Content-Type\": \"application/json\" }, body: JSON.stringify(body),
   });
   if (!response.ok) console.error(`[telegram] send failed ${response.status}: ${(await response.text()).slice(0, 300)}`);
 }
 
 async function updateUser(chatId: number, changes: Record<string, unknown>) {
-  const { error } = await supabase.from("users").update(changes).eq("chat_id", chatId);
-  if (error) console.error("[users] update failed:", error.message);
+  const { error } = await supabase.from(\"users\").update(changes).eq(\"chat_id\", chatId);
+  if (error) console.error(\"[users] update failed:\", error.message);
 }
 
 async function touchUser(chatId: number, firstName: string) {
   const { data, error } = await supabase
-    .from("users")
-    .upsert(
+    .from(\"users\")\n    .upsert(
       { chat_id: chatId, first_name: firstName, last_message_at: new Date().toISOString() },
-      { onConflict: "chat_id" },
+      { onConflict: \"chat_id\" },
     )
     .select()
     .single();
   if (!error && data) return data;
-  const { data: existing, error: selectError } = await supabase.from("users").select("*").eq("chat_id", chatId).maybeSingle();
+  const { data: existing, error: selectError } = await supabase.from(\"users\").select(\"*\").eq(\"chat_id\", chatId).maybeSingle();
   if (existing) return existing;
   if (selectError) throw selectError;
-  throw error ?? new Error("touchUser: no row");
+  throw error ?? new Error(\"touchUser: no row\");
 }
 
 async function getHistory(chatId: number): Promise<HistoryMessage[]> {
-  const { data } = await supabase.from("messages").select("role, content, created_at").eq("chat_id", chatId).order("created_at", { ascending: false }).limit(HISTORY_LIMIT);
+  const { data } = await supabase.from(\"messages\").select(\"role, content, created_at\").eq(\"chat_id\", chatId).order(\"created_at\", { ascending: false }).limit(HISTORY_LIMIT);
   return (data ?? []).reverse();
 }
 
 async function saveMessage(chatId: number, role: string, content: string) {
-  await supabase.from("messages").insert({ chat_id: chatId, role, content });
+  await supabase.from(\"messages\").insert({ chat_id: chatId, role, content });
 }
 
 function israelDateParts(base: Date) {
-  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+  const formatter = new Intl.DateTimeFormat(\"en-US\", { timeZone: TZ, year: \"numeric\", month: \"2-digit\", day: \"2-digit\" });
   return formatter.formatToParts(base).reduce((out, part) => { out[part.type] = part.value; return out; }, {} as Record<string, string>);
 }
 
 function timezoneOffset(date: Date): number {
-  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const formatter = new Intl.DateTimeFormat(\"en-US\", { timeZone: TZ, hourCycle: \"h23\", year: \"numeric\", month: \"2-digit\", day: \"2-digit\", hour: \"2-digit\", minute: \"2-digit\", second: \"2-digit\" });
   const parts = formatter.formatToParts(date).reduce((out, part) => { out[part.type] = part.value; return out; }, {} as Record<string, string>);
   return (Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) - date.getTime()) / 60_000;
 }
@@ -494,323 +489,37 @@ function israelTime(hour: number, minute: number, base = new Date(), addDays = 0
   return new Date(naive - timezoneOffset(new Date(naive)) * 60_000);
 }
 
-function reminderScheduleLabel(dueAt: Date, type: ParsedReminder["type"]): string {
-  const time = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(dueAt);
-  if (type === "daily") return `כל יום ב־${time}`;
-  if (type === "weekly") return `כל שבוע ב־${time}`;
-  const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+function reminderScheduleLabel(dueAt: Date, type: ParsedReminder[\"type\"]): string {
+  const time = new Intl.DateTimeFormat(\"he-IL\", { timeZone: TZ, hour: \"2-digit\", minute: \"2-digit\", hour12: false }).format(dueAt);
+  if (type === \"daily\") return `כל יום ב־${time}`;
+  if (type === \"weekly\") return `כל שבוע ב־${time}`;
+  const dayKey = new Intl.DateTimeFormat(\"en-CA\", { timeZone: TZ, year: \"numeric\", month: \"2-digit\", day: \"2-digit\" });
   const dueDay = dayKey.format(dueAt);
   if (dueDay === dayKey.format(new Date())) return `היום ב־${time}`;
   if (dueDay === dayKey.format(new Date(Date.now() + 86_400_000))) return `מחר ב־${time}`;
-  const date = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "numeric", month: "numeric" }).format(dueAt);
+  const date = new Intl.DateTimeFormat(\"he-IL\", { timeZone: TZ, day: \"numeric\", month: \"numeric\" }).format(dueAt);
   return `ב־${date} ב־${time}`;
 }
 
 function reminderLabel(r: ActiveReminder): string {
-  const time = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(r.time));
-  return r.type === "daily" ? `כל יום ב־${time}` : r.type === "weekly" ? `כל שבוע ב־${time}` : `ב־${time}`;
+  const time = new Intl.DateTimeFormat(\"he-IL\", { timeZone: TZ, hour: \"2-digit\", minute: \"2-digit\", hour12: false }).format(new Date(r.time));
+  return r.type === \"daily\" ? `כל יום ב־${time}` : r.type === \"weekly\" ? `כל שבוע ב־${time}` : `ב־${time}`;
 }
 
 async function showReminders(chatId: number) {
-  const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true).order("time");
+  const { data } = await supabase.from(\"reminders\").select(\"id, text, type, time\").eq(\"chat_id\", chatId).eq(\"active\", true).order(\"time\");
   const reminders = (data ?? []) as ActiveReminder[];
   if (!reminders.length) {
-    await sendMessage(chatId, "אין לך כרגע תזכורות פעילות.");
+    await sendMessage(chatId, \"אין לך כרגע תזכורות פעילות.\");
     return;
   }
   const lines = reminders.map((r, i) => `${i + 1}. ${r.text} — ${reminderLabel(r)}`);
   const buttons = reminders.map((r) => [{ text: `🗑️ מחק: ${r.text.slice(0, 24)}`, callback_data: `ask_delete_reminder_${r.id}` }]);
-  await sendMessage(chatId, `התזכורות שלך:\n${lines.join("\n")}`, { inline_keyboard: buttons });
+  await sendMessage(chatId, `התזכורות שלך:\\n${lines.join(\"\\n\")}`, { inline_keyboard: buttons });
 }
 
 async function askDeleteReminder(chatId: number, reminder: ActiveReminder) {
-  await sendMessage(chatId, `למחוק את התזכורת:\n${reminder.text} — ${reminderLabel(reminder)}?`, {
-    inline_keyboard: [
-      [{ text: "🗑️ כן, למחוק", callback_data: `confirm_delete_reminder_${reminder.id}` }, { text: "לבטל", callback_data: "cancel_delete_reminder" }],
-    ],
-  });
-}
-
-async function findReminderForDeletion(chatId: number, text: string): Promise<ActiveReminder | null> {
-  const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
-  const reminders = (data ?? []) as ActiveReminder[];
-  if (!reminders.length) return null;
-  const query = text.replace(/מחק|תמחק|לבטל|תבטל|הסר|תסיר|את התזכורת|תזכורת|אותה|אותו/gu, "").trim().toLowerCase();
-  if (!query || /^(אותה|אותו)?$/u.test(query)) return reminders.length === 1 ? reminders[0] : null;
-  return reminders.find((r) => query.split(/\s+/).some((w) => w.length > 2 && r.text.toLowerCase().includes(w))) ?? null;
-}
-
-function parseReminder(text: string): ParsedReminder | null {
-  const input = text.trim();
-  const now = new Date();
-  let type: ParsedReminder["type"] = "once";
-  let dueAt: Date | null = null;
-  let span = "";
-
-  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב\s*-?\s*|בשעה\s*)?(\\d{1,2})(?::(\\d{2})|\\s*וחצי|\\s*ורבע)?/);
-  if (daily) {
-    const hour = +daily[1];
-    const minute = daily[2] ? +daily[2] : /וחצי/.test(daily[0]) ? 30 : /ורבע/.test(daily[0]) ? 15 : 0;
-    dueAt = israelTime(hour, minute, now);
-    if (dueAt <= now) dueAt = israelTime(hour, minute, now, 1);
-    type = "daily";
-    span = daily[0];
-  }
-
-  if (!dueAt) {
-    const relative = input.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה|שעות|שעה|ימים|יום)/);
-    if (relative) {
-      const amount = +relative[1];
-      const unit = relative[2];
-      const multiplier = /דק/.test(unit) ? 60_000 : /שע/.test(unit) ? 3_600_000 : 86_400_000;
-      dueAt = new Date(now.getTime() + amount * multiplier);
-      span = relative[0];
-    }
-  }
-
-  if (!dueAt) {
-    const day = input.match(/מחרתיים|מחר|היום/);
-    if (day) {
-      const add = day[0] === "מחר" ? 1 : day[0] === "מחרתיים" ? 2 : 0;
-      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);
-      span = day[0] + (time ? time[0] : "");
-    }
-  }
-
-  if (!dueAt) {
-    const weekday = input.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
-    if (weekday) {
-      const target = WEEKDAYS[weekday[1]];
-      let add = (target - now.getDay() + 7) % 7;
-      if (!add) add = 7;
-      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);
-      span = weekday[0] + (time ? time[0] : "");
-    }
-  }
-
-  if (!dueAt) {
-    const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-    if (time) {
-      dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now);
-      if (dueAt <= now) dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now, 1);
-      span = time[0];
-    }
-  }
-
-  if (!dueAt || !span) return null;
-  const task = input.replace(REMINDERTRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\\s,־-]+$/g, "").trim() || "תזכורת";
-  return { dueAt, task, type };
-}
-
-function personalityKeyboard() {
-  return { inline_keyboard: [
-    [{ text: "🧠 המאמן", callback_data: "personality_coach" }, { text: "😈 הציני", callback_data: "personality_cynic" }],
-    [{ text: "🤗 החבר", callback_data: "personality_friend" }, { text: "🪖 הרס\"ר", callback_data: "personality_sergeant" }],
-    [{ text: "🛋️ המטפל", callback_data: "personality_therapist" }, { text: "🔥 המעודד", callback_data: "personality_hype" }],
-    [{ text: "👵 הסבתא", callback_data: "personality_grandma" }, { text: "🧐 הפילוסוף", callback_data: "personality_philosopher" }],
-    [{ text: "😏 הפראייר", callback_data: "personality_frayer" }, { text: "🏠 השכן", callback_data: "personality_neighbor" }],
-  ] };
-}
-
-async function answerCallback(id: string) {
-  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
-}
-
-// Master conversational AI prompt: deep comprehension, culture, quick wit & natural flow
-async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
-  const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
-
-  const prompt = `אתה ${personality.name}. ${personality.prompt}
-
-אתה בוט אישי בוואטסאפ שמתכתב בעברית ישראלית אותנטית, חיה, אינטליגנטית ושנונה מאוד.
-חוקי השיחה:
-- אתה מבין אסוציאציות, ציטוטים משירים (כמו גידי גוב, מוניקה סקס וכו'), סלנג ורמזים דקים. תשתמש בהם בעקיצות ובהומור שלך באופן טבעי.
-- תגיב תמיד לעומק של מה שהמשתמש אמר עכשיו ביחס לכל השיחה האחרונה.
-- אתה לא מוותר לו על דחיינות — תמיד דוחף אותו בצורה משעשעת או תכל'סית לסגור שעה / יעד / משימה / לקחת כדור.
-- ענה ב-1 עד 2 משפטים חדים ומדויקים (לא נאום).
-- אל תשתמש לעולם בניסוחים רובוטיים כמו "אני כאן בשבילך", "אשמח לסייע", "כפי שציינת".
-
-${context ? `הקשר: ${context}` : ""}
-${layers.filter(Boolean).join("\n")}`;
-
-  const generated = await generateAiReply(prompt, history, text);
-  if (!generated?.content) {
-    if (!GEMINI_API_KEY) {
-      return "⚠️ שגיאה: GEMINI_API_KEY חסר בהגדרות השרת של Supabase. יש להזין את המפתח ב-Dashboard תחת Edge Functions Secrets.";
-    }
-    return "רגע, הייתה שגיאה בקבלת תשובה מגוגל. בדוק את ה-API Key ב-Supabase.";
-  }
-
-  return naturalize(generated.content);
-}
-
-async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
-  try {
-    const caller = async (payload: any) => {
-      const model = await extractionModel(GEMINI_API_KEY);
-      const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
-      if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };
-      return { ok: false };
-    };
-
-    const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });
-    await upsertMemories(supabase, chatId, extraction.memories);
-    await forgetMemories(supabase, chatId, extraction.forget);
-    await scheduleFollowUps(supabase, chatId, extraction.followUps);
-
-    const awareness = await runAwarenessExtraction(caller, { userText: text, replyText: reply, history });
-    await upsertEvents(supabase, chatId, awareness.events);
-    await bumpInsideJokes(supabase, chatId, awareness.jokes);
-
-    const profileExtraction = await runProfileExtraction(caller, { userText: text, replyText: reply, history, profile });
-    if (Object.keys(profileExtraction.patch).length) await saveProfile(supabase, chatId, profileExtraction.patch);
-    await upsertGoals(supabase, chatId, profileExtraction.goals);
-  } catch (error) {
-    console.error("[background] pipeline failed:", error);
-  }
-}
-
-Deno.serve(async (req: Request) => {
-  if (req.method !== "POST") return new Response("OK", { status: 200 });
-
-  const reqStart = performance.now();
-  try {
-    const update = await req.json();
-
-    if (update.callback_query) {
-      const callback = update.callback_query;
-      const chatId = callback.message.chat.id as number;
-      const data = String(callback.data ?? "");
-      const user = await touchUser(chatId, callback.from?.first_name ?? "חבר");
-      const activePersonality = resolveActivePersonality(user);
-      await answerCallback(callback.id);
-
-      if (data.startsWith("personality_")) {
-        const personality = data.replace("personality_", "");
-        background(updateUser(chatId, { personality, temp_personality: null, temp_personality_until: null, state: "chatting" }), "personality_switch");
-        await sendMessage(chatId, GREETINGS[personality] ?? "סגור. דבר איתי.");
-      } else if (data === "menu_reminder") {
-        background(updateUser(chatId, { state: "awaiting_reminder_text" }), "menu_reminder_state");
-        await sendMessage(chatId, "מה להזכיר לך?");
-      } else if (data === "menu_personality") {
-        await sendMessage(chatId, "בחר אישיות:", personalityKeyboard());
-      } else if (data.startsWith("done_reminder_")) {
-        const id = data.replace("done_reminder_", "");
-        const { data: reminder } = await supabase.from("reminders").select("id, chat_id, text, type, time").eq("id", id).maybeSingle();
-        if (reminder) {
-          const writes: Promise<unknown>[] = [
-            supabase.from("reminder_completions").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text }),
-            logBehavior(supabase, chatId, "reminder_done", { hour: new Date(reminder.time).getHours() }),
-          ];
-          if (reminder.type === "once") writes.push(supabase.from("reminders").update({ active: false }).eq("id", id));
-          background(Promise.all(writes), "done_reminder_writes");
-          await sendMessage(chatId, pickPersonalized(DONEREPLIES, activePersonality));
-        }
-      } else if (data.startsWith("snooze_")) {
-        const id = data.replace("snooze_", "");
-        background(
-          Promise.all([
-            supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null }).eq("id", id),
-            logBehavior(supabase, chatId, "reminder_snoozed"),
-          ]),
-          "snooze_writes",
-        );
-        await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality));
-      } else if (data.startsWith("ask_delete_reminder_")) {
-        const id = data.replace("ask_delete_reminder_", "");
-        const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", id).eq("chat_id", chatId).eq("active", true).maybeSingle();
-        if (reminder) await askDeleteReminder(chatId, reminder as ActiveReminder);
-      } else if (data.startsWith("confirm_delete_reminder_")) {
-        const id = data.replace("confirm_delete_reminder_", "");
-        const { error } = await supabase.from("reminders").update({ active: false }).eq("id", id).eq("chat_id", chatId);
-        await sendMessage(chatId, error ? "לא הצלחתי למחוק. נסה שוב עוד רגע." : "נמחקה. לא אטריד אותך על זה יותר.");
-      } else if (data === "cancel_delete_reminder") {
-        await sendMessage(chatId, "סבבה, נשארת כמו שהיא.");
-      }
-
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-
-    const message = update.message;
-    if (!message?.text) return new Response(JSON.stringify({ ok: true }), { status: 200 });
-
-    const chatId = message.chat.id as number;
-    const text = String(message.text).trim();
-    const firstName = message.from?.first_name ?? "חבר";
-
-    background(sendChatAction(chatId, "typing"), "initial_typing");
-
-    const user = await touchUser(chatId, firstName);
-    const personality = resolveActivePersonality(user);
-
-    if (text === "/start") {
-      await sendMessage(chatId, `שלום ${firstName}! בחר מי ידבר איתך:`, personalityKeyboard());
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-    if (text === "/menu") {
-      await sendMessage(chatId, "מה בא לך לעשות?", { inline_keyboard: [[{ text: "⏰ תזכורת", callback_data: "menu_reminder" }], [{ text: "🎭 אישיות", callback_data: "menu_personality" }]] });
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-    if (text === "/diag") {
-      const available = await listAvailableModels(GEMINI_API_KEY);
-      const lines = [
-        `מפתח Gemini: ${GEMINI_API_KEY ? "מוגדר ✅" : "חסר ❌"}`,
-        `מודל פעיל: ${goodModel ?? "עוד לא נבחר"}`,
-        `מועמדים: ${candidateModels(available).join(", ")}`,
-        `זמינים למפתח: ${available ? available.filter((m) => /gemini/.test(m)).slice(0, 10).join(", ") : "לא נבדק"}`,
-      ];
-      const probe = await callGoogleGeminiModel(GEMINI_API_KEY, candidateModels(available)[0], "ענה במילה אחת", [], "בדיקה", 8_000);
-      lines.push(`בדיקת שיחה: ${probe.ok ? "עובד ✅" : `נכשל ❌ (${probe.status})`}`);
-      await sendMessage(chatId, lines.join("\n"));
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-
-
-    if (user.state === "awaiting_reminder_text") {
-      background(updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text }), "reminder_text_state");
-      await sendMessage(chatId, "מתי? כתוב שעה כמו 08:30.");
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-
-    if (String(user.state ?? "").startsWith("awaiting_reminder_time_")) {
-      const time = text.match(/^([0-1]?\d|2[0-3]):([0-5]\d)$/);
-      if (!time) {
-        await sendMessage(chatId, "תכתוב שעה בפורמט HH:MM, למשל 08:30.");
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
-      const type = String(user.state).replace("awaiting_reminder_time_", "") as "once" | "daily" | "weekly";
-      const due = israelTime(+time[1], +time[2]);
-      await supabase.from("reminders").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });
-      background(updateUser(chatId, { state: "idle", pending_reminder_text: null }), "reminder_time_state_reset");
-      const manualLabel = reminderScheduleLabel(due, type);
-      await sendMessage(chatId, pickReminderCreated(resolveActivePersonality(user), String(user.pending_reminder_text ?? "זה"), manualLabel));
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-
-    const switchRequest = detectSwitchRequest(text);
-    if (switchRequest?.type === "personality") {
-      const changes = switchRequest.scope === "permanent"
-        ? { personality: switchRequest.key, temp_personality: null, temp_personality_until: null }
-        : { temp_personality: switchRequest.key, temp_personality_until: new Date(Date.now() + 2 * 3_600_000).toISOString() };
-      background(updateUser(chatId, changes), "switch_personality");
-      await sendMessage(chatId, `${PERSONALITIES[switchRequest.key]?.emoji ?? "💬"} סגור, לשעתיים הקרובות.`);
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-    if (switchRequest?.type === "tone") {
-      background(updateUser(chatId, { tone_override: switchRequest.tone }), "switch_tone");
-      await sendMessage(chatId, "סגור.");
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-
-    if (/^(\/reminders|התזכורות שלי|תזכורות)$/u.test(text)) {
-      await showReminders(chatId);
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
-
-    if (/(מחק|תמחק|לבטל|תבטל|הסר|תסיר)/u.test(text) && /(תזכור|כדור|אותה|אותו|ה)/u.test(text)) {
-      const reminder = await findReminderForDeletion(chatId, text);
+  await sendMessage(chatId, `למחוק את התזכורת:\\n${reminder.text} — ${reminderLabel(reminder)}?`, {\n    inline_keyboard: [\n      [{ text: \"🗑️ כן, למחוק\", callback_data: `confirm_delete_reminder_${reminder.id}` }, { text: \"לבטל\", callback_data: \"cancel_delete_reminder\" }],\n    ],\n  });\n}\n\nasync function findReminderForDeletion(chatId: number, text: string): Promise<ActiveReminder | null> {\n  const { data } = await supabase.from(\"reminders\").select(\"id, text, type, time\").eq(\"chat_id\", chatId).eq(\"active\", true);\n  const reminders = (data ?? []) as ActiveReminder[];\n  if (!reminders.length) return null;\n  const query = text.replace(/מחק|תמחק|לבטל|תבטל|הסר|תסיר|את התזכורת|תזכורת|אותה|אותו/gu, \"\").trim().toLowerCase();\n  if (!query || /^(אותה|אותו)?$/u.test(query)) return reminders.length === 1 ? reminders[0] : null;\n  return reminders.find((r) => query.split(/\\s+/).some((w) => w.length > 2 && r.text.toLowerCase().includes(w))) ?? null;\n}\n\nfunction parseReminder(text: string): ParsedReminder | null {\n  const input = text.trim();\n  const now = new Date();\n  let type: ParsedReminder[\"type\"] = \"once\";\n  let dueAt: Date | null = null;\n  let span = \"\";\n\n  const daily = input.match(/כל\\s*(?:יום|בוקר|ערב|לילה)\\s*(?:ב\\s*-?\\s*|בשעה\\s*)?(\\\\d{1,2})(?::(\\\\d{2})|\\\\s*וחצי|\\\\s*ורבע)?/);\n  if (daily) {\n    const hour = +daily[1];\n    const minute = daily[2] ? +daily[2] : /וחצי/.test(daily[0]) ? 30 : /ורבע/.test(daily[0]) ? 15 : 0;\n    dueAt = israelTime(hour, minute, now);\n    if (dueAt <= now) dueAt = israelTime(hour, minute, now, 1);\n    type = \"daily\";\n    span = daily[0];\n  }\n\n  if (!dueAt) {\n    const relative = input.match(/(?:עוד|בעוד)\\s*(\\d+)\\s*(דקות|דקה|שעות|שעה|ימים|יום)/);\n    if (relative) {\n      const amount = +relative[1];\n      const unit = relative[2];\n      const multiplier = /דק/.test(unit) ? 60_000 : /שע/.test(unit) ? 3_600_000 : 86_400_000;\n      dueAt = new Date(now.getTime() + amount * multiplier);\n      span = relative[0];\n    }\n  }\n\n  if (!dueAt) {\n    const day = input.match(/מחרתיים|מחר|היום/);\n    if (day) {\n      const add = day[0] === \"מחר\" ? 1 : day[0] === \"מחרתיים\" ? 2 : 0;\n      const time = input.match(/(?:ב\\s*-?\\s*|בשעה\\s*)(\\d{1,2})(?::(\\d{2}))?/);\n      dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);\n      span = day[0] + (time ? time[0] : \"\");\n    }\n  }\n\n  if (!dueAt) {\n    const weekday = input.match(/ביום\\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);\n    if (weekday) {\n      const target = WEEKDAYS[weekday[1]];\n      let add = (target - now.getDay() + 7) % 7;\n      if (!add) add = 7;\n      const time = input.match(/(?:ב\\s*-?\\s*|בשעה\\s*)(\\d{1,2})(?::(\\d{2}))?/);\n      dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);\n      span = weekday[0] + (time ? time[0] : \"\");\n    }\n  }\n\n  if (!dueAt) {\n    const time = input.match(/(?:ב\\s*-?\\s*|בשעה\\s*)(\\d{1,2})(?::(\\d{2}))?/);\n    if (time) {\n      dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now);\n      if (dueAt <= now) dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now, 1);\n      span = time[0];\n    }\n  }\n\n  if (!dueAt || !span) return null;\n  const task = input.replace(REMINDERTRIGGER, \"\").replace(span, \"\").replace(/^[\\s,־-]+|[\\\\s,־-]+$/g, \"\").trim() || \"תזכורת\";\n  return { dueAt, task, type };\n}\n\nfunction personalityKeyboard() {\n  return { inline_keyboard: [\n    [{ text: \"🧠 המאמן\", callback_data: \"personality_coach\" }, { text: \"😈 הציני\", callback_data: \"personality_cynic\" }],\n    [{ text: \"🤗 החבר\", callback_data: \"personality_friend\" }, { text: \"🪖 הרס\\\"ר\", callback_data: \"personality_sergeant\" }],\n    [{ text: \"🛋️ המטפל\", callback_data: \"personality_therapist\" }, { text: \"🔥 המעודד\", callback_data: \"personality_hype\" }],\n    [{ text: \"👵 הסבתא\", callback_data: \"personality_grandma\" }, { text: \"🧐 הפילוסוף\", callback_data: \"personality_philosopher\" }],\n    [{ text: \"😏 הפראייר\", callback_data: \"personality_frayer\" }, { text: \"🏠 השכן\", callback_data: \"personality_neighbor\" }],\n  ] };\n}\n\nasync function answerCallback(id: string) {\n  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: \"POST\", headers: { \"Content-Type\": \"application/json\" }, body: JSON.stringify({ callback_query_id: id }) });\n}\n\n// Master conversational AI prompt: deep comprehension, culture, quick wit & natural flow\nasync function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {\n  const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;\n\n  const prompt = `אתה ${personality.name}. ${personality.prompt}\n\nאתה בוט אישי בוואטסאפ שמתכתב בעברית ישראלית אותנטית, חיה, אינטליגנטית ושנונה מאוד.\nחוקי השיחה:\n- אתה מבין אסוציאציות, ציטוטים משירים (כמו גידי גוב, מוניקה סקס וכו'), סלנג ורמזים דקים. תשתמש בהם בעקיצות ובהומור שלך באופן טבעי.\n- תגיב תמיד לעומק של מה שהמשתמש אמר עכשיו ביחס לכל השיחה האחרונה.\n- אתה לא מוותר לו על דחיינות — תמיד דוחף אותו בצורה משעשעת או תכל'סית לסגור שעה / יעד / משימה / לקחת כדור.\n- ענה ב-1 עד 2 משפטים חדים ומדויקים (לא נאום).\n- אל תשתמש לעולם בניסוחים רובוטיים כמו \"אני כאן בשבילך\", \"אשמח לסייע\", \"כפי שציינת\".\n\n${context ? `הקשר: ${context}` : \"\"}\n${layers.filter(Boolean).join(\"\\n\")}`;\n\n  const generated = await generateAiReply(prompt, history, text);\n  if (!generated?.content) {\n    if (!GEMINI_API_KEY) {\n      return \"⚠️ שגיאה: GEMINI_API_KEY חסר בהגדרות השרת של Supabase. יש להזין את המפתח ב-Dashboard תחת Edge Functions Secrets.\";\n    }\n    return \"רגע, הייתה שגיאה בקבלת תשובה מגוגל. בדוק את ה-API Key ב-Supabase.\";\n  }\n\n  return naturalize(generated.content);\n}\n\nasync function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {\n  try {\n    const caller = async (payload: any) => {\n      const model = await extractionModel(GEMINI_API_KEY);\n      const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, \"חלץ נתוני זיכרון ב-JSON בלבד\", [], JSON.stringify(payload), 8_000);\n      if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };\n      return { ok: false };\n    };\n\n    const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });\n    await upsertMemories(supabase, chatId, extraction.memories);\n    await forgetMemories(supabase, chatId, extraction.forget);\n    await scheduleFollowUps(supabase, chatId, extraction.followUps);\n\n    const awareness = await runAwarenessExtraction(caller, { userText: text, replyText: reply, history });\n    await upsertEvents(supabase, chatId, awareness.events);\n    await bumpInsideJokes(supabase, chatId, awareness.jokes);\n\n    const profileExtraction = await runProfileExtraction(caller, { userText: text, replyText: reply, history, profile });\n    if (Object.keys(profileExtraction.patch).length) await saveProfile(supabase, chatId, profileExtraction.patch);\n    await upsertGoals(supabase, chatId, profileExtraction.goals);\n  } catch (error) {\n    console.error(\"[background] pipeline failed:\", error);\n  }\n}\n\nDeno.serve(async (req: Request) => {\n  if (req.method !== \"POST\") return new Response(\"OK\", { status: 200 });\n\n  const reqStart = performance.now();\n  try {\n    const update = await req.json();\n\n    if (update.callback_query) {\n      const callback = update.callback_query;\n      const chatId = callback.message.chat.id as number;\n      const data = String(callback.data ?? \"\");\n      const user = await touchUser(chatId, callback.from?.first_name ?? \"חבר\");\n      const activePersonality = resolveActivePersonality(user);\n      await answerCallback(callback.id);\n\n      if (data.startsWith(\"personality_\")) {\n        const personality = data.replace(\"personality_\", \"\");\n        background(updateUser(chatId, { personality, temp_personality: null, temp_personality_until: null, state: \"chatting\" }), \"personality_switch\");\n        await sendMessage(chatId, GREETINGS[personality] ?? \"סגור. דבר איתי.\");\n      } else if (data === \"menu_reminder\") {\n        background(updateUser(chatId, { state: \"awaiting_reminder_text\" }), \"menu_reminder_state\");\n        await sendMessage(chatId, \"מה להזכיר לך?\");\n      } else if (data === \"menu_personality\") {\n        await sendMessage(chatId, \"בחר אישיות:\", personalityKeyboard());\n      } else if (data.startsWith(\"done_reminder_\")) {\n        const id = data.replace(\"done_reminder_\", \"\");\n        const { data: reminder } = await supabase.from(\"reminders\").select(\"id, chat_id, text, type, time\").eq(\"id\", id).maybeSingle();\n        if (reminder) {\n          const writes: Promise<unknown>[] = [\n            supabase.from(\"reminder_completions\").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text }),\n            logBehavior(supabase, chatId, \"reminder_done\", { hour: new Date(reminder.time).getHours() }),\n          ];\n          if (reminder.type === \"once\") writes.push(supabase.from(\"reminders\").update({ active: false }).eq(\"id\", id));\n          background(Promise.all(writes), \"done_reminder_writes\");\n          await sendMessage(chatId, pickPersonalized(DONEREPLIES, activePersonality));\n        }\n      } else if (data.startsWith(\"snooze_\")) {\n        const id = data.replace(\"snooze_\", \"\");\n        background(\n          Promise.all([\n            supabase.from(\"reminders\").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null }).eq(\"id\", id),\n            logBehavior(supabase, chatId, \"reminder_snoozed\"),\n          ]),\n          \"snooze_writes\",\n        );\n        await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality));\n      } else if (data.startsWith(\"ask_delete_reminder_\")) {\n        const id = data.replace(\"ask_delete_reminder_\", \"\");\n        const { data: reminder } = await supabase.from(\"reminders\").select(\"id, text, type, time\").eq(\"id\", id).eq(\"chat_id\", chatId).eq(\"active\", true).maybeSingle();\n        if (reminder) await askDeleteReminder(chatId, reminder as ActiveReminder);\n      } else if (data.startsWith(\"confirm_delete_reminder_\")) {\n        const id = data.replace(\"confirm_delete_reminder_\", \"\");\n        const { error } = await supabase.from(\"reminders\").update({ active: false }).eq(\"id\", id).eq(\"chat_id\", chatId);\n        await sendMessage(chatId, error ? \"לא הצלחתי למחוק. נסה שוב עוד רגע.\" : \"נמחקה. לא אטריד אותך על זה יותר.\");\n      } else if (data === \"cancel_delete_reminder\") {\n        await sendMessage(chatId, \"סבבה, נשארת כמו שהיא.\");\n      }\n\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n\n    const message = update.message;\n    if (!message?.text) return new Response(JSON.stringify({ ok: true }), { status: 200 });\n\n    const chatId = message.chat.id as number;\n    const text = String(message.text).trim();\n    const firstName = message.from?.first_name ?? \"חבר\";\n\n    background(sendChatAction(chatId, \"typing\"), \"initial_typing\");\n\n    const user = await touchUser(chatId, firstName);\n    const personality = resolveActivePersonality(user);\n\n    if (text === \"/start\") {\n      await sendMessage(chatId, `שלום ${firstName}! בחר מי ידבר איתך:`, personalityKeyboard());\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n    if (text === \"/menu\") {\n      await sendMessage(chatId, \"מה בא לך לעשות?\", { inline_keyboard: [[{ text: \"⏰ תזכורת\", callback_data: \"menu_reminder\" }], [{ text: \"🎭 אישיות\", callback_data: \"menu_personality\" }]] });\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n    if (text === \"/diag\") {\n      const available = await listAvailableModels(GEMINI_API_KEY);\n      const lines = [\n        `מפתח Gemini: ${GEMINI_API_KEY ? \"מוגדר ✅\" : \"חסר ❌\"}`,\n        `מודל פעיל: ${goodModel ?? \"עוד לא נבחר\"}`,\n        `מועמדים: ${candidateModels(available).join(\", \")}`,\n        `זמינים למפתח: ${available ? available.filter((m) => /gemini/.test(m)).slice(0, 10).join(\", \") : \"לא נבדק\"}`,\n      ];\n      const probe = await callGoogleGeminiModel(GEMINI_API_KEY, candidateModels(available)[0], \"ענה במילה אחת\", [], \"בדיקה\", 8_000);\n      lines.push(`בדיקת שיחה: ${probe.ok ? \"עובד ✅\" : `נכשל ❌ (${probe.status})`}`);\n      await sendMessage(chatId, lines.join(\"\\n\"));\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n\n    if (user.state === \"awaiting_reminder_text\") {\n      background(updateUser(chatId, { state: \"awaiting_reminder_time_once\", pending_reminder_text: text }), \"reminder_text_state\");\n      await sendMessage(chatId, \"מתי? כתוב שעה כמו 08:30.\");\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n\n    if (String(user.state ?? \"\").startsWith(\"awaiting_reminder_time_\")) {\n      const time = text.match(/^([0-1]?\\d|2[0-3]):([0-5]\\d)$/);\n      if (!time) {\n        await sendMessage(chatId, \"תכתוב שעה בפורמט HH:MM, למשל 08:30.\");\n        return new Response(JSON.stringify({ ok: true }), { status: 200 });\n      }\n      const type = String(user.state).replace(\"awaiting_reminder_time_\", \"\") as \"once\" | \"daily\" | \"weekly\";\n      const due = israelTime(+time[1], +time[2]);\n      await supabase.from(\"reminders\").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });\n      background(updateUser(chatId, { state: \"idle\", pending_reminder_text: null }), \"reminder_time_state_reset\");\n      const manualLabel = reminderScheduleLabel(due, type);\n      await sendMessage(chatId, pickReminderCreated(resolveActivePersonality(user), String(user.pending_reminder_text ?? \"זה\"), manualLabel));\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n\n    const switchRequest = detectSwitchRequest(text);\n    if (switchRequest?.type === \"personality\") {\n      const changes = switchRequest.scope === \"permanent\"\n        ? { personality: switchRequest.key, temp_personality: null, temp_personality_until: null }\n        : { temp_personality: switchRequest.key, temp_personality_until: new Date(Date.now() + 2 * 3_600_000).toISOString() };\n      background(updateUser(chatId, changes), \"switch_personality\");\n      await sendMessage(chatId, `${PERSONALITIES[switchRequest.key]?.emoji ?? \"💬\"} סגור, לשעתיים הקרובות.`);\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n    if (switchRequest?.type === \"tone\") {\n      background(updateUser(chatId, { tone_override: switchRequest.tone }), \"switch_tone\");\n      await sendMessage(chatId, \"סגור.\");\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n\n    if (/^(\\/reminders|התזכורות שלי|תזכורות)$/u.test(text)) {\n      await showReminders(chatId);\n      return new Response(JSON.stringify({ ok: true }), { status: 200 });\n    }\n\n    if (/(מחק|תמחק|לבטל|תבטל|הסר|תסיר)/u.test(text) && /(תזכור|כדור|אותה|אותו|ה)/u.test(text)) {\n      const reminder = await findReminderForDeletion(chatId, text);
       if (reminder) {
         await askDeleteReminder(chatId, reminder);
       } else {
