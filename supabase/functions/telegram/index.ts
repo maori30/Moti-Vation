@@ -340,7 +340,64 @@ async function callGoogleGeminiModel(
   }
 }
 
-// Generate AI reply through sequence of active official Google Gemini models
+// Preference order: rolling "latest" aliases first (always the current generation),
+// then explicit current-gen models. Retired 1.5 models are intentionally absent.
+const MODEL_PREFERENCE = [
+  "gemini-flash-latest",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+];
+
+// Models that answered/failed recently, so we don't re-try dead ones on every message.
+const modelHealth = new Map<string, number>(); // model -> ok(1) / dead-until timestamp
+let goodModel: string | null = null;
+let availableModels: string[] | null = null;
+let availableCheckedAt = 0;
+
+async function listAvailableModels(apiKey: string): Promise<string[] | null> {
+  if (availableModels && Date.now() - availableCheckedAt < 6 * 3_600_000) return availableModels;
+  try {
+    const res = await fetchWithTimeout(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`,
+      { method: "GET" },
+      5_000,
+    );
+    if (!res.ok) return availableModels;
+    const data = await res.json();
+    const names = (data?.models ?? [])
+      .filter((m: any) => (m?.supportedGenerationMethods ?? []).includes("generateContent"))
+      .map((m: any) => String(m?.name ?? "").replace(/^models\//, ""));
+    if (names.length) {
+      availableModels = names;
+      availableCheckedAt = Date.now();
+      console.log(`[gemini] available models: ${names.slice(0, 12).join(", ")}`);
+    }
+    return availableModels;
+  } catch (err) {
+    console.error("[gemini] model discovery failed:", err);
+    return availableModels;
+  }
+}
+
+function candidateModels(available: string[] | null): string[] {
+  const now = Date.now();
+  const preferred = MODEL_PREFERENCE.filter((model) => {
+    const deadUntil = modelHealth.get(model) ?? 0;
+    if (deadUntil > now) return false;
+    return !available || available.includes(model);
+  });
+  // If discovery says none of our preferred names exist, fall back to whatever flash models the key has.
+  if (!preferred.length && available?.length) {
+    return available.filter((m) => /flash/.test(m) && !/1\.5|8b|thinking|image|tts|embedding/.test(m)).slice(0, 3);
+  }
+  const ordered = goodModel && preferred.includes(goodModel)
+    ? [goodModel, ...preferred.filter((m) => m !== goodModel)]
+    : preferred;
+  return ordered.length ? ordered : ["gemini-2.5-flash"];
+}
+
+// Generate AI reply, trying the current-generation Gemini models in order.
 async function generateAiReply(
   prompt: string,
   history: HistoryMessage[],
@@ -352,24 +409,34 @@ async function generateAiReply(
     return null;
   }
 
-  // 1. Try Gemini 1.5 Pro
-  let res = await callGoogleGeminiModel(apiKey, "gemini-1.5-pro", prompt, history, text, 8_000);
-  if (res.ok) return { content: res.content };
+  // Use the cached list when we have one; only block on discovery if we've never checked.
+  const available = availableModels ?? await listAvailableModels(apiKey);
+  if (availableModels) void listAvailableModels(apiKey);
 
-  // 2. Try Gemini 2.0 Flash
-  res = await callGoogleGeminiModel(apiKey, "gemini-2.0-flash", prompt, history, text, 8_000);
-  if (res.ok) return { content: res.content };
-
-  // 3. Try Gemini 1.5 Flash
-  res = await callGoogleGeminiModel(apiKey, "gemini-1.5-flash", prompt, history, text, 8_000);
-  if (res.ok) return { content: res.content };
-
-  // 4. Try Gemini 1.5 Flash 8B
-  res = await callGoogleGeminiModel(apiKey, "gemini-1.5-flash-8b", prompt, history, text, 8_000);
-  if (res.ok) return { content: res.content };
+  for (const model of candidateModels(available)) {
+    const res = await callGoogleGeminiModel(apiKey, model, prompt, history, text, 9_000);
+    if (res.ok) {
+      goodModel = model;
+      modelHealth.set(model, 0);
+      return { content: res.content, debug: model };
+    }
+    // 404/403 = model gone or not allowed for this key: park it for an hour.
+    if (res.status === 404 || res.status === 403 || res.status === 400) {
+      modelHealth.set(model, Date.now() + 3_600_000);
+      if (goodModel === model) goodModel = null;
+      availableCheckedAt = 0; // force a fresh discovery next time
+    }
+  }
 
   return null;
 }
+
+async function extractionModel(apiKey: string): Promise<string> {
+  const available = availableModels ?? await listAvailableModels(apiKey);
+  const light = ["gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash"];
+  return light.find((m) => !available || available.includes(m)) ?? candidateModels(available)[0];
+}
+
 
 async function sendMessage(chatId: number, text: string, keyboard?: object) {
   const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
