@@ -302,7 +302,7 @@ async function callGoogleGeminiModel(
   history: HistoryMessage[],
   text: string,
   timeoutMs = 9_000,
-): Promise<{ ok: true; content: string } | { ok: false }> {
+): Promise<{ ok: true; content: string } | { ok: false; status: number; error: string }> {
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     const contents = buildGeminiContents(history, text);
@@ -333,10 +333,10 @@ async function callGoogleGeminiModel(
 
     const errText = await res.text();
     console.error(`[gemini-error:${model}] HTTP ${res.status}: ${errText.slice(0, 300)}`);
-    return { ok: false };
+    return { ok: false, status: res.status, error: errText };
   } catch (err) {
     console.error(`[gemini-exception:${model}] error:`, err);
-    return { ok: false };
+    return { ok: false, status: 0, error: String(err) };
   }
 }
 
@@ -345,7 +345,7 @@ async function generateAiReply(
   prompt: string,
   history: HistoryMessage[],
   text: string,
-): Promise<string | null> {
+): Promise<{ content: string; debug?: string } | null> {
   const apiKey = GEMINI_API_KEY;
   if (!apiKey) {
     console.error("[gemini-critical] GEMINI_API_KEY is empty in Supabase Environment Secrets!");
@@ -354,19 +354,19 @@ async function generateAiReply(
 
   // 1. Try Gemini 1.5 Pro
   let res = await callGoogleGeminiModel(apiKey, "gemini-1.5-pro", prompt, history, text, 8_000);
-  if (res.ok) return res.content;
+  if (res.ok) return { content: res.content };
 
   // 2. Try Gemini 2.0 Flash
   res = await callGoogleGeminiModel(apiKey, "gemini-2.0-flash", prompt, history, text, 8_000);
-  if (res.ok) return res.content;
+  if (res.ok) return { content: res.content };
 
   // 3. Try Gemini 1.5 Flash
   res = await callGoogleGeminiModel(apiKey, "gemini-1.5-flash", prompt, history, text, 8_000);
-  if (res.ok) return res.content;
+  if (res.ok) return { content: res.content };
 
   // 4. Try Gemini 1.5 Flash 8B
   res = await callGoogleGeminiModel(apiKey, "gemini-1.5-flash-8b", prompt, history, text, 8_000);
-  if (res.ok) return res.content;
+  if (res.ok) return { content: res.content };
 
   return null;
 }
@@ -533,7 +533,7 @@ function parseReminder(text: string): ParsedReminder | null {
   }
 
   if (!dueAt || !span) return null;
-  const task = input.replace(REMINDERTRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim() || "תזכורת";
+  const task = input.replace(REMINDERTRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\\s,־-]+$/g, "").trim() || "תזכורת";
   return { dueAt, task, type };
 }
 
@@ -569,16 +569,14 @@ ${context ? `הקשר: ${context}` : ""}
 ${layers.filter(Boolean).join("\n")}`;
 
   const generated = await generateAiReply(prompt, history, text);
-  if (!generated) {
-    const options = [
-      "אני איתך. מה קורה?",
-      "פה לגמרי, מה על הפרק?",
-      "שומע אותך מצוין. מה אמרת?",
-    ];
-    return options[Math.floor(Math.random() * options.length)];
+  if (!generated?.content) {
+    if (!GEMINI_API_KEY) {
+      return "⚠️ שגיאה: GEMINI_API_KEY חסר בהגדרות השרת של Supabase. יש להזין את המפתח ב-Dashboard תחת Edge Functions Secrets.";
+    }
+    return "רגע, הייתה שגיאה בקבלת תשובה מגוגל. בדוק את ה-API Key ב-Supabase.";
   }
 
-  return naturalize(generated);
+  return naturalize(generated.content);
 }
 
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
