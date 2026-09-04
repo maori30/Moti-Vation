@@ -753,6 +753,20 @@ Deno.serve(async (req: Request) => {
       await sendMessage(chatId, "מה בא לך לעשות?", { inline_keyboard: [[{ text: "⏰ תזכורת", callback_data: "menu_reminder" }], [{ text: "🎭 אישיות", callback_data: "menu_personality" }]] });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
+    if (text === "/diag") {
+      const available = await listAvailableModels(GEMINI_API_KEY);
+      const lines = [
+        `מפתח Gemini: ${GEMINI_API_KEY ? "מוגדר ✅" : "חסר ❌"}`,
+        `מודל פעיל: ${goodModel ?? "עוד לא נבחר"}`,
+        `מועמדים: ${candidateModels(available).join(", ")}`,
+        `זמינים למפתח: ${available ? available.filter((m) => /gemini/.test(m)).slice(0, 10).join(", ") : "לא נבדק"}`,
+      ];
+      const probe = await callGoogleGeminiModel(GEMINI_API_KEY, candidateModels(available)[0], "ענה במילה אחת", [], "בדיקה", 8_000);
+      lines.push(`בדיקת שיחה: ${probe.ok ? "עובד ✅" : `נכשל ❌ (${probe.status})`}`);
+      await sendMessage(chatId, lines.join("\n"));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
 
     if (user.state === "awaiting_reminder_text") {
       background(updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text }), "reminder_text_state");
