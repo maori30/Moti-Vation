@@ -279,60 +279,23 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 12_0
   finally { clearTimeout(timer); }
 }
 
-function buildOpenAiMessages(systemPrompt: string, history: HistoryMessage[], text: string) {
-  const messages: Array<{ role: string; content: string }> = [
-    { role: "system", content: systemPrompt },
-  ];
+function buildGeminiContents(history: HistoryMessage[], text: string) {
+  const contents = [];
   for (const msg of history) {
-    messages.push({
-      role: msg.role === "assistant" ? "assistant" : "user",
-      content: msg.content,
+    contents.push({
+      role: msg.role === "assistant" ? "model" : "user",
+      parts: [{ text: msg.content }],
     });
   }
-  messages.push({ role: "user", content: text });
-  return messages;
+  contents.push({
+    role: "user",
+    parts: [{ text }],
+  });
+  return contents;
 }
 
-async function callGeminiOpenAiCompat(
-  apiKey: string,
-  model: string,
-  messages: Array<{ role: string; content: string }>,
-  timeoutMs = 9_000,
-): Promise<{ ok: true; content: string } | { ok: false }> {
-  try {
-    const url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-    const res = await fetchWithTimeout(
-      url,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: 0.88,
-          max_tokens: 350,
-        }),
-      },
-      timeoutMs,
-    );
-    if (res.ok) {
-      const data = await res.json();
-      const content = data?.choices?.[0]?.message?.content?.trim();
-      if (content) return { ok: true, content };
-    }
-    const err = await res.text();
-    console.warn(`[gemini-openai:${model}] HTTP ${res.status}: ${err.slice(0, 200)}`);
-    return { ok: false };
-  } catch (err) {
-    console.warn(`[gemini-openai:${model}] error:`, err);
-    return { ok: false };
-  }
-}
-
-async function callGeminiNative(
+// Direct official Google Gemini API call (Standard REST Endpoint)
+async function callGoogleGeminiModel(
   apiKey: string,
   model: string,
   prompt: string,
@@ -342,10 +305,8 @@ async function callGeminiNative(
 ): Promise<{ ok: true; content: string } | { ok: false }> {
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    const contents = [
-      ...history.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-      { role: "user", parts: [{ text }] },
-    ];
+    const contents = buildGeminiContents(history, text);
+
     const res = await fetchWithTimeout(
       url,
       {
@@ -354,45 +315,58 @@ async function callGeminiNative(
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: prompt }] },
           contents,
-          generationConfig: { temperature: 0.88, maxOutputTokens: 350 },
+          generationConfig: {
+            temperature: 0.88,
+            topP: 0.9,
+            maxOutputTokens: 350,
+          },
         }),
       },
       timeoutMs,
     );
+
     if (res.ok) {
       const data = await res.json();
       const content = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("").trim();
       if (content) return { ok: true, content };
     }
+
+    const errText = await res.text();
+    console.error(`[gemini-error:${model}] HTTP ${res.status}: ${errText.slice(0, 300)}`);
     return { ok: false };
   } catch (err) {
-    console.warn(`[gemini-native:${model}] error:`, err);
+    console.error(`[gemini-exception:${model}] error:`, err);
     return { ok: false };
   }
 }
 
+// Generate AI reply through sequence of active official Google Gemini models
 async function generateAiReply(
   prompt: string,
   history: HistoryMessage[],
   text: string,
 ): Promise<string | null> {
   const apiKey = GEMINI_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) {
+    console.error("[gemini-critical] GEMINI_API_KEY is empty in Supabase Environment Secrets!");
+    return null;
+  }
 
-  const messages = buildOpenAiMessages(prompt, history, text);
-
-  // Sequence of advanced models: Pro -> Flash 2.0 -> Flash 1.5
-  let res = await callGeminiOpenAiCompat(apiKey, "gemini-1.5-pro", messages, 8_000);
+  // 1. Try Gemini 1.5 Pro
+  let res = await callGoogleGeminiModel(apiKey, "gemini-1.5-pro", prompt, history, text, 8_000);
   if (res.ok) return res.content;
 
-  res = await callGeminiOpenAiCompat(apiKey, "gemini-2.0-flash", messages, 8_000);
+  // 2. Try Gemini 2.0 Flash
+  res = await callGoogleGeminiModel(apiKey, "gemini-2.0-flash", prompt, history, text, 8_000);
   if (res.ok) return res.content;
 
-  res = await callGeminiOpenAiCompat(apiKey, "gemini-1.5-flash", messages, 8_000);
+  // 3. Try Gemini 1.5 Flash
+  res = await callGoogleGeminiModel(apiKey, "gemini-1.5-flash", prompt, history, text, 8_000);
   if (res.ok) return res.content;
 
-  const nativeRes = await callGeminiNative(apiKey, "gemini-1.5-flash", prompt, history, text, 8_000);
-  if (nativeRes.ok) return nativeRes.content;
+  // 4. Try Gemini 1.5 Flash 8B
+  res = await callGoogleGeminiModel(apiKey, "gemini-1.5-flash-8b", prompt, history, text, 8_000);
+  if (res.ok) return res.content;
 
   return null;
 }
@@ -610,8 +584,7 @@ ${layers.filter(Boolean).join("\n")}`;
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
     const caller = async (payload: any) => {
-      const messages = [{ role: "user", content: JSON.stringify(payload) }];
-      const res = await callGeminiOpenAiCompat(GEMINI_API_KEY, "gemini-1.5-flash", messages, 8_000);
+      const res = await callGoogleGeminiModel(GEMINI_API_KEY, "gemini-1.5-flash", "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
       if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };
       return { ok: false };
     };
