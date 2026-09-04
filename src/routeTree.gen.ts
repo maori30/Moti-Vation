@@ -48,20 +48,10 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths:
-    | '/'
-    | '/sitemap.xml'
-    | '/blog/stop-procrastination-with-ai'
+  fullPaths: '/' | '/sitemap.xml' | '/blog/stop-procrastination-with-ai'
   fileRoutesByTo: FileRoutesByTo
-  to:
-    | '/'
-    | '/sitemap.xml'
-    | '/blog/stop-procrastination-with-ai'
-  id:
-    | '__root__'
-    | '/'
-    | '/sitemap.xml'
-    | '/blog/stop-procrastination-with-ai'
+  to: '/' | '/sitemap.xml' | '/blog/stop-procrastination-with-ai'
+  id: '__root__' | '/' | '/sitemap.xml' | '/blog/stop-procrastination-with-ai'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
