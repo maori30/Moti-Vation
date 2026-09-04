@@ -294,7 +294,7 @@ function buildOpenAiMessages(systemPrompt: string, history: HistoryMessage[], te
   return messages;
 }
 
-// Unified call to Google Gemini via OpenAI-compatibility endpoint
+// Robust OpenAI compatibility API for Google Gemini models
 async function callGeminiOpenAiCompat(
   apiKey: string,
   model: string,
@@ -326,10 +326,10 @@ async function callGeminiOpenAiCompat(
       if (content) return { ok: true, content };
     }
     const err = await res.text();
-    console.warn(`[gemini-openai:${model}] HTTP ${res.status}: ${err.slice(0, 200)}`);
+    console.error(`[gemini-openai:${model}] HTTP ${res.status}: ${err.slice(0, 300)}`);
     return { ok: false };
   } catch (err) {
-    console.warn(`[gemini-openai:${model}] error:`, err);
+    console.error(`[gemini-openai:${model}] error:`, err);
     return { ok: false };
   }
 }
@@ -367,9 +367,11 @@ async function callGeminiNative(
       const content = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("").trim();
       if (content) return { ok: true, content };
     }
+    const err = await res.text();
+    console.error(`[gemini-native:${model}] HTTP ${res.status}: ${err.slice(0, 300)}`);
     return { ok: false };
   } catch (err) {
-    console.warn(`[gemini-native:${model}] error:`, err);
+    console.error(`[gemini-native:${model}] error:`, err);
     return { ok: false };
   }
 }
@@ -381,7 +383,10 @@ async function generateAiReply(
   text: string,
 ): Promise<string | null> {
   const apiKey = GEMINI_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) {
+    console.error("[gemini] GEMINI_API_KEY is not defined in environment variables!");
+    return null;
+  }
 
   const messages = buildOpenAiMessages(prompt, history, text);
 
