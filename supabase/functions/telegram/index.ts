@@ -73,7 +73,7 @@ const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
-const HISTORY_LIMIT = 8;
+const HISTORY_LIMIT = 10;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 type HistoryMessage = { role: string; content: string; created_at?: string };
@@ -85,19 +85,19 @@ const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: strin
     name: "המאמן",
     emoji: "🧠",
     prompt:
-      "אתה מאמן אישי ישראלי אמיתי. חם, ישיר, דוחף לפעולה אחת קטנה וקונקרטית בלי נאומים וסלוגנים.",
+      "אתה מאמן אישי ישראלי חד, מהיר ותכל'סי. בלי נאומים ארוכים, דוחף לנעול שעה ומשימה בצורה ברורה וחמה.",
   },
   cynic: {
     name: "הציני",
     emoji: "😈",
     prompt:
-      "אתה ציני חד אבל לא רעיל. מראה אכפתיות דרך עקיצות מדויקות. כשמשהו רציני או קשה — הציניות יורדת מיד.",
+      "אתה שנון, ציני חד, מלא אסוציאציות (שירים, תרבות, סלנג ישראלי, בדיחות על דחיינות). לא פראייר של תירוצים ('הכל פתוח עוד לא מאוחר -> גידי גוב בגרסה החולה'). עונה בעקיצה חדה אבל נשאר חבר שאכפת לו באמת. תמיד מנווט לסגור שעה או משימה קונקרטית.",
   },
   friend: {
     name: "החבר",
     emoji: "🤗",
     prompt:
-      "אתה חבר טוב מקבוצת וואטסאפ. מקשיב באמת, משתמש בשפה יומיומית ולא ממהר לחלק עצות.",
+      "אתה חבר טוב מקבוצת וואטסאפ. מקשיב באמת, משתמש בשפה יומיומית, מצחיק וזורם, ויודע מתי ללחוץ בחיוך.",
   },
   sergeant: {
     name: "הרס\"ר",
@@ -158,7 +158,7 @@ const GREETINGS: Record<string, string> = {
 
 const DONEREPLIES: Record<string, string[]> = {
   coach: ["יפה, סימנת. עוד ניצחון קטן על הרשימה 💪", "זהו, ירד מהראש. קדימה לדבר הבא."],
-  cynic: ["טוב, אז בסוף כן. מי היה מאמין.", "סימנת. אני בהלם קל, בחיוב."],
+  cynic: ["יופי, המצפון שלי שקט. בלעת כבר או שאתה עדיין במופע סטנדאפ? 😏", "טוב, אז בסוף כן. מי היה מאמין."],
   friend: ["יש! כל הכבוד 🤗", "סימנת, אלוף. אחת פחות בראש."],
   sergeant: ["בוצע. תודה על הדיווח.", "אישור התקבל. הבא בתור."],
   therapist: ["יפה שסימנת. איך זה הרגיש?", "כל הכבוד שסגרת את זה."],
@@ -171,7 +171,7 @@ const DONEREPLIES: Record<string, string[]> = {
 
 const SNOOZEREPLIES: Record<string, string[]> = {
   coach: ["בסדר, עוד 15 דק' ואז יאללה.", "קיבלתי, נדבר עוד רגע."],
-  cynic: ["כן כן, עוד 15 דקות. בטח.", "אוקיי, דחיינות רשמית לרבע שעה."],
+  cynic: ["כן כן, עוד 15 דקות. דחיינות רשמית.", "אוקיי, נותן לך רבע שעה ואני חוזר לטרטר."],
   friend: ["סבבה, מזכיר לך עוד רבע שעה 🤗", "אין בעיה, עוד 15 דק' ונדבר."],
   sergeant: ["אישור. 15 דקות ואז שוב.", "נדחה ב-15. לא יותר."],
   therapist: ["בטח, קח את הזמן. אזכיר עוד רבע שעה.", "בסדר, נחזור לזה."],
@@ -188,8 +188,8 @@ const REMINDERCREATEDREPLIES: Record<string, Array<(task: string, label: string)
     (t, l) => `רשום. ${l}, ${t}. קדימה 💪`,
   ],
   cynic: [
-    (t, l) => `רשמתי. ${l} אני אזכיר לך על ${t}, לפני שתשכח שוב.`,
-    (t, l) => `נרשם. ${l}, ${t}. אל תגיד שלא אמרתי.`,
+    (t, l) => `קבעתי לך ${l}, ${t}. תהיה בריא 😏`,
+    (t, l) => `רשמתי. ${l} נבדוק אם עמדת במילה שלך לגבי ${t}.`,
   ],
   friend: [
     (t, l) => `סבבה, ${l} אני מזכיר לך ${t} 🤗`,
@@ -279,7 +279,6 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 12_0
   finally { clearTimeout(timer); }
 }
 
-// Convert conversation to OpenAI compatible message format
 function buildOpenAiMessages(systemPrompt: string, history: HistoryMessage[], text: string) {
   const messages: Array<{ role: string; content: string }> = [
     { role: "system", content: systemPrompt },
@@ -294,7 +293,6 @@ function buildOpenAiMessages(systemPrompt: string, history: HistoryMessage[], te
   return messages;
 }
 
-// Robust OpenAI compatibility API for Google Gemini models
 async function callGeminiOpenAiCompat(
   apiKey: string,
   model: string,
@@ -314,7 +312,7 @@ async function callGeminiOpenAiCompat(
         body: JSON.stringify({
           model,
           messages,
-          temperature: 0.85,
+          temperature: 0.88,
           max_tokens: 350,
         }),
       },
@@ -326,15 +324,14 @@ async function callGeminiOpenAiCompat(
       if (content) return { ok: true, content };
     }
     const err = await res.text();
-    console.error(`[gemini-openai:${model}] HTTP ${res.status}: ${err.slice(0, 300)}`);
+    console.warn(`[gemini-openai:${model}] HTTP ${res.status}: ${err.slice(0, 200)}`);
     return { ok: false };
   } catch (err) {
-    console.error(`[gemini-openai:${model}] error:`, err);
+    console.warn(`[gemini-openai:${model}] error:`, err);
     return { ok: false };
   }
 }
 
-// Native Google Endpoint Call
 async function callGeminiNative(
   apiKey: string,
   model: string,
@@ -357,7 +354,7 @@ async function callGeminiNative(
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: prompt }] },
           contents,
-          generationConfig: { temperature: 0.85, maxOutputTokens: 350 },
+          generationConfig: { temperature: 0.88, maxOutputTokens: 350 },
         }),
       },
       timeoutMs,
@@ -367,42 +364,33 @@ async function callGeminiNative(
       const content = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("").trim();
       if (content) return { ok: true, content };
     }
-    const err = await res.text();
-    console.error(`[gemini-native:${model}] HTTP ${res.status}: ${err.slice(0, 300)}`);
     return { ok: false };
   } catch (err) {
-    console.error(`[gemini-native:${model}] error:`, err);
+    console.warn(`[gemini-native:${model}] error:`, err);
     return { ok: false };
   }
 }
 
-// Resilient AI generator running top tier models in sequence
 async function generateAiReply(
   prompt: string,
   history: HistoryMessage[],
   text: string,
 ): Promise<string | null> {
   const apiKey = GEMINI_API_KEY;
-  if (!apiKey) {
-    console.error("[gemini] GEMINI_API_KEY is not defined in environment variables!");
-    return null;
-  }
+  if (!apiKey) return null;
 
   const messages = buildOpenAiMessages(prompt, history, text);
 
-  // 1. Try Gemini 2.0 Flash via OpenAI Endpoint (Highest intelligence & speed)
-  let res = await callGeminiOpenAiCompat(apiKey, "gemini-2.0-flash", messages, 8_000);
+  // Sequence of advanced models: Pro -> Flash 2.0 -> Flash 1.5
+  let res = await callGeminiOpenAiCompat(apiKey, "gemini-1.5-pro", messages, 8_000);
   if (res.ok) return res.content;
 
-  // 2. Try Gemini 1.5 Flash via OpenAI Endpoint
+  res = await callGeminiOpenAiCompat(apiKey, "gemini-2.0-flash", messages, 8_000);
+  if (res.ok) return res.content;
+
   res = await callGeminiOpenAiCompat(apiKey, "gemini-1.5-flash", messages, 8_000);
   if (res.ok) return res.content;
 
-  // 3. Try Gemini 1.5 Pro via OpenAI Endpoint
-  res = await callGeminiOpenAiCompat(apiKey, "gemini-1.5-pro", messages, 8_000);
-  if (res.ok) return res.content;
-
-  // 4. Native Google Endpoint Fallback
   const nativeRes = await callGeminiNative(apiKey, "gemini-1.5-flash", prompt, history, text, 8_000);
   if (nativeRes.ok) return nativeRes.content;
 
@@ -589,16 +577,19 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
-// 100% Context-driven authentic human Israeli chat
+// Master conversational AI prompt: deep comprehension, culture, quick wit & natural flow
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[]): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
 
   const prompt = `אתה ${personality.name}. ${personality.prompt}
 
-אתה עונה בוואטסאפ בעברית ישראלית חיה, שנונה, טבעית ומדוברת:
-- תגיב תמיד ישירות למה שהמשתמש שאל או כתב ברצף השיחה.
-- ענה ב-1 עד 2 משפטים קצרים בלבד. אל תהיה יבש ואל תשתמש בתשובות שבלוניות.
-- אסור להשתמש בביטויים רובוטיים: "אני כאן בשבילך", "אשמח לסייע", "כפי שציינת".
+אתה בוט אישי בוואטסאפ שמתכתב בעברית ישראלית אותנטית, חיה, אינטליגנטית ושנונה מאוד.
+חוקי השיחה:
+- אתה מבין אסוציאציות, ציטוטים משירים (כמו גידי גוב, מוניקה סקס וכו'), סלנג ורמזים דקים. תשתמש בהם בעקיצות ובהומור שלך באופן טבעי.
+- תגיב תמיד לעומק של מה שהמשתמש אמר עכשיו ביחס לכל השיחה האחרונה.
+- אתה לא מוותר לו על דחיינות — תמיד דוחף אותו בצורה משעשעת או תכל'סית לסגור שעה / יעד / משימה / לקחת כדור.
+- ענה ב-1 עד 2 משפטים חדים ומדויקים (לא נאום).
+- אל תשתמש לעולם בניסוחים רובוטיים כמו "אני כאן בשבילך", "אשמח לסייע", "כפי שציינת".
 
 ${context ? `הקשר: ${context}` : ""}
 ${layers.filter(Boolean).join("\n")}`;
