@@ -69,7 +69,7 @@ export async function logBehavior(supabase: Supa, chatId: number, kind: Behavior
   try {
     await supabase.from("behavior_events").insert({ chat_id: chatId, kind, payload });
   } catch (error) {
-    console.error("[profile] behavior log failed:", error);
+    console.error("[profile] log failed:", error);
   }
 }
 
@@ -87,7 +87,7 @@ export async function learnFromBehavior(supabase: Supa, chatId: number, profile:
     if (events.length < 5) return;
 
     const activeHourCounts: Record<number, number> = {};
-    const wins = { ...profile.reminder_wins };
+    const wins: Record<string, number> = {};
     let laughs = 0;
     let shorts = 0;
     let longIgnored = 0;
@@ -113,13 +113,12 @@ export async function learnFromBehavior(supabase: Supa, chatId: number, profile:
 
     const activeHours = Object.entries(activeHourCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([hour]) => Number(hour));
     const average = messageLengths.length ? Math.round(messageLengths.reduce((a, b) => a + b, 0) / messageLengths.length) : profile.reply_len_avg;
-    const humorLevel = clamp(profile.humor_level + (laughs / events.length > 0.12 ? 0.05 : laughs / events.length < 0.03 ? -0.03 : 0), 0.15, 0.95);
+    const humorLevel = clamp(0.2 + (laughs / events.length) * 2.5, 0.15, 0.95);
 
     await saveProfile(supabase, chatId, {
       active_hours: activeHours,
       reminder_wins: wins,
       reply_len_avg: average,
-      // Do not overreact to one-word replies. Require a meaningful pattern.
       prefers_short: longIgnored >= 4 || (events.length >= 20 && shorts / events.length > 0.5),
       humor_level: humorLevel,
     });
@@ -129,8 +128,8 @@ export async function learnFromBehavior(supabase: Supa, chatId: number, profile:
 }
 
 export function profileContext(profile: Profile): string {
-  const lines: string[] = [];
-  if (profile.address_style) lines.push(`סגנון פנייה מועדף: ${profile.address_style}`);
+  const lines = [];
+  if (profile.address_style) lines.push(`איך לפנות אליו/אליה: ${profile.address_style}`);
   if (profile.topics.length) lines.push(`נושאים שמעניינים אותו: ${profile.topics.slice(0, 5).join(", ")}`);
   if (profile.habits.length) lines.push(`הרגלים: ${profile.habits.slice(0, 5).join(", ")}`);
   if (profile.procrastinates.length) lines.push(`נוטה לדחות: ${profile.procrastinates.slice(0, 4).join(", ")}`);
