@@ -110,7 +110,7 @@ export function detectDeepMode(text: string, history: HistoryMsg[]): { deep: boo
   const sustained = recent.filter((m) => HEAVY_RE.test(m.content) || m.content.length > 120).length >= 2;
   const deep = HEAVY_RE.test(text) && (text.length > 100 || sustained);
   const topic = text.split(/[.!?\n]/).map((s) => s.trim()).find((s) => s.length > 12) ?? null;
-  return { deep, topic: deep ? topic.slice(0, 120) : null };
+  return { deep, topic: deep ? topic?.slice(0, 120) ?? null : null };
 }
 
 export function deepModeInstruction(topic: string | null): string {
