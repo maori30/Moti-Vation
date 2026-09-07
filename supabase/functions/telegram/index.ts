@@ -396,6 +396,7 @@ const MODEL_PREFERENCE = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
   "gemini-2.0-flash",
+  "gemini-1.5-flash",
 ];
 
 const modelHealth = new Map<string, number>();
@@ -436,7 +437,9 @@ function candidateModels(available: string[] | null): string[] {
     return !available || available.includes(model);
   });
   if (!preferred.length && available?.length) {
-    return available.filter((m) => /flash/.test(m) && !/1\.5|8b|thinking|image|tts|embedding/.test(m)).slice(0, 3);
+    const flash = available.filter((m) => /flash/i.test(m) && !/8b|thinking|image|tts|embedding/i.test(m));
+    if (flash.length) return flash.slice(0, 3);
+    return available.slice(0, 3);
   }
   const ordered = goodModel && preferred.includes(goodModel)
     ? [goodModel, ...preferred.filter((m) => m !== goodModel)]
