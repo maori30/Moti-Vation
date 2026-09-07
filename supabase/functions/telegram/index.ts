@@ -686,7 +686,12 @@ ${layers.filter(Boolean).join("\n")}`;
   }
 
   // Clean any accidental leaked English prompt tokens or tags
-  let cleaned = generated.content.replace(/\*.*?\*/g, "").replace(/\b[A-Za-z'.,?!:;_-]+\b/g, "").replace(/Let's check forbidden phrases.*$/g, "").trim();
+  let cleaned = generated.content
+    .replace(/\*[^*]+\*/g, "") // Remove *action* tags
+    .replace(/\([^)]*[a-zA-Z][^)]*\)/g, "") // Remove (action) if it contains English
+    .replace(/(?:Let's|Here is|check).*?(?:\n|$)/gi, "") // Remove known leak lines
+    .replace(/^[a-zA-Z\s'.,?!:;_-]+$/gm, "") // Remove lines that are purely English/punctuation
+    .trim();
   return naturalize(cleaned || generated.content);
 }
 
