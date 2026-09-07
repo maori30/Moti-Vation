@@ -467,7 +467,7 @@ async function generateAiReply(
       modelHealth.set(model, 0);
       return { content: res.content, debug: model };
     }
-    if (res.status === 404 || res.status === 403 || res.status === 400) {
+    if ((res as any).status === 404 || (res as any).status === 403 || (res as any).status === 400) {
       modelHealth.set(model, Date.now() + 3_600_000);
       if (goodModel === model) goodModel = null;
       availableCheckedAt = 0;
@@ -682,7 +682,7 @@ ${layers.filter(Boolean).join("\n")}`;
 
   const generated = await generateAiReply(prompt, history, text, media);
   if (!generated) {
-    return personality.fallback;
+    return "אמממ לא בטוח מה להגיד על זה. מה קורה?";
   }
 
   // Clean any accidental leaked English prompt tokens or tags
@@ -829,7 +829,7 @@ Deno.serve(async (req: Request) => {
         `זמינים למפתח: ${available ? available.filter((m) => /gemini/.test(m)).slice(0, 10).join(", ") : "לא נבדק"}`,
       ];
       const probe = await callGoogleGeminiModel(GEMINI_API_KEY, candidateModels(available)[0], "ענה במילה אחת", [], "בדיקה", 8_000);
-      lines.push(`בדיקת שיחה: ${probe.ok ? "עובד ✅" : `נכשל ❌ (${probe.status})`}`);
+      lines.push(`בדיקת שיחה: ${probe.ok ? "עובד ✅" : `נכשל ❌ (${(probe as any).status})`}`);
       await sendMessage(chatId, lines.join("\n"));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -887,7 +887,7 @@ Deno.serve(async (req: Request) => {
 
     if (detectDone(text)) {
       const { data: reminders } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true);
-      const match = (reminders ?? []).find((reminder) => reminder.text.split(/\s+/).some((word: string) => word.length > 2 && text.includes(word)));
+      const match = (reminders ?? []).find((reminder: any) => reminder.text.split(/\s+/).some((word: string) => word.length > 2 && text.includes(word)));
       if (match) {
         await sendMessage(chatId, `זה קשור ל"${match.text}"?`, { inline_keyboard: [[{ text: "✅ סיימתי", callback_data: `done_reminder_${match.id}` }, { text: "לא", callback_data: "dismiss" }]] });
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -898,7 +898,7 @@ Deno.serve(async (req: Request) => {
       const parsed = parseReminder(text);
       if (parsed) {
         const { data: duplicates } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
-        const duplicate = (duplicates ?? []).find((item) => item.text.trim().toLowerCase() === parsed.task.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
+        const duplicate = (duplicates ?? []).find((item: any) => item.text.trim().toLowerCase() === parsed.task.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
         if (duplicate) {
           await sendMessage(chatId, `כבר יש לך תזכורת כזאת ל"${parsed.task}". לא הוספתי עוד אחת.`);
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -945,7 +945,7 @@ Deno.serve(async (req: Request) => {
     const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes: 0, prevMood: user.mood });
     const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
     const deep = detectDeepMode(text, history);
-    const material = [...goals.map((g) => g.title), ...events.map((e) => e.title)];
+    const material = [...goals.map((g: any) => g.title), ...events.map((e: any) => e.title)];
     const surprise = rollSurprise(material.length > 0, deep.deep);
     const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
 
