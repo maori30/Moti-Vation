@@ -444,7 +444,7 @@ function candidateModels(available: string[] | null): string[] {
   const ordered = goodModel && preferred.includes(goodModel)
     ? [goodModel, ...preferred.filter((m) => m !== goodModel)]
     : preferred;
-  return ordered.length ? ordered : ["gemini-2.5-flash"];
+  return ordered.length ? ordered : ["gemini-1.5-flash"];
 }
 
 // Generate AI reply, trying current generation Gemini models in order
