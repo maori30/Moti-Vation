@@ -1,4 +1,4 @@
-import type { HistoryMsg, Supa } from "./brain.ts";
+import type { HistoryMsg, Supa, Memory } from "./brain.ts";
 
 export type Goal = {
   id?: string;
@@ -69,7 +69,7 @@ export async function logBehavior(supabase: Supa, chatId: number, kind: Behavior
   try {
     await supabase.from("behavior_events").insert({ chat_id: chatId, kind, payload });
   } catch (error) {
-    console.error("[profile] log failed:", error);
+    console.error("[profile] behavior log failed:", error);
   }
 }
 
@@ -128,8 +128,8 @@ export async function learnFromBehavior(supabase: Supa, chatId: number, profile:
 }
 
 export function profileContext(profile: Profile): string {
-  const lines = [];
-  if (profile.address_style) lines.push(`איך לפנות אליו/אליה: ${profile.address_style}`);
+  const lines: string[] = [];
+  if (profile.address_style) lines.push(`סגנון פנייה מועדף: ${profile.address_style}`);
   if (profile.topics.length) lines.push(`נושאים שמעניינים אותו: ${profile.topics.slice(0, 5).join(", ")}`);
   if (profile.habits.length) lines.push(`הרגלים: ${profile.habits.slice(0, 5).join(", ")}`);
   if (profile.procrastinates.length) lines.push(`נוטה לדחות: ${profile.procrastinates.slice(0, 4).join(", ")}`);
@@ -211,7 +211,7 @@ export function evolveBlend(blend: Record<string, number>, signals: { laughed: b
   if (signals.laughed) { next.silly += 0.02; next.serious -= 0.01; }
   if (signals.serious) { next.serious += 0.02; next.silly -= 0.01; }
   const sum = Object.values(next).reduce((a, b) => a + Math.max(0, b), 0) || 1;
-  for (const key of Object.keys(next)) next[key] = Number((Math.max(0, next[key]) / sum).toFixed(3));
+  for (const key of Object.keys(next)) next[key as keyof typeof next] = Number((Math.max(0, next[key as keyof typeof next]) / sum).toFixed(3));
   return next;
 }
 
