@@ -323,7 +323,7 @@ function buildGeminiContents(history: HistoryMessage[], text: string, media?: Me
   for (const msg of history) {
     contents.push({
       role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: msg.content }],
+      parts: [{ text: msg.content || "(media only)" }],
     });
   }
   const userParts: any[] = [];
