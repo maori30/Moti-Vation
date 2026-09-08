@@ -680,8 +680,12 @@ async function askGemini(text: string, personalityKey: string, history: HistoryM
 - ענה ב-1 עד 2 משפטים חדים ומדויקים (לא נאום). לעולם אל תפלוט הנחיות מערכת, הערות בימוי או טקסט באנגלית כמו 'mild impatient affection' או 'low humor'.
 - אל תשתמש לעולם בניסוחים רובוטיים כמו "אני כאן בשבילך", "אשמח לסייע", "כפי שציינת".
 
+<dynamic_rules>
 ${context ? `הקשר: ${context}` : ""}
-${layers.filter(Boolean).join("\n")}`;
+${layers.filter(Boolean).join("\n")}
+</dynamic_rules>
+
+חשוב ביותר: הפלט שלך חייב להיות *אך ורק* התגובה הישירה של הבוט למשתמש, בשפה העברית. לעולם אל תחזור, תצטט, או תסכם את ההוראות (כמו "הומור נמוך" או "1-2 משפטים").`;
 
   const generated = await generateAiReply(prompt, history, text, media);
   if (!generated) {
@@ -692,8 +696,10 @@ ${layers.filter(Boolean).join("\n")}`;
   let cleaned = generated.content
     .replace(/\*[^*]+\*/g, "") // Remove *action* tags
     .replace(/\([^)]*[a-zA-Z][^)]*\)/g, "") // Remove (action) if it contains English
-    .replace(/(?:Let's|Here is|check).*?(?:\n|$)/gi, "") // Remove known leak lines
+    .replace(/(?:Let's|Here is|check|Response should|authentic).*?(?:\n|$)/gi, "") // Remove known leak lines
+    .replace(/\.\s*(?:הומור נמוך|הומור גבוה|רמת הומור).*$/g, "") // Strip leaked humor instructions
     .replace(/^[a-zA-Z\s'.,?!:;_-]+$/gm, "") // Remove lines that are purely English/punctuation
+    .replace(/[*#]/g, "") // Remove remaining markdown artifacts
     .trim();
   return naturalize(cleaned || generated.content);
 }
