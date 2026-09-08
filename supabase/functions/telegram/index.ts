@@ -285,12 +285,17 @@ async function getTelegramFile(fileId: string): Promise<MediaPart | null> {
     
     const ext = filePath.split('.').pop()?.toLowerCase();
     let mimeType = "application/octet-stream";
+    
+    // tgs is lottie animation (json), Gemini doesn't support it visually. We return null so it relies on the emoji text.
+    if (ext === "tgs") return null;
+
     if (ext === "ogg" || ext === "oga") mimeType = "audio/ogg";
     else if (ext === "mp3") mimeType = "audio/mp3";
     else if (ext === "jpg" || ext === "jpeg") mimeType = "image/jpeg";
     else if (ext === "png") mimeType = "image/png";
     else if (ext === "webp") mimeType = "image/webp";
     else if (ext === "mp4") mimeType = "video/mp4";
+    else if (ext === "webm") mimeType = "video/webm";
 
     return { mimeType, data: base64 };
   } catch (error) {
@@ -806,6 +811,9 @@ Deno.serve(async (req: Request) => {
     } else if (message.photo && message.photo.length > 0) {
       fileId = message.photo[message.photo.length - 1].file_id;
       if (!text) text = "(תמונה)";
+    } else if (message.sticker) {
+      fileId = message.sticker.file_id;
+      if (!text) text = "(סטיקר" + (message.sticker.emoji ? ` - ${message.sticker.emoji}` : "") + ")";
     }
 
     if (fileId) {
