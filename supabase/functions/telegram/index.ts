@@ -384,7 +384,8 @@ async function callGoogleGeminiModel(
           generationConfig: {
             temperature: 0.88,
             topP: 0.9,
-            maxOutputTokens: 600, // Sufficient token space to prevent truncation
+            maxOutputTokens: 2048,
+            thinkingConfig: { thinkingBudget: 0 },
           },
         }),
       },
@@ -393,7 +394,12 @@ async function callGoogleGeminiModel(
 
     if (res.ok) {
       const data = await res.json();
-      const content = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("").trim();
+      const candidate = data?.candidates?.[0];
+      const finishReason = candidate?.finishReason ?? "UNKNOWN";
+      const content = candidate?.content?.parts?.map((p: any) => p.text ?? "").join("").trim();
+      if (finishReason !== "STOP") {
+        console.warn(`[gemini-warn:${model}] finishReason=${finishReason} content_len=${content?.length ?? 0}`);
+      }
       if (content) return { ok: true, content };
     }
 
