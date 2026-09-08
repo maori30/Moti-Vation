@@ -279,16 +279,27 @@ async function getTelegramFile(fileId: string): Promise<MediaPart | null> {
     if (!json.ok) return null;
 
     const filePath = json.result.file_path;
-    const fileRes = await fetch(`https://api.telegram.org/file/bot${TG_TOKEN}/${filePath}`);
-    const buffer = await fileRes.arrayBuffer();
-    const base64 = arrayBufferToBase64(buffer);
-    
     const ext = filePath.split('.').pop()?.toLowerCase();
-    let mimeType = "application/octet-stream";
     
-    // tgs is lottie animation (json), Gemini doesn't support it visually. We return null so it relies on the emoji text.
+    // tgs is lottie animation (json), Gemini doesn't support it visually. Skip download entirely.
     if (ext === "tgs") return null;
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    let fileRes: Response;
+    try {
+      fileRes = await fetch(`https://api.telegram.org/file/bot${TG_TOKEN}/${filePath}`, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    const buffer = await fileRes.arrayBuffer();
+    
+    // Skip files larger than 1MB to avoid timeouts
+    if (buffer.byteLength > 1_048_576) return null;
+    
+    const base64 = arrayBufferToBase64(buffer);
+    
+    let mimeType = "application/octet-stream";
     if (ext === "ogg" || ext === "oga") mimeType = "audio/ogg";
     else if (ext === "mp3") mimeType = "audio/mp3";
     else if (ext === "jpg" || ext === "jpeg") mimeType = "image/jpeg";
@@ -812,8 +823,14 @@ Deno.serve(async (req: Request) => {
       fileId = message.photo[message.photo.length - 1].file_id;
       if (!text) text = "(תמונה)";
     } else if (message.sticker) {
-      fileId = message.sticker.file_id;
-      if (!text) text = "(סטיקר" + (message.sticker.emoji ? ` - ${message.sticker.emoji}` : "") + ")";
+      const sticker = message.sticker;
+      const stickerEmoji = sticker.emoji ?? "";
+      const stickerSetName = sticker.set_name ?? "";
+      // Only download static (webp) stickers. Animated (tgs) and video (webm) stickers are too heavy / unsupported.
+      if (!sticker.is_animated && !sticker.is_video) {
+        fileId = sticker.file_id;
+      }
+      if (!text) text = `(סטיקר${stickerEmoji ? ` ${stickerEmoji}` : ""}${stickerSetName ? ` מתוך ${stickerSetName}` : ""})`;
     }
 
     if (fileId) {
