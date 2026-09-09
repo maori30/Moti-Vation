@@ -993,14 +993,14 @@ Deno.serve(async (req: Request) => {
       timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes / 60)} שעות מאז ההודעה האחרונה. הגב בהתאם לפער הזמן ואל תמשיך את השיחה בדיוק מאותה נקודה. אם דיברתם קודם על משימה פתוחה, אפשר לשאול איך הלך. אם לא, פשוט תגיד היי או תשאל מה קורה, ואל תמציא נושאים או משימות שלא היו קיימים.`;
     }
 
-    const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור/.test(text) ? "success" : "casual";
+    const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור|סידרתי|ניקיתי|הלכתי|כתבתי/.test(text) ? "success" : "casual";
     const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes, prevMood: user.mood });
     const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
     const deep = detectDeepMode(text, history);
     
     let praiseLayer = "";
     if (mode === "success") {
-      praiseLayer = "המשתמש כנראה ציין שהוא סיים משימה, תזכורת, או משהו שקשור לעשייה. חובה: פרגן לו, תן לו חיזוק חיובי, עידוד או מילה טובה (בצורה שתואמת את האישיות שלך), כדי שישמח שהוא עשה את זה!";
+      praiseLayer = "המשתמש ציין שהוא סיים משימה או עשייה. פרגן לו! בנוסף: אם מדובר במשימה פיזית (כמו סידור החדר או אימון) ואתה במצב רוח ציני או חושד שהוא רק מתבדח/מורח אותך, אתגר אותו בהומור ובקש תמונה כהוכחה (למשל 'שלח תמונה של החדר לראות שהוא באמת מסודר'). לא חובה בכל פעם, רק כשזה מתאים לזרימה.";
     }
 
     const material = [...goals.map((g: any) => g.title), ...events.map((e: any) => e.title)];
