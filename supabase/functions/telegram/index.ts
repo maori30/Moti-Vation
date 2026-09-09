@@ -737,7 +737,10 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
       return { ok: false };
     };
 
-    const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories });
+    const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, weekday: "long", hour: "2-digit", minute: "2-digit" });
+    const currentTimeStr = timeFormatter.format(new Date());
+
+    const extraction = await runExtraction(caller, { userText: text, replyText: reply, history, known: memories, currentTime: currentTimeStr });
     await upsertMemories(supabase, chatId, extraction.memories);
     await forgetMemories(supabase, chatId, extraction.forget);
     await scheduleFollowUps(supabase, chatId, extraction.followUps);
@@ -987,7 +990,7 @@ Deno.serve(async (req: Request) => {
     const gapMinutes = lastMsg?.created_at ? (Date.now() - new Date(lastMsg.created_at).getTime()) / 60_000 : 0;
     let timeGapLayer = "";
     if (gapMinutes > 180) { // 3 hours
-      timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes / 60)} שעות מאז ההודעה האחרונה בשיחה הקודמת. אל תמשיך את השיחה מאותה נקודה כאילו לא עבר זמן. תתייחס לזה שעבר זמן, אולי תשאל שאלות המשך על מה שעשיתי מאז או מה התוכניות שלי עכשיו.`;
+      timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes / 60)} שעות מאז ההודעה האחרונה. הגב בהתאם לפער הזמן ואל תמשיך את השיחה בדיוק מאותה נקודה. אם דיברתם קודם על משימה פתוחה, אפשר לשאול איך הלך. אם לא, פשוט תגיד היי או תשאל מה קורה, ואל תמציא נושאים או משימות שלא היו קיימים.`;
     }
 
     const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור/.test(text) ? "success" : "casual";
@@ -1004,7 +1007,12 @@ Deno.serve(async (req: Request) => {
     const surprise = rollSurprise(material.length > 0, deep.deep);
     const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
 
+    const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, weekday: "long", hour: "2-digit", minute: "2-digit" });
+    const currentTimeStr = timeFormatter.format(new Date());
+    const currentTimeLayer = `זמן נוכחי: יום ${currentTimeStr}. קח את הזמן בחשבון כדי להבין מה המשתמש עושה כעת (למשל אם הוא בעבודה, בדרך, או הולך לישון) על סמך ההרגלים שלו.`;
+
     const layers = [
+      currentTimeLayer,
       timeGapLayer,
       praiseLayer,
       memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
