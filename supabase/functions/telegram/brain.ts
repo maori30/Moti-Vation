@@ -245,13 +245,13 @@ const EXTRACTION_PROMPT = `אתה שכבת זיכרון לבוט אישי בעב
 {"memories":[{"kind":"fact|preference|habit|relationship|joke|project|request","mem_key":"english_key","value":"משפט קצר בעברית","confidence":0.8,"importance":2,"expires_at":null}],"forget":["key"],"follow_ups":[{"topic":"נושא","question":"שאלה קצרה בעברית","in_hours":24}]}
 שמור רק מידע ארוך טווח, מטרות, העדפות, הרגלים ואירועים עתידיים. אל תשמור פטפוט חולף או תזכורת רגילה.`;
 
-export async function runExtraction(callModel: ModelCall, args: { userText: string; replyText: string; history: HistoryMsg[]; known: Memory[] }) {
+export async function runExtraction(callModel: ModelCall, args: { userText: string; replyText: string; history: HistoryMsg[]; known: Memory[]; currentTime: string }) {
   const empty = { memories: [] as Memory[], forget: [] as string[], followUps: [] as Array<{ topic: string; question: string; in_hours: number }> };
   const history = [...args.history.slice(-4), { role: "user", content: args.userText }, { role: "assistant", content: args.replyText }]
     .map((message) => `${message.role}: ${message.content}`).join("\n");
   const response = await callModel({
     systemInstruction: { parts: [{ text: EXTRACTION_PROMPT }] },
-    contents: [{ role: "user", parts: [{ text: `זיכרונות קיימים:\n${args.known.map((m) => m.value).join("\n") || "אין"}\n\nשיחה:\n${history}` }] }],
+    contents: [{ role: "user", parts: [{ text: `הזמן עכשיו: יום ${args.currentTime}\n\nזיכרונות קיימים:\n${args.known.map((m) => m.value).join("\n") || "אין"}\n\nשיחה:\n${history}` }] }],
     generationConfig: { temperature: 0.1, maxOutputTokens: 512, responseMimeType: "application/json" },
   });
   if (!response.ok) return empty;
