@@ -414,10 +414,11 @@ async function callGoogleGeminiModel(
 
 // Current active generation models in Google AI Studio
 const MODEL_PREFERENCE = [
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
   "gemini-flash-latest",
+  "gemini-3-flash-preview",
   "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
   "gemini-1.5-flash",
 ];
 
@@ -982,8 +983,15 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
+    const lastMsg = history.length > 0 ? history[history.length - 1] : null;
+    const gapMinutes = lastMsg?.created_at ? (Date.now() - new Date(lastMsg.created_at).getTime()) / 60_000 : 0;
+    let timeGapLayer = "";
+    if (gapMinutes > 180) { // 3 hours
+      timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes / 60)} שעות מאז ההודעה האחרונה בשיחה הקודמת. אל תמשיך את השיחה מאותה נקודה כאילו לא עבר זמן. תתייחס לזה שעבר זמן, אולי תשאל שאלות המשך על מה שעשיתי מאז או מה התוכניות שלי עכשיו.`;
+    }
+
     const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
-    const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes: 0, prevMood: user.mood });
+    const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes, prevMood: user.mood });
     const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
     const deep = detectDeepMode(text, history);
     const material = [...goals.map((g: any) => g.title), ...events.map((e: any) => e.title)];
@@ -991,6 +999,7 @@ Deno.serve(async (req: Request) => {
     const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
 
     const layers = [
+      timeGapLayer,
       memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
       coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (remData.data ?? []).map((r: { text: string }) => r.text) }),
       moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
