@@ -990,16 +990,23 @@ Deno.serve(async (req: Request) => {
       timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes / 60)} שעות מאז ההודעה האחרונה בשיחה הקודמת. אל תמשיך את השיחה מאותה נקודה כאילו לא עבר זמן. תתייחס לזה שעבר זמן, אולי תשאל שאלות המשך על מה שעשיתי מאז או מה התוכניות שלי עכשיו.`;
     }
 
-    const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי/.test(text) ? "success" : "casual";
+    const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור/.test(text) ? "success" : "casual";
     const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes, prevMood: user.mood });
     const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
     const deep = detectDeepMode(text, history);
+    
+    let praiseLayer = "";
+    if (mode === "success") {
+      praiseLayer = "המשתמש כנראה ציין שהוא סיים משימה, תזכורת, או משהו שקשור לעשייה. חובה: פרגן לו, תן לו חיזוק חיובי, עידוד או מילה טובה (בצורה שתואמת את האישיות שלך), כדי שישמח שהוא עשה את זה!";
+    }
+
     const material = [...goals.map((g: any) => g.title), ...events.map((e: any) => e.title)];
     const surprise = rollSurprise(material.length > 0, deep.deep);
     const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
 
     const layers = [
       timeGapLayer,
+      praiseLayer,
       memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
       coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (remData.data ?? []).map((r: { text: string }) => r.text) }),
       moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
