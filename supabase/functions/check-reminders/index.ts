@@ -282,6 +282,33 @@ Deno.serve(async () => {
       }
     }
     
+    // Daily Jewish Holidays Check: Every day at 10:00 IL time
+    if (ilTime.getHours() === 10 && ilTime.getMinutes() === 0) {
+      try {
+        const res = await fetch("https://www.hebcal.com/hebcal?v=1&cfg=json&maj=on&year=now");
+        if (res.ok) {
+          const data = await res.json();
+          // Get tomorrow's date string in YYYY-MM-DD format (Israel Time)
+          const tomorrowStr = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(Date.now() + 86400000));
+          
+          const holidays = data.items?.filter((item: any) => item.date === tomorrowStr && item.category === "holiday");
+          if (holidays && holidays.length > 0) {
+            const holidayNames = holidays.map((h: any) => h.hebrew).join(" ו-");
+            const message = `🍎 **תזכורת מועדי ישראל:**\nמחר יחול ${holidayNames}!\nשלא תגיד שלא אמרתי לך להתארגן.`;
+            
+            const { data: usersData } = await supabase.from("users").select("chat_id");
+            if (usersData) {
+              for (const user of usersData) {
+                await sendTelegramMessage(user.chat_id, message);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("[hebcal] failed:", e);
+      }
+    }
+
     // Hourly Countdowns Update: At minute 0 of every hour
     if (now.getMinutes() === 0) {
       const { data: countdowns } = await supabase.from("countdowns").select("*").eq("active", true);
