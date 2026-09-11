@@ -837,11 +837,22 @@ Deno.serve(async (req: Request) => {
       const sticker = message.sticker;
       const stickerEmoji = sticker.emoji ?? "";
       const stickerSetName = sticker.set_name ?? "";
-      // Only download static (webp) stickers. Animated (tgs) and video (webm) stickers are too heavy / unsupported.
+      
       if (!sticker.is_animated && !sticker.is_video) {
         fileId = sticker.file_id;
+      } else {
+        // For animated (tgs) and video (webm) stickers, Gemini can't process them inline. 
+        // We fetch the static thumbnail instead so the AI can "see" the custom sticker.
+        fileId = sticker.thumbnail?.file_id || sticker.thumb?.file_id || null;
       }
+      
       if (!text) text = `(סטיקר${stickerEmoji ? ` ${stickerEmoji}` : ""}${stickerSetName ? ` מתוך ${stickerSetName}` : ""})`;
+    } else if (message.animation) {
+      fileId = message.animation.thumbnail?.file_id || message.animation.thumb?.file_id || null;
+      if (!text) text = "(אנימציה/גיף)";
+    } else if (message.video) {
+      fileId = message.video.thumbnail?.file_id || message.video.thumb?.file_id || null;
+      if (!text) text = "(סרטון וידאו)";
     }
 
     if (fileId) {
