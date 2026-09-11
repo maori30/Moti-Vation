@@ -27,13 +27,54 @@ async function sendTelegramMessage(chatId: number, text: string, keyboard?: obje
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      console.error(`[check-reminders] Telegram ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      console.error(`[check-reminders] Telegram text ${response.status}: ${(await response.text()).slice(0, 300)}`);
       return false;
     }
     return true;
   } catch (error) {
-    console.error("[check-reminders] Telegram exception:", error);
+    console.error("[check-reminders] Telegram text exception:", error);
     return false;
+  }
+}
+
+async function sendTelegramAnimation(chatId: number, animationUrl: string, caption: string, keyboard?: object): Promise<boolean> {
+  try {
+    const body: Record<string, unknown> = { chat_id: chatId, animation: animationUrl, caption, parse_mode: "HTML" };
+    if (keyboard) body.reply_markup = keyboard;
+    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendAnimation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      console.error(`[check-reminders] Telegram anim ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("[check-reminders] Telegram anim exception:", error);
+    return false;
+  }
+}
+
+const GIPHY_API_KEY = Deno.env.get("GIPHY_API_KEY") ?? "";
+
+async function fetchGifForTask(task: string): Promise<string | null> {
+  if (!GIPHY_API_KEY) return null;
+  // 50% chance to send a GIF so we don't spam them every single time
+  if (Math.random() > 0.5) return null;
+  try {
+    const query = encodeURIComponent(task.slice(0, 50)); // Giphy understands Hebrew surprisingly well
+    const url = `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${query}&limit=5`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.data?.length) return null;
+    const randomGif = data.data[Math.floor(Math.random() * data.data.length)];
+    return randomGif?.images?.original?.url || null;
+  } catch (e) {
+    console.error("[check-reminders] Giphy failed", e);
+    return null;
   }
 }
 
@@ -236,7 +277,19 @@ Deno.serve(async () => {
         const base = buildReminderMessage(personality, reminder.text);
         const message = isNudge ? buildNudgeMessage(base) : base;
 
-        if (!await sendTelegramMessage(reminder.chat_id, message, keyboardForReminder(reminder.id, needsConfirmation))) {
+        const gifUrl = await fetchGifForTask(reminder.text);
+        const keyboard = keyboardForReminder(reminder.id, needsConfirmation);
+        
+        let success = false;
+        if (gifUrl) {
+          success = await sendTelegramAnimation(reminder.chat_id, gifUrl, message, keyboard);
+          // Fallback to text if animation sending fails
+          if (!success) success = await sendTelegramMessage(reminder.chat_id, message, keyboard);
+        } else {
+          success = await sendTelegramMessage(reminder.chat_id, message, keyboard);
+        }
+
+        if (!success) {
           failed++;
           continue;
         }
