@@ -509,13 +509,26 @@ async function extractionModel(apiKey: string): Promise<string> {
   return light.find((m) => !available || available.includes(m)) ?? candidateModels(available)[0];
 }
 
-async function sendMessage(chatId: number, text: string, keyboard?: object) {
+async function sendMessage(chatId: number, text: string, keyboard?: object): Promise<number | null> {
   const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
   if (keyboard) body.reply_markup = keyboard;
   const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-  if (!response.ok) console.error(`[telegram] send failed ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  if (!response.ok) {
+    console.error(`[telegram] send failed ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    return null;
+  }
+  const data = await response.json();
+  return data?.result?.message_id || null;
+}
+
+async function pinChatMessage(chatId: number, messageId: number) {
+  const body: Record<string, unknown> = { chat_id: chatId, message_id: messageId, disable_notification: false };
+  const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/pinChatMessage`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!response.ok) console.error(`[telegram] pin failed ${response.status}: ${(await response.text()).slice(0, 300)}`);
 }
 
 async function updateUser(chatId: number, changes: Record<string, unknown>) {
@@ -785,24 +798,51 @@ Deno.serve(async (req: Request) => {
         const id = data.replace("done_reminder_", "");
         const { data: reminder } = await supabase.from("reminders").select("id, chat_id, text, type, time").eq("id", id).maybeSingle();
         if (reminder) {
+          const { data: userData } = await supabase.from("users").select("points, streak_days, last_productive_day, badges").eq("chat_id", chatId).single();
+          
+          let points = (userData?.points || 0) + 10;
+          let streak = userData?.streak_days || 0;
+          const today = new Date().toLocaleString("en-CA", { timeZone: "Asia/Jerusalem" }).split(",")[0];
+          
+          let streakMsg = "";
+          if (userData?.last_productive_day !== today) {
+            const yesterday = new Date(Date.now() - 86400000).toLocaleString("en-CA", { timeZone: "Asia/Jerusalem" }).split(",")[0];
+            if (userData?.last_productive_day === yesterday) {
+              streak += 1;
+              streakMsg = `\n🔥 רצף פעילות: ${streak} ימים!`;
+            } else {
+              streak = 1;
+            }
+          }
+
+          let badges = userData?.badges || [];
+          let badgeMsg = "";
+          if (points >= 100 && !badges.includes("מתחיל_לתקתק")) { badges.push("מתחיל_לתקתק"); badgeMsg = "\n🏅 קיבלת תג: מתחיל לתקתק! (100 נק')"; }
+          if (points >= 500 && !badges.includes("מכונת_פרודוקטיביות")) { badges.push("מכונת_פרודוקטיביות"); badgeMsg = "\n🏅 קיבלת תג: מכונת פרודוקטיביות! (500 נק')"; }
+          if (points >= 1000 && !badges.includes("בלתי_עציר")) { badges.push("בלתי_עציר"); badgeMsg = "\n👑 קיבלת תג: בלתי עציר! (1000 נק')"; }
+
           const writes: Promise<unknown>[] = [
+            supabase.from("users").update({ points, streak_days: streak, last_productive_day: today, badges }).eq("chat_id", chatId),
             supabase.from("reminder_completions").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text }),
             logBehavior(supabase, chatId, "reminder_done", { hour: new Date(reminder.time).getHours() }),
           ];
           if (reminder.type === "once") writes.push(supabase.from("reminders").update({ active: false }).eq("id", id));
           background(Promise.all(writes), "done_reminder_writes");
-          await sendMessage(chatId, pickPersonalized(DONEREPLIES, activePersonality));
+          
+          const baseReply = pickPersonalized(DONEREPLIES, activePersonality);
+          await sendMessage(chatId, `${baseReply}\n+10 נק' (סה"כ ${points})${streakMsg}${badgeMsg}`);
         }
       } else if (data.startsWith("snooze_")) {
         const id = data.replace("snooze_", "");
         background(
           Promise.all([
             supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null }).eq("id", id),
+            supabase.from("users").update({ streak_days: 0 }).eq("chat_id", chatId),
             logBehavior(supabase, chatId, "reminder_snoozed"),
           ]),
           "snooze_writes",
         );
-        await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality));
+        await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality) + "\n(שברנו רצף. נודניק מוריד את הסטריק לאפס!)");
       } else if (data.startsWith("ask_delete_reminder_")) {
         const id = data.replace("ask_delete_reminder_", "");
         const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", id).eq("chat_id", chatId).eq("active", true).maybeSingle();
@@ -890,6 +930,16 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
+    if (/^(סטטוס|הסטטוס שלי|נקודות|הישגים)/ui.test(text.trim())) {
+      const { data: userData } = await supabase.from("users").select("points, streak_days, badges").eq("chat_id", chatId).single();
+      const points = userData?.points || 0;
+      const streak = userData?.streak_days || 0;
+      const badges: string[] = userData?.badges || [];
+      const badgeStr = badges.length > 0 ? badges.map(b => `🏆 ${b.replace(/_/g, " ")}`).join("\n") : "אין עדיין תגים";
+      await sendMessage(chatId, `📊 **הסטטוס שלך:**\n\n⭐️ נקודות: ${points}\n🔥 רצף פעילות: ${streak} ימים ברצף\n\n🏅 **תגים:**\n${badgeStr}`);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
     if (user.state === "awaiting_reminder_text") {
       background(updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text }), "reminder_text_state");
       await sendMessage(chatId, "מתי? כתוב שעה כמו 08:30.");
@@ -946,6 +996,67 @@ Deno.serve(async (req: Request) => {
       const match = (reminders ?? []).find((reminder: any) => reminder.text.split(/\s+/).some((word: string) => word.length > 2 && text.includes(word)));
       if (match) {
         await sendMessage(chatId, `זה קשור ל"${match.text}"?`, { inline_keyboard: [[{ text: "✅ סיימתי", callback_data: `done_reminder_${match.id}` }, { text: "לא", callback_data: "dismiss" }]] });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    }
+
+    if (/^(ספירה לאחור|כמה זמן נשאר)/ui.test(text.trim())) {
+      try {
+        const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
+        const nowStr = timeFormatter.format(new Date());
+        const model = await extractionModel(GEMINI_API_KEY);
+        const prompt = `המשתמש ביקש ספירה לאחור: "${text}".
+הזמן המקומי כרגע בישראל הוא: ${nowStr}.
+נסה לחלץ את שם האירוע (title) והתאריך/שעה המדויקים (target_date). 
+החזר אך ורק אובייקט JSON עם:
+"title": שם האירוע (למשל "טיסה ללונדון").
+"target_date": זמן היעד בפורמט ISO 8601 מלא בעתיד (למשל "2026-10-15T12:00:00.000Z"). אם אי אפשר להסיק תאריך ברור מהטקסט, החזר null ב-target_date.
+אל תחזיר טקסט מחוץ ל-JSON.`;
+        
+        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 8_000);
+        if (res.ok) {
+          const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
+          if (smart.target_date && smart.title) {
+            const targetAt = new Date(smart.target_date);
+            if (targetAt.getTime() > Date.now()) {
+               const diffMs = targetAt.getTime() - Date.now();
+               const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+               const hours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
+               
+               const msgId = await sendMessage(chatId, `⏳ **ספירה לאחור: ${smart.title}**\nנותרו: ${days} ימים ו-${hours} שעות.`);
+               if (msgId) {
+                 await pinChatMessage(chatId, msgId);
+                 await supabase.from("countdowns").insert({ chat_id: chatId, title: smart.title, target_date: targetAt.toISOString(), message_id: msgId, active: true });
+                 await sendMessage(chatId, "נעצתי את ההודעה! היא תתעדכן אוטומטית ככל שנתקרב ליעד.");
+               }
+               return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("[countdown] failed:", e);
+      }
+      await sendMessage(chatId, "לא הבנתי למתי הספירה לאחור. תפרט קצת יותר (למשל: ספירה לאחור לטיסה ב-20 באוקטובר שעה 10:00).");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    if (/^(הרעיונות שלי|הפתקים שלי|מתישהו)/ui.test(text.trim())) {
+      const { data: notes } = await supabase.from("quick_notes").select("id, text").eq("chat_id", chatId).eq("active", true);
+      if (!notes || notes.length === 0) {
+        await sendMessage(chatId, "המגירה ריקה. אין לך רעיונות פתוחים כרגע.");
+      } else {
+        const list = notes.map((n: any, i: number) => `${i + 1}. ${n.text}`).join("\n");
+        await sendMessage(chatId, `הנה הרעיונות ששמרת במגירת "מתישהו":\n\n${list}\n\n(כדי להפוך רעיון למשימה, פשוט תבקש ממני לקבוע לו תזכורת)`);
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    if (/^(רעיון|פתק|מתישהו|לזכור):\s*(.+)/ui.test(text)) {
+      const match = text.match(/^(רעיון|פתק|מתישהו|לזכור):\s*(.+)/ui);
+      if (match && match[2]) {
+        const noteText = match[2].trim();
+        await supabase.from("quick_notes").insert({ chat_id: chatId, text: noteText, active: true });
+        await sendMessage(chatId, `שמרתי את זה במגירת הרעיונות ("מתישהו"). \nאזכיר לך לבדוק את זה באחת מביקורות סוף השבוע שלנו! 💡`);
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
     }
