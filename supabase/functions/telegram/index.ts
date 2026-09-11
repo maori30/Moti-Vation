@@ -1081,15 +1081,16 @@ Deno.serve(async (req: Request) => {
         const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
         const nowStr = timeFormatter.format(new Date());
         const model = await extractionModel(GEMINI_API_KEY);
-        const prompt = `המשתמש ביקש תזכורת: "${text}". הוא לא ציין מתי להזכיר לו.
+        const prompt = `המשתמש ביקש תזכורת: "${text}".
 הזמן המקומי כרגע בישראל הוא: ${nowStr}.
-הצע מועד הגיוני לתזכורת בעתיד (היום או מחר) בהתבסס על אופי המשימה. 
-למשל: שיחות למוסדות או בנק - 09:00 בבוקר. אימון כושר - ערב (18:00) או בוקר (07:00). תרופות בוקר - 08:00. 
-אם אי אפשר להסיק, הצע עוד שעתיים מהזמן הנוכחי.
+אם המשתמש ציין במפורש תאריך ושעה (למשל "ב-25/11 בשעה 14:00"), חלץ אותם במדויק. 
+אם המשתמש לא ציין מתי להזכיר לו, הצע מועד הגיוני לתזכורת בעתיד בהתבסס על המשימה (למשל: שיחות למוסדות - 09:00).
+אם לא ניתן להסיק, קבע לעוד שעתיים.
 החזר אך ורק אובייקט JSON תקני עם:
-"task": ניסוח קצר ותמציתי של המשימה נטו (למשל "להתקשר למרפאה").
-"time": זמן התזכורת המוצע בפורמט ISO 8601 מלא (למשל "2026-09-12T09:00:00.000Z"). חובה שיהיה בעתיד!
-"reason": הסבר קצר (עד 5 מילים) למה בחרת בשעה הזו (למשל "שעות פעילות מרפאות").
+"task": ניסוח קצר של המשימה נטו (למשל "תור לרופא").
+"time": הזמן שנקבע בפורמט ISO 8601 מלא. חייב להיות בעתיד!
+"is_smart_guess": boolean (true אם המשתמש לא ציין זמן והיית צריך להסיק לבד, false אם הוא ציין זמן במפורש).
+"reason": הסבר קצר (למשל "צוין בבקשה" או "שעות פעילות").
 אל תחזיר טקסט מחוץ ל-JSON.`;
         
         const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 8_000);
@@ -1102,7 +1103,12 @@ Deno.serve(async (req: Request) => {
               const label = reminderScheduleLabel(dueAt, "once");
               const personality = resolveActivePersonality(user);
               const customMessage = pickReminderCreated(personality, smart.task, label);
-              await sendMessage(chatId, `${customMessage}\n(נקבע אוטומטית כי: ${smart.reason}).\nאם בא לך שעה אחרת, פשוט תכתוב "תשנה למחר ב-10".`);
+              
+              if (smart.is_smart_guess) {
+                await sendMessage(chatId, `${customMessage}\n(נקבע אוטומטית כי: ${smart.reason}).\nאם בא לך שעה אחרת, פשוט תכתוב "תשנה למחר ב-10".`);
+              } else {
+                await sendMessage(chatId, customMessage);
+              }
               return new Response(JSON.stringify({ ok: true }), { status: 200 });
             }
           }
