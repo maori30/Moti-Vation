@@ -964,6 +964,42 @@ Deno.serve(async (req: Request) => {
         await sendMessage(chatId, pickReminderCreated(personality, parsed.task, label));
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
+      
+      // Smart Scheduling: If no explicit time was provided, use Gemini to suggest a logical time
+      try {
+        const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
+        const nowStr = timeFormatter.format(new Date());
+        const model = await extractionModel(GEMINI_API_KEY);
+        const prompt = `המשתמש ביקש תזכורת: "${text}". הוא לא ציין מתי להזכיר לו.
+הזמן המקומי כרגע בישראל הוא: ${nowStr}.
+הצע מועד הגיוני לתזכורת בעתיד (היום או מחר) בהתבסס על אופי המשימה. 
+למשל: שיחות למוסדות או בנק - 09:00 בבוקר. אימון כושר - ערב (18:00) או בוקר (07:00). תרופות בוקר - 08:00. 
+אם אי אפשר להסיק, הצע עוד שעתיים מהזמן הנוכחי.
+החזר אך ורק אובייקט JSON תקני עם:
+"task": ניסוח קצר ותמציתי של המשימה נטו (למשל "להתקשר למרפאה").
+"time": זמן התזכורת המוצע בפורמט ISO 8601 מלא (למשל "2026-09-12T09:00:00.000Z"). חובה שיהיה בעתיד!
+"reason": הסבר קצר (עד 5 מילים) למה בחרת בשעה הזו (למשל "שעות פעילות מרפאות").
+אל תחזיר טקסט מחוץ ל-JSON.`;
+        
+        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 8_000);
+        if (res.ok) {
+          const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
+          if (smart.time && smart.task) {
+            const dueAt = new Date(smart.time);
+            if (dueAt.getTime() > Date.now()) {
+              await supabase.from("reminders").insert({ chat_id: chatId, text: smart.task, type: "once", time: dueAt.toISOString(), active: true });
+              const label = reminderScheduleLabel(dueAt, "once");
+              const personality = resolveActivePersonality(user);
+              const customMessage = pickReminderCreated(personality, smart.task, label);
+              await sendMessage(chatId, `${customMessage}\n(נקבע אוטומטית כי: ${smart.reason}).\nאם בא לך שעה אחרת, פשוט תכתוב "תשנה למחר ב-10".`);
+              return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("[smart-schedule] failed:", e);
+      }
+      
       await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
