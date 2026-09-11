@@ -947,13 +947,16 @@ Deno.serve(async (req: Request) => {
     }
 
     if (String(user.state ?? "").startsWith("awaiting_reminder_time_")) {
-      const time = text.match(/^([0-1]?\d|2[0-3]):([0-5]\d)$/);
+      const time = text.trim().match(/^([0-1]?\d|2[0-3])(?::([0-5]\d))?$/);
       if (!time) {
-        await sendMessage(chatId, "תכתוב שעה בפורמט HH:MM, למשל 08:30.");
+        await sendMessage(chatId, "תכתוב שעה, למשל 8, 14, או 08:30.");
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       const type = String(user.state).replace("awaiting_reminder_time_", "") as "once" | "daily" | "weekly";
-      const due = israelTime(+time[1], +time[2]);
+      let due = israelTime(+time[1], time[2] ? +time[2] : 0);
+      if (due.getTime() <= Date.now() && type !== "daily") {
+        due = israelTime(+time[1], time[2] ? +time[2] : 0, new Date(), 1);
+      }
       await supabase.from("reminders").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });
       background(updateUser(chatId, { state: "idle", pending_reminder_text: null }), "reminder_time_state_reset");
       const manualLabel = reminderScheduleLabel(due, type);
