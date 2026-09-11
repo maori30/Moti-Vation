@@ -37,6 +37,25 @@ async function sendTelegramMessage(chatId: number, text: string, keyboard?: obje
   }
 }
 
+async function editTelegramMessageText(chatId: number, messageId: number, text: string): Promise<boolean> {
+  try {
+    const body: Record<string, unknown> = { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML" };
+    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      console.error(`[check-reminders] Telegram edit ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error("[check-reminders] Telegram edit exception:", error);
+    return false;
+  }
+}
+
 async function sendTelegramAnimation(chatId: number, animationUrl: string, caption: string, keyboard?: object): Promise<boolean> {
   try {
     const body: Record<string, unknown> = { chat_id: chatId, animation: animationUrl, caption, parse_mode: "HTML" };
@@ -246,6 +265,46 @@ function keyboardForReminder(id: string, needsConfirmation: boolean) {
 Deno.serve(async () => {
   try {
     const now = new Date();
+    
+    // Weekly Quick Notes Review: Sunday at 09:00 IL time
+    const ilTime = new Date(now.toLocaleString("en-US", { timeZone: TZ }));
+    if (ilTime.getDay() === 0 && ilTime.getHours() === 9 && ilTime.getMinutes() === 0) {
+      const { data: usersData } = await supabase.from("users").select("chat_id");
+      if (usersData) {
+        for (const user of usersData) {
+          const { data: notes } = await supabase.from("quick_notes").select("id, text").eq("chat_id", user.chat_id).eq("active", true);
+          if (notes && notes.length > 0) {
+            const randomNote = notes[Math.floor(Math.random() * notes.length)];
+            const message = `💡 **הפינה השבועית: מגירת הרעיונות**\n\nפעם כתבת לי את הרעיון הזה:\n"${randomNote.text}"\n\nרוצה שנקבע לזה תזכורת או נשאיר את זה במגירה? (אם בא לך לקדם את זה, פשוט תגיד לי "תזכיר לי על הרעיון הזה מחר ב-10")`;
+            await sendTelegramMessage(user.chat_id, message);
+          }
+        }
+      }
+    }
+    
+    // Hourly Countdowns Update: At minute 0 of every hour
+    if (now.getMinutes() === 0) {
+      const { data: countdowns } = await supabase.from("countdowns").select("*").eq("active", true);
+      if (countdowns) {
+        for (const cd of countdowns) {
+          const target = new Date(cd.target_date);
+          const diffMs = target.getTime() - now.getTime();
+          
+          if (diffMs <= 0) {
+            await editTelegramMessageText(cd.chat_id, cd.message_id, `🎉 **הגיע הזמן: ${cd.title}**!`);
+            await supabase.from("countdowns").update({ active: false }).eq("id", cd.id);
+          } else {
+            const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            const hours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
+            let text = `⏳ **ספירה לאחור: ${cd.title}**\n`;
+            if (days > 0) text += `נותרו: ${days} ימים ו-${hours} שעות.`;
+            else text += `נותרו: ${hours} שעות בלבד!`;
+            
+            await editTelegramMessageText(cd.chat_id, cd.message_id, text);
+          }
+        }
+      }
+    }
     const { data: due, error } = await supabase
       .from("reminders")
       .select("id, chat_id, text, type, time, active, confirm_needed, nudge_sent_at")
