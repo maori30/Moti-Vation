@@ -170,10 +170,12 @@ const HEAVY_RE = /(מוות|מת|אובדני|בית חולים|אשפוז|פי�
 export function humorPolicy(args: { text: string; mode: string; tone: string; intensity: number; mood: Mood; userHumorLevel: number }) {
   if (HEAVY_RE.test(args.text)) return { level: 0, instruction: "אפס הומור. הנושא כבד, הקשב באמת." };
   if (args.mode === "frustration") return { level: 1, instruction: "קודם תן מקום לתסכול; אולי קלילות עדינה, לא בדיחה." };
-  if (["joke", "sarcastic", "dark_humor", "hyperbole"].includes(args.tone) && args.userHumorLevel >= 0.45) {
-    return { level: 2, instruction: "המשתמש עצמו בהומור. אפשר עקיצה אחת ספציפית וקצרה." };
+  
+  const isJoking = /חחח|חה חה|lol|lmao|😂|🤣|😅|😏|😜|😉/.test(args.text) || args.tone !== "neutral";
+  if (isJoking && args.userHumorLevel >= 0.45) {
+    return { level: 3, instruction: "המשתמש צוחק או ציני. תן לו קונטרה! אל תפחד להיות קצת חוצפן, שנון או להחזיר עקיצה חדה באותו סגנון (ישראלי אמיתי)." };
   }
-  return { level: 1, instruction: "הומור נמוך. אל תמציא בדיחה אם אין אחת טבעית." };
+  return { level: 2, instruction: "אפשר ורצוי לשלב הומור, עקיצות קלות וציניות ישראלית שנונה, כל עוד זה טבעי לשיחה. תהיה קצת חוצפן ומצחיק בגובה העיניים." };
 }
 
 const ALIASES: Record<string, string> = {
