@@ -1024,6 +1024,16 @@ Deno.serve(async (req: Request) => {
     }
 
     if (String(user.state ?? "").startsWith("awaiting_reminder_time_")) {
+      if (text.trim().match(/^(ביטול|בטל|עזוב|לא משנה)$/ui) || detectReminderIntent(text)) {
+        background(updateUser(chatId, { state: "chatting", pending_reminder_text: null }), "reset_state");
+        if (detectReminderIntent(text)) {
+          // Fall through to allow detectReminderIntent to handle it below!
+          user.state = "chatting"; // Mutate local object so we don't hit other state checks
+        } else {
+          await sendMessage(chatId, "בוטל. מה עכשיו?");
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+      } else {
       const time = text.trim().match(/^(?:ב\s*-?\s*|בשעה\s*)?([0-1]?\d|2[0-3])(?::([0-5]\d))?$/);
       if (!time) {
         await sendMessage(chatId, "תכתוב שעה, למשל 8, 14, או 08:30.");
@@ -1039,6 +1049,7 @@ Deno.serve(async (req: Request) => {
       const manualLabel = reminderScheduleLabel(due, type);
       await sendMessage(chatId, pickReminderCreated(resolveActivePersonality(user), String(user.pending_reminder_text ?? "זה"), manualLabel));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
     }
 
     const switchRequest = detectSwitchRequest(text);
