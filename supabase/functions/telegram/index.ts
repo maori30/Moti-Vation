@@ -1277,7 +1277,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
         const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 20_000);
         if (res.ok) {
           const jsonMatch = res.content.match(/\{[\s\S]*\}/);
-          if (!jsonMatch) throw new Error("No JSON object found in response");
+          if (!jsonMatch) throw new Error("No JSON object found in response: " + res.content);
           const smart = JSON.parse(jsonMatch[0]);
           if (smart.time && smart.task) {
             const dueAt = new Date(smart.time);
@@ -1293,15 +1293,22 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
                 await sendMessage(chatId, customMessage);
               }
               return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            } else {
+              throw new Error(`Parsed time is not in the future. dueAt: ${dueAt.toISOString()}, now: ${new Date().toISOString()}`);
             }
+          } else {
+             throw new Error("Missing time or task in JSON: " + JSON.stringify(smart));
           }
+        } else {
+           throw new Error(`API Error: ${res.status} - ${res.error}`);
         }
       } catch (e) {
-        console.error("[smart-schedule] failed:", e);
+        await sendMessage(chatId, `DEBUG: Smart Scheduling failed! Reason: ${(e as Error).message}`);
+        // Fallback to conversational request for time
+        background(updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text }), "reminder_time_state");
+        await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      
-      await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
     const [histData, memRaw, profData, goalsData, eventsData, jokesData, phrasesData, remData] = await Promise.all([
