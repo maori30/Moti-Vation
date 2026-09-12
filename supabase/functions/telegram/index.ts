@@ -999,7 +999,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (String(user.state ?? "").startsWith("awaiting_reminder_time_")) {
-      const time = text.trim().match(/^([0-1]?\d|2[0-3])(?::([0-5]\d))?$/);
+      const time = text.trim().match(/^(?:ב\s*-?\s*|בשעה\s*)?([0-1]?\d|2[0-3])(?::([0-5]\d))?$/);
       if (!time) {
         await sendMessage(chatId, "תכתוב שעה, למשל 8, 14, או 08:30.");
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -1235,16 +1235,17 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 הזמן המקומי כרגע בישראל הוא: ${nowStr}.
 אם המשתמש ציין במפורש תאריך ושעה (למשל "ב-25/11 בשעה 14:00" או "בעוד שעתיים"), חלץ אותם במדויק. 
 אם המשתמש לא ציין מתי להזכיר לו, הצע מועד הגיוני לתזכורת בעתיד בהתבסס על המשימה.
+אתה מכיר את כל חגי ישראל ומועדי הלוח העברי. אם המשתמש מבקש תזכורת הקשורה לחג (למשל "יום לפני ערב פסח", "אחרי סוכות"), חשב במדויק מתי זה קורה (בהתבסס על השנה הנוכחית) והחזר את התאריך הלועזי המדויק.
 בנוסף, אם המשתמש התנה את התזכורת במזג האוויר (למשל "אלא אם יורד גשם" או "רק אם שמש"), חלץ את התנאי הזה.
 החזר אך ורק אובייקט JSON תקני עם:
 "task": ניסוח קצר של המשימה נטו ללא מילות התנאי (למשל "לקחת מטריה").
-"time": הזמן שנקבע בפורמט ISO 8601 מלא. חייב להיות בעתיד!
+"time": הזמן שנקבע בפורמט ISO 8601 מלא, חובה לכלול את אזור הזמן של ישראל בסוף (למשל +02:00 או +03:00 לשעון קיץ). חייב להיות בעתיד!
 "is_smart_guess": boolean (true אם המשתמש לא ציין זמן והיית צריך להסיק לבד, false אם הוא ציין זמן במפורש).
 "reason": הסבר קצר לזמן שנבחר.
 "weather_condition": מילת מפתח באנגלית לתנאי ("rain", "clear", "hot", "cold") או null אם אין תנאי.
 אל תחזיר טקסט מחוץ ל-JSON.`;
         
-        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 8_000);
+        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 12_000);
         if (res.ok) {
           const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
           if (smart.time && smart.task) {
