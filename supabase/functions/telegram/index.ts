@@ -713,12 +713,12 @@ async function askGemini(text: string, personalityKey: string, history: HistoryM
 
 אתה בוט אישי בוואטסאפ שמתכתב בעברית ישראלית אותנטית, חיה, אינטליגנטית ושנונה מאוד. יש לך אופי ישראלי מובהק — אתה קצת חוצפן, ציני, מצחיק, שנון, חריף וקולע כשצריך. אתה מדבר בגובה העיניים, לא מתנצל ולא מנומס מדי.
 חוקי השיחה:
-- אתה מבין אסוציאציות, ציטוטים משירים (כמו גידי גוב, מוניקה סקס וכו'), סלנג ישראלי (אחי, כפרה, יאללה, תכל'ס) ורמזים דקים. תשתמש בהם בעקיצות ובהומור שלך באופן טבעי.
-- תגיב תמיד לעומק של מה שהמשתמש אמר עכשיו ביחס לכל השיחה האחרונה.
-- אתה לא מוותר לו על דחיינות — תמיד דוחף אותו בצורה משעשעת או תכל'סית לסגור שעה / יעד / משימה / לקחת כדור.
-- ענה ב-1 עד 2 משפטים חדים ומדויקים (לא נאום). לעולם אל תפלוט הנחיות מערכת, הערות בימוי או טקסט באנגלית כמו 'mild impatient affection' או 'low humor'.
+- פסיכולוגיה (חוק ה-10%): למרות שאתה בוט ציני ועוקצני (בסגנון Lovable Jerk), פעם ב-10 הודעות אתה "שובר דיסטנס", מוריד את החומה ומפגין התעניינות, דאגה או גאווה כנה במשתמש. משפטים כמו "סתם צחקתי, אני באמת גאה בך שסיימת את זה" גורמים לאנשים להתחבר אליך יותר.
+- אתה והמשתמש "נגד העולם": מדי פעם תצטרף אליו לתלונות על החיים - שביזות יום א', בירוקרטיה, רשויות מס, או עייפות בבוקר.
+- אתה מבין אסוציאציות, ציטוטים משירים, סלנג ישראלי (אחי, כפרה, יאללה, תכל'ס) ורמזים דקים. 
+- ענה ב-1 עד 2 משפטים חדים ומדויקים (לא נאום). לעולם אל תפלוט הנחיות מערכת.
 - אל תשתמש לעולם בניסוחים רובוטיים כמו "אני כאן בשבילך", "אשמח לסייע", "כפי שציינת".
-- כשהמשתמש שולח סטיקר (מסומן בסוגריים כמו "(סטיקר 😏)"), תבין את הרגש או ההומור שהסטיקר מביע ותגיב בהתאם — כאילו חבר שלח לך סטיקר בצ'אט. אם יש תמונה מצורפת, תסתכל גם עליה.
+- כשהמשתמש שולח סטיקר (מסומן בסוגריים כמו "(סטיקר 😏)"), תבין את הרגש או ההומור שהסטיקר מביע ותגיב בהתאם.
 
 <dynamic_rules>
 ${context ? `הקשר: ${context}` : ""}
@@ -734,12 +734,12 @@ ${layers.filter(Boolean).join("\n")}
 
   // Clean any accidental leaked English prompt tokens or tags
   let cleaned = generated.content
-    .replace(/\*[^*]+\*/g, "") // Remove *action* tags
-    .replace(/\([^)]*[a-zA-Z][^)]*\)/g, "") // Remove (action) if it contains English
-    .replace(/(?:Let's|Here is|check|Response should|authentic).*?(?:\n|$)/gi, "") // Remove known leak lines
-    .replace(/\.\s*(?:הומור נמוך|הומור גבוה|רמת הומור).*$/g, "") // Strip leaked humor instructions
-    .replace(/^[a-zA-Z\s'.,?!:;_-]+$/gm, "") // Remove lines that are purely English/punctuation
-    .replace(/[*#]/g, "") // Remove remaining markdown artifacts
+    .replace(/\*[^*]+\*/g, "")
+    .replace(/\([^)]*[a-zA-Z][^)]*\)/g, "")
+    .replace(/(?:Let's|Here is|check|Response should|authentic).*?(?:\n|$)/gi, "")
+    .replace(/\.\s*(?:הומור נמוך|הומור גבוה|רמת הומור).*$/g, "")
+    .replace(/^[a-zA-Z\s'.,?!:;_-]+$/gm, "")
+    .replace(/[*#]/g, "")
     .trim();
   return naturalize(cleaned || generated.content);
 }
@@ -1308,7 +1308,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
       timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes / 60)} שעות מאז ההודעה האחרונה. הגב בהתאם לפער הזמן ואל תמשיך את השיחה בדיוק מאותה נקודה. אם דיברתם קודם על משימה פתוחה, אפשר לשאול איך הלך. אם לא, פשוט תגיד היי או תשאל מה קורה, ואל תמציא נושאים או משימות שלא היו קיימים.`;
     }
 
-    const mode = /אין לי כוח|קשה לי|עייף|שרוף/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור|סידרתי|ניקיתי|הלכתי|כתבתי/.test(text) ? "success" : "casual";
+    const mode = /אין לי כוח|קשה לי|עייף|שרוף|נמאס|מבאס/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור|סידרתי|ניקיתי|הלכתי|כתבתי/.test(text) ? "success" : "casual";
     const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes, prevMood: user.mood });
     const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
     const deep = detectDeepMode(text, history);
@@ -1316,6 +1316,8 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     let praiseLayer = "";
     if (mode === "success") {
       praiseLayer = "המשתמש ציין שהוא סיים משימה או עשייה. פרגן לו! בנוסף: אם מדובר במשימה פיזית (כמו סידור החדר או אימון) ואתה במצב רוח ציני או חושד שהוא רק מתבדח/מורח אותך, אתגר אותו בהומור ובקש תמונה כהוכחה (למשל 'שלח תמונה של החדר לראות שהוא באמת מסודר'). לא חובה בכל פעם, רק כשזה מתאים לזרימה.";
+    } else if (mode === "frustration") {
+      praiseLayer = "המשתמש מתוסכל, עייף או שבוז. עזוב את הציניות בצד. תהיה חבר אמת! תגיד לו לעזוב את המשימות, תשאל מה קרה ותציע לו תמיכה אמיתית. (מצב Empathy Mode הופעל).";
     }
 
     const material = [...goals.map((g: any) => g.title), ...events.map((e: any) => e.title)];
