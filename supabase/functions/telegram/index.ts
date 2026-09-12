@@ -504,7 +504,7 @@ async function generateAiReply(
 
 async function extractionModel(apiKey: string): Promise<string> {
   const available = availableModels ?? await listAvailableModels(apiKey);
-  const light = ["gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash"];
+  const light = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-flash-lite-latest", "gemini-flash-latest"];
   return light.find((m) => !available || available.includes(m)) ?? candidateModels(available)[0];
 }
 
