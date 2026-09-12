@@ -323,6 +323,32 @@ Deno.serve(async () => {
         }
       }
     }
+    // Process Follow-ups
+    const { data: followUps } = await supabase.from("follow_ups").select("id, chat_id, topic, question").eq("active", true).lte("due_at", now.toISOString());
+    if (followUps && followUps.length > 0) {
+      for (const fu of followUps) {
+        await sendTelegramMessage(fu.chat_id, `היי! שאלה קטנה: לגבי ${fu.topic} - ${fu.question}`);
+        await supabase.from("follow_ups").update({ active: false }).eq("id", fu.id);
+      }
+    }
+
+    // Daily Random Banter: 16:00 IL time
+    if (ilTime.getHours() === 16 && ilTime.getMinutes() === 0) {
+      const { data: inactiveUsers } = await supabase.from("users").select("chat_id, personality").lt("last_message_at", new Date(now.getTime() - 48 * 3600000).toISOString());
+      if (inactiveUsers && inactiveUsers.length > 0) {
+        const banterList = [
+          "תגיד, לאן נעלמת? אני מדבר פה עם הקירות.",
+          "שמע, הייתי חייב לשאול – גם אתה מרגיש שזה יום די מיותר היום? או שזה רק אני?",
+          "סתם עברתי בשכונה הווירטואלית וחשבתי לבדוק אם אתה עדיין חי.",
+          "אני לא רוצה להלחיץ, אבל נעלמת לי. הכל טוב או שפרשת לדוקים?",
+          "יומיים לא שמעתי ממך. אם אתה צריך שקט נפשי אני מבין, אבל לפחות תזרוק איזה סמיילי."
+        ];
+        for (const user of inactiveUsers) {
+          const msg = banterList[Math.floor(Math.random() * banterList.length)];
+          await sendTelegramMessage(user.chat_id, msg);
+        }
+      }
+    }
 
     // Hourly Countdowns Update: At minute 0 of every hour
     if (now.getMinutes() === 0) {
