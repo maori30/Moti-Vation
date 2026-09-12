@@ -15,6 +15,7 @@ type Reminder = {
   active: boolean;
   confirm_needed: boolean | null;
   nudge_sent_at: string | null;
+  weather_condition?: string | null;
 };
 
 async function sendTelegramMessage(chatId: number, text: string, keyboard?: object): Promise<boolean> {
@@ -308,6 +309,20 @@ Deno.serve(async () => {
         console.error("[hebcal] failed:", e);
       }
     }
+    
+    // Weekly Procrastination Review: Thursday at 18:00 IL time
+    if (ilTime.getDay() === 4 && ilTime.getHours() === 18 && ilTime.getMinutes() === 0) {
+      const { data: usersData } = await supabase.from("users").select("chat_id");
+      if (usersData) {
+        for (const user of usersData) {
+          const { data: stuck } = await supabase.from("reminders").select("id, text, snooze_count").eq("chat_id", user.chat_id).eq("active", true).gte("snooze_count", 3);
+          if (stuck && stuck.length > 0) {
+            const list = stuck.map(r => `• ${r.text} (${r.snooze_count} דחיות)`).join("\n");
+            await sendTelegramMessage(user.chat_id, `⚠️ **פינת הדחיינות השבועית**\n\nשמתי לב שממש נתקעת על המשימות האלה:\n${list}\n\nרוצה שנפרק אותן לצעדים קטנים יותר או פשוט נמחק ונוותר עליהן? אין בושה בלשחרר!`);
+          }
+        }
+      }
+    }
 
     // Hourly Countdowns Update: At minute 0 of every hour
     if (now.getMinutes() === 0) {
@@ -334,7 +349,7 @@ Deno.serve(async () => {
     }
     const { data: due, error } = await supabase
       .from("reminders")
-      .select("id, chat_id, text, type, time, active, confirm_needed, nudge_sent_at")
+      .select("id, chat_id, text, type, time, active, confirm_needed, nudge_sent_at, weather_condition")
       .eq("active", true)
       .lte("time", now.toISOString());
 
@@ -352,11 +367,43 @@ Deno.serve(async () => {
       .in("chat_id", chatIds);
     const personalities = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.personality ?? "cynic"]));
 
+async function checkWeatherCondition(condition: string): Promise<boolean> {
+  try {
+    const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=32.08&longitude=34.78&daily=precipitation_sum,temperature_2m_max&timezone=Asia%2FJerusalem");
+    if (!res.ok) return true; // Default to true if API fails
+    const data = await res.json();
+    const todayPrecip = data.daily?.precipitation_sum?.[0] || 0;
+    const todayTemp = data.daily?.temperature_2m_max?.[0] || 25;
+    
+    if (condition.toLowerCase() === "rain") return todayPrecip > 0.5;
+    if (condition.toLowerCase() === "clear") return todayPrecip <= 0.5;
+    if (condition.toLowerCase() === "hot") return todayTemp > 28;
+    if (condition.toLowerCase() === "cold") return todayTemp < 18;
+    return true; // Unrecognized condition
+  } catch (e) {
+    console.error("[weather] check failed:", e);
+    return true;
+  }
+}
+
     let sent = 0;
     let failed = 0;
 
     for (const reminder of reminders) {
       try {
+        if (reminder.weather_condition) {
+          const conditionMet = await checkWeatherCondition(reminder.weather_condition);
+          if (!conditionMet) {
+            // Weather condition not met, skip and advance/deactivate
+            if (reminder.type === "once") {
+              await supabase.from("reminders").update({ active: false }).eq("id", reminder.id);
+            } else {
+              const nextTime = new Date(new Date(reminder.time).getTime() + (reminder.type === "weekly" ? 7 : 1) * 86400000);
+              await supabase.from("reminders").update({ time: nextTime.toISOString() }).eq("id", reminder.id);
+            }
+            continue;
+          }
+        }
         const personality = personalities.get(reminder.chat_id) ?? "cynic";
         const needsConfirmation = reminder.confirm_needed === true;
         const isNudge = needsConfirmation && Boolean(reminder.nudge_sent_at);
