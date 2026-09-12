@@ -769,7 +769,7 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
   try {
     const caller = async (payload: any) => {
       const model = await extractionModel(GEMINI_API_KEY);
-      const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
+      const res = await callModelWithFailover(GEMINI_API_KEY, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
       if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };
       return { ok: false };
     };
@@ -1003,7 +1003,7 @@ Deno.serve(async (req: Request) => {
         `מועמדים: ${candidateModels(available).join(", ")}`,
         `זמינים למפתח: ${available ? available.filter((m) => /gemini/.test(m)).slice(0, 10).join(", ") : "לא נבדק"}`,
       ];
-      const probe = await callGoogleGeminiModel(GEMINI_API_KEY, candidateModels(available)[0], "ענה במילה אחת", [], "בדיקה", 8_000);
+      const probe = await callModelWithFailover(GEMINI_API_KEY, "ענה במילה אחת", [], "בדיקה", 8_000).catch(e => ({ok: false, status: e.message})); probe.ok = probe.content !== undefined;
       lines.push(`בדיקת שיחה: ${probe.ok ? "עובד ✅" : `נכשל ❌ (${(probe as any).status})`}`);
       await sendMessage(chatId, lines.join("\n"));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -1106,7 +1106,7 @@ Deno.serve(async (req: Request) => {
 "target_date": זמן היעד בפורמט ISO 8601 מלא בעתיד (למשל "2026-10-15T12:00:00.000Z").
 אל תחזיר טקסט מחוץ ל-JSON.`;
         
-        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, prompt, [], "החזר JSON בלבד", 8_000);
+        const res = await callModelWithFailover(GEMINI_API_KEY, prompt, [], "החזר JSON בלבד", 8_000); res.ok = true;
         if (res.ok) {
           const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
           if (smart.target_date && smart.title) {
@@ -1230,7 +1230,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 "reason": למה בחרת בזמן הזה (למשל "מופיע בהזמנה", "מופיע בקבלה").
 אל תחזיר שום טקסט מחוץ ל-JSON.`;
 
-        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, prompt, [], "החזר JSON בלבד", 8_000, media);
+        const res = await callModelWithFailover(GEMINI_API_KEY, prompt, [], "החזר JSON בלבד", 8_000, media); res.ok = true;
         if (res.ok) {
           const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
           if (smart.task && smart.time) {
@@ -1283,7 +1283,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 "weather_condition": מילת מפתח באנגלית לתנאי ("rain", "clear", "hot", "cold") או null אם אין תנאי.
 אל תחזיר טקסט מחוץ ל-JSON.`;
         
-        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 20_000);
+        const res = await callModelWithFailover(GEMINI_API_KEY, "החזר JSON בלבד", [], prompt, 20_000); res.ok = true;
         if (res.ok) {
           const jsonMatch = res.content.match(/\{[\s\S]*\}/);
           if (!jsonMatch) throw new Error("No JSON object found in response: " + res.content);
