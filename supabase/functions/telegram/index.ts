@@ -1303,7 +1303,9 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
            throw new Error(`API Error: ${res.status} - ${res.error}`);
         }
       } catch (e) {
-        await sendMessage(chatId, `DEBUG: Smart Scheduling failed! Reason: ${(e as Error).message}`);
+        const debugMsg = `DEBUG: Smart Scheduling failed! Reason: ${(e as Error).message}`;
+        await sendMessage(chatId, debugMsg);
+        await supabase.from("messages").insert({ chat_id: chatId, role: "assistant", content: debugMsg });
         // Fallback to conversational request for time
         background(updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text }), "reminder_time_state");
         await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
