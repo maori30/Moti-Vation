@@ -81,14 +81,23 @@ const GIPHY_API_KEY = Deno.env.get("GIPHY_API_KEY") ?? "";
 
 async function fetchGifForTask(task: string): Promise<string | null> {
   if (!GIPHY_API_KEY) return null;
-  // 50% chance to send a GIF so we don't spam them every single time
-  if (Math.random() > 0.5) return null;
+  // Send GIF 100% of the time for now so user can see it works!
   try {
-    const query = encodeURIComponent(task.slice(0, 50)); // Giphy understands Hebrew surprisingly well
-    const url = `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${query}&limit=5`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
+    let query = encodeURIComponent(task.slice(0, 50));
+    let url = `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${query}&limit=5`;
+    let res = await fetch(url);
+    let data = res.ok ? await res.json() : null;
+    
+    // If no results for Hebrew task, fallback to a generic English motivational GIF
+    if (!data?.data?.length) {
+      const fallbacks = ["just do it", "motivation", "you can do it", "get to work", "do it now"];
+      const randomFallback = fallbacks[Math.floor(Math.random() * fallbacks.length)];
+      query = encodeURIComponent(randomFallback);
+      url = `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${query}&limit=10`;
+      res = await fetch(url);
+      data = res.ok ? await res.json() : null;
+    }
+    
     if (!data?.data?.length) return null;
     const randomGif = data.data[Math.floor(Math.random() * data.data.length)];
     return randomGif?.images?.original?.url || null;
