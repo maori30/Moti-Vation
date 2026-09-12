@@ -626,6 +626,9 @@ async function findReminderForDeletion(chatId: number, text: string): Promise<Ac
 
 function parseReminder(text: string): ParsedReminder | null {
   const input = text.trim();
+  if (/\b\d{1,2}[\/.]\d{1,2}\b/.test(input)) {
+    return null; // Explicit dates should be handled by Gemini smart scheduling
+  }
   const now = new Date();
   let type: ParsedReminder["type"] = "once";
   let dueAt: Date | null = null;
@@ -1052,7 +1055,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    if (/^(ספירה לאחור|כמה זמן נשאר)/ui.test(text.trim())) {
+    if (/ספירה לאחור|כמה זמן נשאר/ui.test(text.trim())) {
       try {
         const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
         const nowStr = timeFormatter.format(new Date());
@@ -1061,11 +1064,11 @@ Deno.serve(async (req: Request) => {
 הזמן המקומי כרגע בישראל הוא: ${nowStr}.
 נסה לחלץ את שם האירוע (title) והתאריך/שעה המדויקים (target_date). 
 החזר אך ורק אובייקט JSON עם:
-"title": שם האירוע (למשל "טיסה ללונדון").
-"target_date": זמן היעד בפורמט ISO 8601 מלא בעתיד (למשל "2026-10-15T12:00:00.000Z"). אם אי אפשר להסיק תאריך ברור מהטקסט, החזר null ב-target_date.
+"title": שם האירוע (למשל "טיסה ללונדון", "עוד שעתיים", "2 דקות").
+"target_date": זמן היעד בפורמט ISO 8601 מלא בעתיד (למשל "2026-10-15T12:00:00.000Z").
 אל תחזיר טקסט מחוץ ל-JSON.`;
         
-        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 8_000);
+        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, prompt, [], "החזר JSON בלבד", 8_000);
         if (res.ok) {
           const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
           if (smart.target_date && smart.title) {
@@ -1074,8 +1077,9 @@ Deno.serve(async (req: Request) => {
                const diffMs = targetAt.getTime() - Date.now();
                const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
                const hours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
+               const minutes = Math.floor((diffMs / (1000 * 60)) % 60);
                
-               const msgId = await sendMessage(chatId, `⏳ **ספירה לאחור: ${smart.title}**\nנותרו: ${days} ימים ו-${hours} שעות.`);
+               const msgId = await sendMessage(chatId, `⏳ **ספירה לאחור: ${smart.title}**\nנותרו: ${days} ימים, ${hours} שעות, ו-${minutes} דקות.`);
                if (msgId) {
                  await pinChatMessage(chatId, msgId);
                  await supabase.from("countdowns").insert({ chat_id: chatId, title: smart.title, target_date: targetAt.toISOString(), message_id: msgId, active: true });
