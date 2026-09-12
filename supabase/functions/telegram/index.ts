@@ -385,7 +385,7 @@ async function callGoogleGeminiModel(
             temperature: 0.88,
             topP: 0.9,
             maxOutputTokens: 2048,
-            thinkingConfig: { thinkingBudget: 0 },
+            responseMimeType: prompt.includes("החזר JSON בלבד") ? "application/json" : "text/plain",
           },
         }),
       },
@@ -1247,7 +1247,9 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
         
         const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 12_000);
         if (res.ok) {
-          const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
+          const jsonMatch = res.content.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) throw new Error("No JSON object found in response");
+          const smart = JSON.parse(jsonMatch[0]);
           if (smart.time && smart.task) {
             const dueAt = new Date(smart.time);
             if (dueAt.getTime() > Date.now()) {
