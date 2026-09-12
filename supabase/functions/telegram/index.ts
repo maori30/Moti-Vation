@@ -413,12 +413,8 @@ async function callGoogleGeminiModel(
 
 // Current active generation models in Google AI Studio
 const MODEL_PREFERENCE = [
-  "gemini-3.6-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-flash-latest",
-  "gemini-3-flash-preview",
-  "gemini-2.5-flash",
   "gemini-1.5-flash",
+  "gemini-1.5-pro",
 ];
 
 const modelHealth = new Map<string, number>();
@@ -503,9 +499,7 @@ async function generateAiReply(
 }
 
 async function extractionModel(apiKey: string): Promise<string> {
-  const available = availableModels ?? await listAvailableModels(apiKey);
-  const light = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-flash-lite-latest", "gemini-flash-latest"];
-  return light.find((m) => !available || available.includes(m)) ?? candidateModels(available)[0];
+  return "gemini-1.5-flash";
 }
 
 async function sendMessage(chatId: number, text: string, keyboard?: object): Promise<number | null> {
