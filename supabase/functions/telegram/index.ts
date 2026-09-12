@@ -834,9 +834,12 @@ Deno.serve(async (req: Request) => {
         }
       } else if (data.startsWith("snooze_")) {
         const id = data.replace("snooze_", "");
+        const { data: rem } = await supabase.from("reminders").select("snooze_count").eq("id", id).single();
+        const newSnoozeCount = (rem?.snooze_count || 0) + 1;
+        
         background(
           Promise.all([
-            supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null }).eq("id", id),
+            supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null, snooze_count: newSnoozeCount }).eq("id", id),
             supabase.from("users").update({ streak_days: 0 }).eq("chat_id", chatId),
             logBehavior(supabase, chatId, "reminder_snoozed"),
           ]),
@@ -893,6 +896,52 @@ Deno.serve(async (req: Request) => {
     } else if (message.video) {
       fileId = message.video.thumbnail?.file_id || message.video.thumb?.file_id || null;
       if (!text) text = "(סרטון וידאו)";
+    } else if (message.document) {
+      if (message.document.mime_type === "text/vcard" || (message.document.file_name || "").endsWith(".vcf")) {
+        // Handle vCard upload directly here
+        const vcardFile = await getTelegramFile(message.document.file_id);
+        if (vcardFile && vcardFile.mimeType === "text/vcard") {
+          const vcardText = atob(vcardFile.data); // Decode base64
+          const birthdays = [];
+          const lines = vcardText.split("\n");
+          let currentName = "איש קשר";
+          for (const line of lines) {
+            if (line.startsWith("FN:")) currentName = line.replace("FN:", "").trim();
+            if (line.startsWith("BDAY:")) {
+              const bdayMatch = line.match(/BDAY.*:([0-9-]{10})/);
+              if (bdayMatch) {
+                birthdays.push({ name: currentName, date: bdayMatch[1] });
+              }
+            }
+          }
+          if (birthdays.length > 0) {
+            const inserts = [];
+            for (const bday of birthdays) {
+              const [year, month, day] = bday.date.split("-");
+              const nextDate = new Date();
+              nextDate.setMonth(parseInt(month) - 1, parseInt(day));
+              nextDate.setHours(9, 0, 0, 0); // 09:00 AM
+              // Subtract 2 days for the reminder
+              nextDate.setDate(nextDate.getDate() - 2);
+              if (nextDate.getTime() < Date.now()) nextDate.setFullYear(nextDate.getFullYear() + 1);
+              inserts.push({
+                chat_id: chatId,
+                text: `לקנות מתנה ליום ההולדת של ${bday.name} (שחל ב-${day}/${month})`,
+                type: "yearly",
+                time: nextDate.toISOString(),
+                active: true,
+              });
+            }
+            await supabase.from("reminders").insert(inserts);
+            await sendMessage(chatId, `🎉 מיובא! סינכרנתי ${birthdays.length} ימי הולדת מהאנשי קשר שלך. אני אזכיר לך יומיים לפני כל יום הולדת כדי שתספיק להתארגן.`);
+          } else {
+            await sendMessage(chatId, "לא מצאתי תאריכי ימי הולדת בקובץ הזה. 🤷");
+          }
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+      }
+      fileId = message.document.file_id;
+      if (!text) text = `(קובץ מסוג ${message.document.mime_type})`;
     }
 
     if (fileId) {
@@ -1054,6 +1103,66 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
+async function sendPhoto(chatId: number, photo: string, caption?: string): Promise<boolean> {
+  const body: Record<string, unknown> = { chat_id: chatId, photo };
+  if (caption) body.caption = caption;
+  const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendPhoto`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  return response.ok;
+}
+
+    if (/^(הוסף הרגל|הרגל חדש)\s*(.+)/ui.test(text)) {
+      const match = text.match(/^(הוסף הרגל|הרגל חדש)\s*(.+)/ui);
+      if (match && match[2]) {
+        const title = match[2].trim();
+        await supabase.from("habits").insert({ chat_id: chatId, title });
+        await sendMessage(chatId, `הוספתי את ההרגל "${title}". כל פעם שתעשה את זה, פשוט תכתוב "עשיתי ${title}" או תשתמש בפקודה "הרגלים" כדי לראות את הגרף.`);
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    }
+
+    if (/^(עשיתי|ביצעתי)\s*(.+)/ui.test(text)) {
+      const match = text.match(/^(עשיתי|ביצעתי)\s*(.+)/ui);
+      if (match && match[2]) {
+        const title = match[2].trim();
+        const { data: habits } = await supabase.from("habits").select("id").eq("chat_id", chatId).ilike("title", `%${title}%`);
+        if (habits && habits.length > 0) {
+          const today = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
+          await supabase.from("habit_logs").upsert({ habit_id: habits[0].id, chat_id: chatId, date_logged: today }, { onConflict: "habit_id, date_logged" });
+          await sendMessage(chatId, `כל הכבוד! סימנתי שעשית "${title}" היום. 💪`);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+      }
+    }
+
+    if (/^(הרגלים|ההרגלים שלי|גרף הרגלים)$/ui.test(text.trim())) {
+      const { data: habits } = await supabase.from("habits").select("id, title").eq("chat_id", chatId).eq("active", true);
+      if (!habits || habits.length === 0) {
+        await sendMessage(chatId, 'אין לך הרגלים במעקב. כתוב "הוסף הרגל [שם ההרגל]" כדי להתחיל.');
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      const { data: logs } = await supabase.from("habit_logs").select("habit_id, date_logged").eq("chat_id", chatId).order("date_logged", { ascending: false }).limit(300);
+      let msg = "ההרגלים שלך:\n\n";
+      for (const h of habits) {
+        msg += `**${h.title}**\n`;
+        let grid = "";
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date();
+          d.setDate(d.getDate() - i);
+          const dateStr = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(d);
+          grid += logs?.some(l => l.habit_id === h.id && l.date_logged === dateStr) ? "🟩" : "⬜";
+        }
+        msg += grid + "\n\n";
+      }
+      const labels = habits.map(h => h.title);
+      const data = habits.map(h => logs?.filter(l => l.habit_id === h.id).length || 0);
+      const chartJson = { type: 'bar', data: { labels, datasets: [{ label: 'ביצועים', data, backgroundColor: 'rgba(54, 162, 235, 0.5)' }] } };
+      const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartJson))}&w=500&h=300`;
+      await sendPhoto(chatId, chartUrl, msg + `\n(כדי לסמן ביצוע, כתוב "עשיתי [שם ההרגל]")`);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
     if (/^(רעיון|פתק|מתישהו|לזכור):\s*(.+)/ui.test(text)) {
       const match = text.match(/^(רעיון|פתק|מתישהו|לזכור):\s*(.+)/ui);
       if (match && match[2]) {
@@ -1064,9 +1173,43 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    if (media && media.mimeType.startsWith("image/")) {
+      try {
+        const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
+        const nowStr = timeFormatter.format(new Date());
+        const model = await extractionModel(GEMINI_API_KEY);
+        const prompt = `אתה בוט חכם שיודע לקרוא טקסט מתמונות. התמונה שצורפה יכולה להיות פלייר, קבלה, הזמנה או פתק.
+הזמן המקומי כרגע בישראל הוא: ${nowStr}.
+אם יש בתמונה אזכור לאירוע, תור, פגישה או דד-ליין (למשל תור לרופא, חתונה, תשלום חשבון) - חלץ את המשימה ואת תאריך והשעה.
+אם אין שעה ספציפית אבל יש תאריך, תציע 09:00 בבוקר או שעה הגיונית.
+החזר אך ורק אובייקט JSON תקני עם השדות הבאים (ואם אין משימה רלוונטית בתמונה, החזר {"task": null}):
+"task": ניסוח קצר של המשימה (למשל "תור לרופא", "חתונה של דוד").
+"time": הזמן בפורמט ISO 8601 (חייב להיות עתידי).
+"reason": למה בחרת בזמן הזה (למשל "מופיע בהזמנה", "מופיע בקבלה").
+אל תחזיר שום טקסט מחוץ ל-JSON.`;
+
+        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, prompt, [], "החזר JSON בלבד", 8_000, media);
+        if (res.ok) {
+          const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
+          if (smart.task && smart.time) {
+            const dueAt = new Date(smart.time);
+            if (dueAt.getTime() > Date.now()) {
+              await supabase.from("reminders").insert({ chat_id: chatId, text: smart.task, type: "once", time: dueAt.toISOString(), active: true });
+              const label = reminderScheduleLabel(dueAt, "once");
+              await sendMessage(chatId, `ראיתי שיש בתמונה פרטים על "${smart.task}". קבעתי לך תזכורת אוטומטית ל-${label}!\n\n(סיבה: ${smart.reason})`);
+              return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("[ocr] failed:", e);
+      }
+    }
+
     if (detectReminderIntent(text)) {
+      const isWeatherDependent = /גשם|מטריה|גשום|שמש|חם|קר|מזג אוויר|סערה|שלג/ui.test(text);
       const parsed = parseReminder(text);
-      if (parsed) {
+      if (parsed && !isWeatherDependent) {
         const { data: duplicates } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
         const duplicate = (duplicates ?? []).find((item: any) => item.text.trim().toLowerCase() === parsed.task.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
         if (duplicate) {
@@ -1079,21 +1222,22 @@ Deno.serve(async (req: Request) => {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       
-      // Smart Scheduling: If no explicit time was provided, use Gemini to suggest a logical time
+      // Smart Scheduling & Weather Parsing fallback
       try {
         const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
         const nowStr = timeFormatter.format(new Date());
         const model = await extractionModel(GEMINI_API_KEY);
         const prompt = `המשתמש ביקש תזכורת: "${text}".
 הזמן המקומי כרגע בישראל הוא: ${nowStr}.
-אם המשתמש ציין במפורש תאריך ושעה (למשל "ב-25/11 בשעה 14:00"), חלץ אותם במדויק. 
-אם המשתמש לא ציין מתי להזכיר לו, הצע מועד הגיוני לתזכורת בעתיד בהתבסס על המשימה (למשל: שיחות למוסדות - 09:00).
-אם לא ניתן להסיק, קבע לעוד שעתיים.
+אם המשתמש ציין במפורש תאריך ושעה (למשל "ב-25/11 בשעה 14:00" או "בעוד שעתיים"), חלץ אותם במדויק. 
+אם המשתמש לא ציין מתי להזכיר לו, הצע מועד הגיוני לתזכורת בעתיד בהתבסס על המשימה.
+בנוסף, אם המשתמש התנה את התזכורת במזג האוויר (למשל "אלא אם יורד גשם" או "רק אם שמש"), חלץ את התנאי הזה.
 החזר אך ורק אובייקט JSON תקני עם:
-"task": ניסוח קצר של המשימה נטו (למשל "תור לרופא").
+"task": ניסוח קצר של המשימה נטו ללא מילות התנאי (למשל "לקחת מטריה").
 "time": הזמן שנקבע בפורמט ISO 8601 מלא. חייב להיות בעתיד!
 "is_smart_guess": boolean (true אם המשתמש לא ציין זמן והיית צריך להסיק לבד, false אם הוא ציין זמן במפורש).
-"reason": הסבר קצר (למשל "צוין בבקשה" או "שעות פעילות").
+"reason": הסבר קצר לזמן שנבחר.
+"weather_condition": מילת מפתח באנגלית לתנאי ("rain", "clear", "hot", "cold") או null אם אין תנאי.
 אל תחזיר טקסט מחוץ ל-JSON.`;
         
         const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 8_000);
@@ -1102,7 +1246,7 @@ Deno.serve(async (req: Request) => {
           if (smart.time && smart.task) {
             const dueAt = new Date(smart.time);
             if (dueAt.getTime() > Date.now()) {
-              await supabase.from("reminders").insert({ chat_id: chatId, text: smart.task, type: "once", time: dueAt.toISOString(), active: true });
+              await supabase.from("reminders").insert({ chat_id: chatId, text: smart.task, type: "once", time: dueAt.toISOString(), weather_condition: smart.weather_condition || null, active: true });
               const label = reminderScheduleLabel(dueAt, "once");
               const personality = resolveActivePersonality(user);
               const customMessage = pickReminderCreated(personality, smart.task, label);
