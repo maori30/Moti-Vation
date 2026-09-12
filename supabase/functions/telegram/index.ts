@@ -981,6 +981,11 @@ Deno.serve(async (req: Request) => {
     const user = await touchUser(chatId, firstName);
     const personality = resolveActivePersonality(user);
 
+    if (text === "DEBUG_MODELS") {
+      const models = await listAvailableModels(GEMINI_API_KEY) ?? [];
+      await sendMessage(chatId, `Models (${models.length}):\n${models.join(", ")}`);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
 
     if (text === "/start") {
       await sendMessage(chatId, `שלום ${firstName}! בחר מי ידבר איתך:`, personalityKeyboard());
