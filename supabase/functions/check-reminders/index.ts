@@ -79,16 +79,41 @@ async function sendTelegramAnimation(chatId: number, animationUrl: string, capti
 
 const GIPHY_API_KEY = Deno.env.get("GIPHY_API_KEY") ?? "";
 
-async function fetchGifForTask(task: string): Promise<string | null> {
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+
+async function fetchGifForTask(task: string, personality: string, botMessage: string): Promise<string | null> {
   if (!GIPHY_API_KEY) return null;
-  // Send GIF 100% of the time for now so user can see it works!
   try {
-    let query = encodeURIComponent(task.slice(0, 50));
+    let englishQuery = "motivation";
+    if (GEMINI_API_KEY) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+      const prompt = `You are a bot with personality '${personality}'.
+You just sent the user this message: "${botMessage}"
+For the task: "${task}"
+Generate a short (1-3 words) English search query for Giphy that perfectly matches the emotion, tone, and context of your message. 
+For example, if you are cynical and sarcastic, maybe "rolling eyes" or "whatever". If you are a strict coach, maybe "yelling coach" or "do it now".
+Return ONLY the english keywords, nothing else.`;
+      const aiRes = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 10 }
+        })
+      });
+      if (aiRes.ok) {
+        const data = await aiRes.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        if (text) englishQuery = text;
+      }
+    }
+
+    let query = encodeURIComponent(englishQuery);
     let url = `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${query}&limit=5`;
     let res = await fetch(url);
     let data = res.ok ? await res.json() : null;
     
-    // If no results for Hebrew task, fallback to a generic English motivational GIF
+    // Fallback if no results
     if (!data?.data?.length) {
       const fallbacks = ["just do it", "motivation", "you can do it", "get to work", "do it now"];
       const randomFallback = fallbacks[Math.floor(Math.random() * fallbacks.length)];
@@ -453,7 +478,7 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         const base = buildReminderMessage(personality, reminder.text);
         const message = isNudge ? buildNudgeMessage(base) : base;
 
-        const gifUrl = await fetchGifForTask(reminder.text);
+        const gifUrl = await fetchGifForTask(reminder.text, personality, message);
         const keyboard = keyboardForReminder(reminder.id, needsConfirmation);
         
         let success = false;
