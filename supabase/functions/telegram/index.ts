@@ -1307,7 +1307,8 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
            throw new Error(`API Error: ${res.status} - ${res.error}`);
         }
       } catch (e) {
-        const debugMsg = `DEBUG: Smart Scheduling failed! Reason: ${(e as Error).message}`;
+        const availableStr = availableModels ? availableModels.join(", ") : "null";
+        const debugMsg = `DEBUG: Smart Scheduling failed! Reason: ${(e as Error).message}\nAvailable models: ${availableStr}`;
         await sendMessage(chatId, debugMsg);
         await supabase.from("messages").insert({ chat_id: chatId, role: "assistant", content: debugMsg });
         // Fallback to conversational request for time
