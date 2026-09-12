@@ -652,6 +652,9 @@ async function findReminderForDeletion(chatId: number, text: string): Promise<Ac
 
 function parseReminder(text: string): ParsedReminder | null {
   const input = text.trim();
+  if (/\b\d{1,2}[\/.]\d{1,2}\b/.test(input)) {
+    return null; // Explicit dates should be handled by Gemini smart scheduling
+  }
   const now = new Date();
   let type: ParsedReminder["type"] = "once";
   let dueAt: Date | null = null;
