@@ -475,8 +475,11 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         const personality = personalities.get(reminder.chat_id) ?? "cynic";
         const needsConfirmation = reminder.confirm_needed === true;
         const isNudge = needsConfirmation && Boolean(reminder.nudge_sent_at);
-        const base = buildReminderMessage(personality, reminder.text);
-        const message = isNudge ? buildNudgeMessage(base) : base;
+        let message = await generateNaturalReminder(Deno.env.get("GEMINI_API_KEY") || "", personality, reminder.text, isNudge);
+        if (!message) {
+          const base = buildReminderMessage(personality, reminder.text);
+          message = isNudge ? buildNudgeMessage(base) : base;
+        }
 
         const gifUrl = await fetchGifForTask(reminder.text, personality, message);
         const keyboard = keyboardForReminder(reminder.id, needsConfirmation);
