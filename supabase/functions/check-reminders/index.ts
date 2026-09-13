@@ -28,7 +28,7 @@ async function sendTelegramMessage(chatId: number, text: string, keyboard?: obje
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      console.error(`[check-reminders] Telegram text ${response.status}: ${(await response.text()).slice(0, 300)}`); return false;
+      const errTxt = await response.text(); await supabase.from("messages").insert({ chat_id: chatId, role: "system", content: "DEBUG check-reminders send msg failed: " + response.status + " " + errTxt }); return false;
       return false;
     }
     return true;
