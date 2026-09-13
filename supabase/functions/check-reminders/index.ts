@@ -435,6 +435,35 @@ Deno.serve(async () => {
       .in("chat_id", chatIds);
     const personalities = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.personality ?? "cynic"]));
 
+async function generateNaturalReminder(apiKey: string, personality: string, text: string, isNudge: boolean): Promise<string> {
+  if (!apiKey) return "";
+  const systemPrompt = "You are an Israeli assistant with personality '" + personality + "'. 
+Your task is to generate a natural, flowing Hebrew sentence to remind the user about their task: '" + text + "'.
+Do NOT use colons (:) or robotic formats like 'תזכורת: לקחת כדור'. Integrate the task naturally.
+" + (isNudge ? "This is a NUDGE because they didn't confirm the first time. Be a bit more insistent." : "This is the first reminder.") + "
+Keep it short, max 1-2 sentences. Output ONLY the Hebrew text.";
+
+  try {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=" + apiKey, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: systemPrompt }] }]
+      })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+      rawText = rawText.replace(/\*\*/g, ""); // strip markdown bold
+      rawText = rawText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); // escape HTML for Telegram
+      return rawText;
+    }
+    return "";
+  } catch (e) {
+    return "";
+  }
+}
+
 async function checkWeatherCondition(condition: string): Promise<boolean> {
   try {
     const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=32.08&longitude=34.78&daily=precipitation_sum,temperature_2m_max&timezone=Asia%2FJerusalem");
@@ -522,3 +551,5 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
   }
 });
+
+
