@@ -411,6 +411,24 @@ async function callGoogleGeminiModel(
   }
 }
 
+async function callModelWithFailover(apiKey: string, prompt: string, history: HistoryMessage[], text: string, timeoutMs: number, media?: MediaPart | null) {
+  const available = availableModels ?? await listAvailableModels(apiKey);
+  for (const model of candidateModels(available)) {
+    const res = await callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, media);
+    if (res.ok) {
+      goodModel = model;
+      modelHealth.set(model, 0);
+      return { content: res.content, debug: model };
+    }
+    if ((res as any).status === 404 || (res as any).status === 403 || (res as any).status === 400) {
+      modelHealth.set(model, Date.now() + 3_600_000);
+      if (goodModel === model) goodModel = null;
+      availableCheckedAt = 0;
+    }
+  }
+  throw new Error("All candidate models failed API requests");
+}
+
 // Current active generation models in Google AI Studio
 const MODEL_PREFERENCE = [
   "gemini-1.5-flash",
@@ -473,32 +491,20 @@ async function generateAiReply(
   media?: MediaPart | null,
 ): Promise<{ content: string; debug?: string } | null> {
   const apiKey = GEMINI_API_KEY;
-  if (!apiKey) {
-    console.error("[gemini-critical] GEMINI_API_KEY is empty in Supabase Environment Secrets!");
+  if (!apiKey) return null;
+  try {
+    return await callModelWithFailover(apiKey, prompt, history, text, 10_000, media);
+  } catch (e) {
     return null;
   }
-
-  const available = availableModels ?? await listAvailableModels(apiKey);
-  if (availableModels) void listAvailableModels(apiKey);
-
-  for (const model of candidateModels(available)) {
-    const res = await callGoogleGeminiModel(apiKey, model, prompt, history, text, 10_000, media);
-    if (res.ok) {
-      goodModel = model;
-      modelHealth.set(model, 0);
-      return { content: res.content, debug: model };
-    }
-    if ((res as any).status === 404 || (res as any).status === 403 || (res as any).status === 400) {
-      modelHealth.set(model, Date.now() + 3_600_000);
-      if (goodModel === model) goodModel = null;
-      availableCheckedAt = 0;
-    }
-  }
-
-  return null;
 }
 
 async function extractionModel(apiKey: string): Promise<string> {
+  const available = availableModels ?? await listAvailableModels(apiKey);
+  for (const model of candidateModels(available)) {
+    if (modelHealth.get(model) && modelHealth.get(model)! > Date.now()) continue;
+    return model;
+  }
   return "gemini-1.5-flash";
 }
 
@@ -769,7 +775,7 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
   try {
     const caller = async (payload: any) => {
       const model = await extractionModel(GEMINI_API_KEY);
-      const res = await callModelWithFailover(GEMINI_API_KEY, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
+      const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
       if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };
       return { ok: false };
     };
@@ -983,7 +989,14 @@ Deno.serve(async (req: Request) => {
 
     if (text === "DEBUG_MODELS") {
       const models = await listAvailableModels(GEMINI_API_KEY) ?? [];
-      await sendMessage(chatId, `Models (${models.length}):\n${models.join(", ")}`);
+      const msg = `Models (${models.length}):\n${models.join(", ")}`;
+      await sendMessage(chatId, msg);
+      await supabase.from("messages").insert({ chat_id: chatId, role: "assistant", content: msg });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (text === "/testai") {
+      const res = await generateAiReply("test", [], "test");
+      await sendMessage(chatId, `AI used model: ${res?.debug ?? "failed"}`);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
@@ -1003,7 +1016,7 @@ Deno.serve(async (req: Request) => {
         `מועמדים: ${candidateModels(available).join(", ")}`,
         `זמינים למפתח: ${available ? available.filter((m) => /gemini/.test(m)).slice(0, 10).join(", ") : "לא נבדק"}`,
       ];
-      const probe = await callModelWithFailover(GEMINI_API_KEY, "ענה במילה אחת", [], "בדיקה", 8_000).catch(e => ({ok: false, status: e.message})); probe.ok = probe.content !== undefined;
+      const probe = await callGoogleGeminiModel(GEMINI_API_KEY, candidateModels(available)[0], "ענה במילה אחת", [], "בדיקה", 8_000);
       lines.push(`בדיקת שיחה: ${probe.ok ? "עובד ✅" : `נכשל ❌ (${(probe as any).status})`}`);
       await sendMessage(chatId, lines.join("\n"));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -1106,7 +1119,7 @@ Deno.serve(async (req: Request) => {
 "target_date": זמן היעד בפורמט ISO 8601 מלא בעתיד (למשל "2026-10-15T12:00:00.000Z").
 אל תחזיר טקסט מחוץ ל-JSON.`;
         
-        const res = await callModelWithFailover(GEMINI_API_KEY, prompt, [], "החזר JSON בלבד", 8_000); res.ok = true;
+        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, prompt, [], "החזר JSON בלבד", 8_000);
         if (res.ok) {
           const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
           if (smart.target_date && smart.title) {
@@ -1230,7 +1243,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 "reason": למה בחרת בזמן הזה (למשל "מופיע בהזמנה", "מופיע בקבלה").
 אל תחזיר שום טקסט מחוץ ל-JSON.`;
 
-        const res = await callModelWithFailover(GEMINI_API_KEY, prompt, [], "החזר JSON בלבד", 8_000, media); res.ok = true;
+        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, prompt, [], "החזר JSON בלבד", 8_000, media);
         if (res.ok) {
           const smart = JSON.parse(res.content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
           if (smart.task && smart.time) {
@@ -1283,7 +1296,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 "weather_condition": מילת מפתח באנגלית לתנאי ("rain", "clear", "hot", "cold") או null אם אין תנאי.
 אל תחזיר טקסט מחוץ ל-JSON.`;
         
-        const res = await callModelWithFailover(GEMINI_API_KEY, "החזר JSON בלבד", [], prompt, 20_000); res.ok = true;
+        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 20_000);
         if (res.ok) {
           const jsonMatch = res.content.match(/\{[\s\S]*\}/);
           if (!jsonMatch) throw new Error("No JSON object found in response: " + res.content);
