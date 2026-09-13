@@ -437,14 +437,10 @@ Deno.serve(async () => {
 
 async function generateNaturalReminder(apiKey: string, personality: string, text: string, isNudge: boolean): Promise<string> {
   if (!apiKey) return "";
-  const systemPrompt = "You are an Israeli assistant with personality '" + personality + "'. 
-Your task is to generate a natural, flowing Hebrew sentence to remind the user about their task: '" + text + "'.
-Do NOT use colons (:) or robotic formats like 'תזכורת: לקחת כדור'. Integrate the task naturally.
-" + (isNudge ? "This is a NUDGE because they didn't confirm the first time. Be a bit more insistent." : "This is the first reminder.") + "
-Keep it short, max 1-2 sentences. Output ONLY the Hebrew text.";
+  const systemPrompt = "You are an Israeli assistant with personality '" + personality + "'.\nYour task is to generate a natural, flowing Hebrew sentence to remind the user about their task: '" + text + "'.\nDo NOT use colons (:) or robotic formats like 'תזכורת: לקחת כדור'. Integrate the task naturally.\n" + (isNudge ? "This is a NUDGE because they didn't confirm the first time. Be a bit more insistent." : "This is the first reminder.") + "\nKeep it short, max 1-2 sentences. Output ONLY the Hebrew text.";
 
   try {
-    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=" + apiKey, {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + apiKey, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -551,5 +547,6 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
   }
 });
+
 
 
