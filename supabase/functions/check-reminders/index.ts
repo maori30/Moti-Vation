@@ -483,7 +483,7 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
   }
 }
 
-    let sent = 0; let failed = 0;
+    let errs = []; let sent = 0; let failed = 0;
 
     for (const reminder of reminders) {
       try {
@@ -545,7 +545,7 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
       }
     }
 
-    return new Response(JSON.stringify({ ok: true, sent, failed }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, sent, failed, errs }), { status: 200 });
   } catch (error) {
     console.error("[check-reminders] fatal:", error);
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
