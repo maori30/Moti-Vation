@@ -493,8 +493,7 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         }
 
         if (!success) {
-          failed++;
-          continue;
+          await supabase.from("messages").insert({ chat_id: reminder.chat_id, role: "system", content: "DEBUG check-reminders success was false for message: " + message }); failed++; continue;
         }
 
         if (reminder.type === "once" && needsConfirmation && !isNudge) {
