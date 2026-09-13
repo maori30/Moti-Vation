@@ -28,7 +28,7 @@ async function sendTelegramMessage(chatId: number, text: string, keyboard?: obje
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      console.error(`[check-reminders] Telegram text ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      throw new Error(`Telegram text ${response.status}: ${(await response.text()).slice(0, 300)}`);
       return false;
     }
     return true;
@@ -47,7 +47,7 @@ async function editTelegramMessageText(chatId: number, messageId: number, text: 
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      console.error(`[check-reminders] Telegram edit ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      throw new Error(`Telegram edit ${response.status}: ${(await response.text()).slice(0, 300)}`);
       return false;
     }
     return true;
@@ -454,8 +454,7 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
   }
 }
 
-    let sent = 0;
-    let failed = 0;
+    let sent = 0; let failed = 0; let debugErrors: any[] = [];
 
     for (const reminder of reminders) {
       try {
@@ -494,7 +493,7 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         }
 
         if (!success) {
-          failed++;
+          failed++; debugErrors.push(error ? error.message || error : "unknown failure");
           continue;
         }
 
@@ -515,11 +514,11 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         sent++;
       } catch (error) {
         console.error(`[check-reminders] reminder ${reminder.id} failed:`, error);
-        failed++;
+        failed++; debugErrors.push(error ? error.message || error : "unknown failure");
       }
     }
 
-    return new Response(JSON.stringify({ ok: true, sent, failed }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, sent, failed, debugMessage: message, debugErrors }), { status: 200 });
   } catch (error) {
     console.error("[check-reminders] fatal:", error);
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
