@@ -522,7 +522,7 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         }
 
         if (!success) {
-          failed++; continue;
+          await supabase.from("messages").insert({ chat_id: reminder.chat_id, role: "system", content: "DEBUG failure inside loop!" }); failed++; continue;
         }
 
         if (reminder.type === "once" && needsConfirmation && !isNudge) {
@@ -541,7 +541,7 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         }
         sent++;
       } catch (error) {
-        console.error(`[check-reminders] reminder ${reminder.id} failed:`, error); failed++;
+        console.error(`[check-reminders] reminder ${reminder.id} failed:`, error); await supabase.from("messages").insert({ chat_id: reminder.chat_id, role: "system", content: "DEBUG exception: " + String(error) }); failed++; 
       }
     }
 
