@@ -431,8 +431,9 @@ async function callModelWithFailover(apiKey: string, prompt: string, history: Hi
 
 // Current active generation models in Google AI Studio
 const MODEL_PREFERENCE = [
-  "gemini-1.5-flash",
-  "gemini-1.5-pro",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
 ];
 
 const modelHealth = new Map<string, number>();
@@ -480,7 +481,7 @@ function candidateModels(available: string[] | null): string[] {
   const ordered = goodModel && preferred.includes(goodModel)
     ? [goodModel, ...preferred.filter((m) => m !== goodModel)]
     : preferred;
-  return ordered.length ? ordered : ["gemini-1.5-flash"];
+  return ordered.length ? ordered : ["gemini-3.6-flash"];
 }
 
 // Generate AI reply, trying current generation Gemini models in order
@@ -774,7 +775,8 @@ ${layers.filter(Boolean).join("\n")}
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
     const caller = async (payload: any) => {
-      const res = await callModelWithFailover(GEMINI_API_KEY, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000).catch(e => ({ok: false, status: e.message})); res.ok = res.content !== undefined;
+      const model = await extractionModel(GEMINI_API_KEY);
+      const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
       if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };
       return { ok: false };
     };
