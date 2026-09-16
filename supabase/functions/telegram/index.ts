@@ -732,6 +732,18 @@ async function answerCallback(id: string) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
 }
 
+async function editMessageReplyMarkup(chatId: number, messageId: number, replyMarkup: object = { inline_keyboard: [] }) {
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/editMessageReplyMarkup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: replyMarkup }),
+    });
+  } catch (error) {
+    console.error("[telegram] editMessageReplyMarkup exception:", error);
+  }
+}
+
 // Master conversational AI prompt: deep comprehension, culture, quick wit & natural flow
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[], media?: MediaPart | null): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
@@ -827,6 +839,9 @@ Deno.serve(async (req: Request) => {
         await sendMessage(chatId, "בחר אישיות:", personalityKeyboard());
       } else if (data.startsWith("done_reminder_")) {
         const id = data.replace("done_reminder_", "");
+        if (callback.message?.message_id) {
+          background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
+        }
         const { data: reminder } = await supabase.from("reminders").select("id, chat_id, text, type, time").eq("id", id).maybeSingle();
         if (reminder) {
           const { data: userData } = await supabase.from("users").select("points, streak_days, last_productive_day, badges").eq("chat_id", chatId).single();
@@ -865,6 +880,9 @@ Deno.serve(async (req: Request) => {
         }
       } else if (data.startsWith("snooze_")) {
         const id = data.replace("snooze_", "");
+        if (callback.message?.message_id) {
+          background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
+        }
         const { data: rem } = await supabase.from("reminders").select("snooze_count").eq("id", id).single();
         const newSnoozeCount = (rem?.snooze_count || 0) + 1;
         
@@ -886,7 +904,14 @@ Deno.serve(async (req: Request) => {
         const { error } = await supabase.from("reminders").update({ active: false }).eq("id", id).eq("chat_id", chatId);
         await sendMessage(chatId, error ? "לא הצלחתי למחוק. נסה שוב עוד רגע." : "נמחקה. לא אטריד אותך על זה יותר.");
       } else if (data === "cancel_delete_reminder") {
+        if (callback.message?.message_id) {
+          background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
+        }
         await sendMessage(chatId, "סבבה, נשארת כמו שהיא.");
+      } else if (data === "dismiss") {
+        if (callback.message?.message_id) {
+          background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
+        }
       }
 
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -1099,7 +1124,8 @@ Deno.serve(async (req: Request) => {
     }
 
     if (detectDone(text)) {
-      const { data: reminders } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true);
+      const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+      const { data: reminders } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true).lte("time", soon);
       const match = (reminders ?? []).find((reminder: any) => reminder.text.split(/\s+/).some((word: string) => word.length > 2 && text.includes(word)));
       if (match) {
         await sendMessage(chatId, `זה קשור ל"${match.text}"?`, { inline_keyboard: [[{ text: "✅ סיימתי", callback_data: `done_reminder_${match.id}` }, { text: "לא", callback_data: "dismiss" }]] });
@@ -1451,3 +1477,4 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
   }
 });
+
