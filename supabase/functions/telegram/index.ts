@@ -1419,8 +1419,8 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     const lastMsg = history.length > 0 ? history[history.length - 1] : null;
     const gapMinutes = lastMsg?.created_at ? (Date.now() - new Date(lastMsg.created_at).getTime()) / 60_000 : 0;
     let timeGapLayer = "";
-    if (gapMinutes > 180) { // 3 hours
-      timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes / 60)} שעות מאז ההודעה האחרונה. הגב בהתאם לפער הזמן ואל תמשיך את השיחה בדיוק מאותה נקודה. אם דיברתם קודם על משימה פתוחה, אפשר לשאול איך הלך. אם לא, פשוט תגיד היי או תשאל מה קורה, ואל תמציא נושאים או משימות שלא היו קיימים.`;
+    if (gapMinutes > 20) { // 20 minutes is enough to break context on WhatsApp
+      timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes)} דקות מאז ההודעה האחרונה. זו חזרה לשיחה אחרי הפסקה. התייחס **אך ורק להודעה החדשה** של המשתמש. אל תחזור אחורה להודעות הקודמות מההיסטוריה (ואל תזכיר נושאים שכבר נסגרו כמו מה קרה קודם), אלא אם המשתמש שאל עליהם. תהיה קצר ולעניין.`;
     }
 
     const mode = /אין לי כוח|קשה לי|עייף|שרוף|נמאס|מבאס/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור|סידרתי|ניקיתי|הלכתי|כתבתי/.test(text) ? "success" : "casual";
@@ -1441,7 +1441,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 
     const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, weekday: "long", hour: "2-digit", minute: "2-digit" });
     const currentTimeStr = timeFormatter.format(new Date());
-    const currentTimeLayer = `[מידע רקע (אל תציין או תכתוב את השעה/היום בתשובה שלך אלא אם זה קריטי!)] הזמן הנוכחי: יום ${currentTimeStr}. קח את הזמן בחשבון כדי להבין איפה המשתמש נמצא בשגרת היום שלו.`;
+    const currentTimeLayer = `[מידע רקע נסתר]: הזמן הנוכחי: יום ${currentTimeStr}. אל תציין את היום או השעה בתשובה שלך בשום אופן.`;
 
     const layers = [
       currentTimeLayer,
