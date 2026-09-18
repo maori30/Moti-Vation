@@ -688,6 +688,15 @@ async function findReminderForDeletion(chatId: number, text: string): Promise<Ac
   return reminders.find((r) => query.split(/\s+/).some((w) => w.length > 2 && r.text.toLowerCase().includes(w))) ?? null;
 }
 
+function extractHour(timeMatch: RegExpMatchArray): number {
+  let hour = +timeMatch[1];
+  const ampm = timeMatch[3];
+  if (ampm && /(בערב|בלילה|אחה|אחר הצה|צהריים)/.test(ampm) && hour < 12) {
+    hour += 12;
+  }
+  return hour;
+}
+
 function parseReminder(text: string): ParsedReminder | null {
   const input = text.trim();
   if (/\b\d{1,2}[\/.]\d{1,2}\b/.test(input)) {
@@ -698,9 +707,9 @@ function parseReminder(text: string): ParsedReminder | null {
   let dueAt: Date | null = null;
   let span = "";
 
-  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב\s*-?\s*|בשעה\s*)?(\\d{1,2})(?::(\\d{2})|\\s*וחצי|\\s*ורבע)?/);
+  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב\s*-?\s*|בשעה\s*)?(\d{1,2})(?::(\d{2})|\s*וחצי|\s*ורבע)?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
   if (daily) {
-    const hour = +daily[1];
+    const hour = extractHour(daily);
     const minute = daily[2] ? +daily[2] : /וחצי/.test(daily[0]) ? 30 : /ורבע/.test(daily[0]) ? 15 : 0;
     dueAt = israelTime(hour, minute, now);
     if (dueAt <= now) dueAt = israelTime(hour, minute, now, 1);
@@ -723,8 +732,9 @@ function parseReminder(text: string): ParsedReminder | null {
     const day = input.match(/מחרתיים|מחר|היום/);
     if (day) {
       const add = day[0] === "מחר" ? 1 : day[0] === "מחרתיים" ? 2 : 0;
-      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);
+      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
+      const hour = time ? extractHour(time) : 9;
+      dueAt = israelTime(hour, time?.[2] ? +time[2] : 0, now, add);
       span = day[0] + (time ? time[0] : "");
     }
   }
@@ -735,23 +745,25 @@ function parseReminder(text: string): ParsedReminder | null {
       const target = WEEKDAYS[weekday[1]];
       let add = (target - now.getDay() + 7) % 7;
       if (!add) add = 7;
-      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
-      dueAt = israelTime(time ? +time[1] : 9, time?.[2] ? +time[2] : 0, now, add);
+      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
+      const hour = time ? extractHour(time) : 9;
+      dueAt = israelTime(hour, time?.[2] ? +time[2] : 0, now, add);
       span = weekday[0] + (time ? time[0] : "");
     }
   }
 
   if (!dueAt) {
-    const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?/);
+    const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
     if (time) {
-      dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now);
-      if (dueAt <= now) dueAt = israelTime(+time[1], time[2] ? +time[2] : 0, now, 1);
+      const hour = extractHour(time);
+      dueAt = israelTime(hour, time[2] ? +time[2] : 0, now);
+      if (dueAt <= now) dueAt = israelTime(hour, time[2] ? +time[2] : 0, now, 1);
       span = time[0];
     }
   }
 
   if (!dueAt || !span) return null;
-  const task = input.replace(REMINDERTRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\\s,־-]+$/g, "").trim() || "תזכורת";
+  const task = input.replace(REMINDERTRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim() || "תזכורת";
   return { dueAt, task, type };
 }
 
@@ -1296,12 +1308,18 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
         const { data: duplicates } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
         const duplicate = (duplicates ?? []).find((item: any) => item.text.trim().toLowerCase() === parsed.task.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
         if (duplicate) {
-          await sendMessage(chatId, `כבר יש לך תזכורת כזאת ל"${parsed.task}". לא הוספתי עוד אחת.`);
+          const r = `כבר יש לך תזכורת כזאת ל"${parsed.task}". לא הוספתי עוד אחת.`;
+          await sendMessage(chatId, r);
+          background(saveMessage(chatId, "user", text), "save_user");
+          background(saveMessage(chatId, "assistant", r), "save_reply");
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
         await supabase.from("reminders").insert({ chat_id: chatId, text: parsed.task, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
         const label = reminderScheduleLabel(parsed.dueAt, parsed.type);
-        await sendMessage(chatId, pickReminderCreated(personality, parsed.task, label));
+        const replyText = pickReminderCreated(personality, parsed.task, label);
+        await sendMessage(chatId, replyText);
+        background(saveMessage(chatId, "user", text), "save_user");
+        background(saveMessage(chatId, "assistant", replyText), "save_reply");
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       
@@ -1337,11 +1355,15 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
               const personality = resolveActivePersonality(user);
               const customMessage = pickReminderCreated(personality, smart.task, label);
               
+              let replyText = "";
               if (smart.is_smart_guess) {
-                await sendMessage(chatId, `${customMessage}\n(נקבע אוטומטית כי: ${smart.reason}).\nאם בא לך שעה אחרת, פשוט תכתוב "תשנה למחר ב-10".`);
+                replyText = `${customMessage}\n(נקבע אוטומטית כי: ${smart.reason}).\nאם בא לך שעה אחרת, פשוט תכתוב "תשנה למחר ב-10".`;
               } else {
-                await sendMessage(chatId, customMessage);
+                replyText = customMessage;
               }
+              await sendMessage(chatId, replyText);
+              background(saveMessage(chatId, "user", text), "save_user");
+              background(saveMessage(chatId, "assistant", replyText), "save_reply");
               return new Response(JSON.stringify({ ok: true }), { status: 200 });
             } else {
               throw new Error(`Parsed time is not in the future. dueAt: ${dueAt.toISOString()}, now: ${new Date().toISOString()}`);
@@ -1490,4 +1512,5 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
   }
 });
+
 
