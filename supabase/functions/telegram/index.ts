@@ -260,6 +260,43 @@ function background(promise: Promise<unknown>, label: string): void {
   promise.catch((error) => console.error(`[background:${label}] failed:`, error));
 }
 
+async function markReminderDone(chatId: number, reminderId: string): Promise<string | null> {
+  const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", reminderId).maybeSingle();
+  if (!reminder) return null;
+  const { data: userData } = await supabase.from("users").select("points, streak_days, last_productive_day, badges").eq("chat_id", chatId).single();
+  
+  let points = (userData?.points || 0) + 10;
+  let streak = userData?.streak_days || 0;
+  const today = new Date().toLocaleString("en-CA", { timeZone: "Asia/Jerusalem" }).split(",")[0];
+  
+  let streakMsg = "";
+  if (userData?.last_productive_day !== today) {
+    const yesterday = new Date(Date.now() - 86400000).toLocaleString("en-CA", { timeZone: "Asia/Jerusalem" }).split(",")[0];
+    if (userData?.last_productive_day === yesterday) {
+      streak += 1;
+      streakMsg = `\n🔥 רצף פעילות: ${streak} ימים!`;
+    } else {
+      streak = 1;
+    }
+  }
+
+  let badges = userData?.badges || [];
+  let badgeMsg = "";
+  if (points >= 100 && !badges.includes("מתחיל_לתקתק")) { badges.push("מתחיל_לתקתק"); badgeMsg = "\n🏅 קיבלת תג: מתחיל לתקתק! (100 נק')"; }
+  if (points >= 500 && !badges.includes("מכונת_פרודוקטיביות")) { badges.push("מכונת_פרודוקטיביות"); badgeMsg = "\n🏅 קיבלת תג: מכונת פרודוקטיביות! (500 נק')"; }
+  if (points >= 1000 && !badges.includes("בלתי_עציר")) { badges.push("בלתי_עציר"); badgeMsg = "\n👑 קיבלת תג: בלתי עציר! (1000 נק')"; }
+
+  const writes: Promise<unknown>[] = [
+    supabase.from("users").update({ points, streak_days: streak, last_productive_day: today, badges }).eq("chat_id", chatId),
+    supabase.from("reminder_completions").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text }),
+    logBehavior(supabase, chatId, "reminder_done", { hour: new Date(reminder.time).getHours() }),
+  ];
+  if (reminder.type === "once") writes.push(supabase.from("reminders").update({ active: false }).eq("id", reminder.id));
+  background(Promise.all(writes), "done_reminder_writes");
+  
+  return `\n+10 נק' (סה"כ ${points})${streakMsg}${badgeMsg}`;
+}
+
 export type MediaPart = { mimeType: string, data: string };
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -842,41 +879,10 @@ Deno.serve(async (req: Request) => {
         if (callback.message?.message_id) {
           background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
         }
-        const { data: reminder } = await supabase.from("reminders").select("id, chat_id, text, type, time").eq("id", id).maybeSingle();
-        if (reminder) {
-          const { data: userData } = await supabase.from("users").select("points, streak_days, last_productive_day, badges").eq("chat_id", chatId).single();
-          
-          let points = (userData?.points || 0) + 10;
-          let streak = userData?.streak_days || 0;
-          const today = new Date().toLocaleString("en-CA", { timeZone: "Asia/Jerusalem" }).split(",")[0];
-          
-          let streakMsg = "";
-          if (userData?.last_productive_day !== today) {
-            const yesterday = new Date(Date.now() - 86400000).toLocaleString("en-CA", { timeZone: "Asia/Jerusalem" }).split(",")[0];
-            if (userData?.last_productive_day === yesterday) {
-              streak += 1;
-              streakMsg = `\n🔥 רצף פעילות: ${streak} ימים!`;
-            } else {
-              streak = 1;
-            }
-          }
-
-          let badges = userData?.badges || [];
-          let badgeMsg = "";
-          if (points >= 100 && !badges.includes("מתחיל_לתקתק")) { badges.push("מתחיל_לתקתק"); badgeMsg = "\n🏅 קיבלת תג: מתחיל לתקתק! (100 נק')"; }
-          if (points >= 500 && !badges.includes("מכונת_פרודוקטיביות")) { badges.push("מכונת_פרודוקטיביות"); badgeMsg = "\n🏅 קיבלת תג: מכונת פרודוקטיביות! (500 נק')"; }
-          if (points >= 1000 && !badges.includes("בלתי_עציר")) { badges.push("בלתי_עציר"); badgeMsg = "\n👑 קיבלת תג: בלתי עציר! (1000 נק')"; }
-
-          const writes: Promise<unknown>[] = [
-            supabase.from("users").update({ points, streak_days: streak, last_productive_day: today, badges }).eq("chat_id", chatId),
-            supabase.from("reminder_completions").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text }),
-            logBehavior(supabase, chatId, "reminder_done", { hour: new Date(reminder.time).getHours() }),
-          ];
-          if (reminder.type === "once") writes.push(supabase.from("reminders").update({ active: false }).eq("id", id));
-          background(Promise.all(writes), "done_reminder_writes");
-          
+        const pointsString = await markReminderDone(chatId, id);
+        if (pointsString) {
           const baseReply = pickPersonalized(DONEREPLIES, activePersonality);
-          await sendMessage(chatId, `${baseReply}\n+10 נק' (סה"כ ${points})${streakMsg}${badgeMsg}`);
+          await sendMessage(chatId, `${baseReply}${pointsString}`);
         }
       } else if (data.startsWith("snooze_")) {
         const id = data.replace("snooze_", "");
@@ -1123,16 +1129,11 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    if (detectDone(text)) {
-      const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
-      const { data: reminders } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true).lte("time", soon);
-      const match = (reminders ?? []).find((reminder: any) => reminder.text.split(/\s+/).some((word: string) => word.length > 2 && text.includes(word)));
-      if (match) {
-        await sendMessage(chatId, `זה קשור ל"${match.text}"?`, { inline_keyboard: [[{ text: "✅ סיימתי", callback_data: `done_reminder_${match.id}` }, { text: "לא", callback_data: "dismiss" }]] });
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
-    }
-
+    const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+    const { data: activeRemindersDue } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true).lte("time", soon);
+    const completionInstruction = (activeRemindersDue && activeRemindersDue.length > 0) ? 
+      `חוק קריטי: אם המשתמש מדווח בבירור שביצע או סיים את אחת מהמטלות שלו (במיוחד מהרשימה הבאה:\n${activeRemindersDue.map((r: any) => `- ${r.text} (ID: ${r.id})`).join("\n")}), עליך להוסיף בסוף התשובה שלך את הפקודה: [CMD_COMPLETE:ID] (כאשר ID הוא ה-ID של המטלה). דוגמה: "כל הכבוד שסיימת! [CMD_COMPLETE:1234]". הוסף את הפקודה הזו רק אם הוא סיים אותה בפועל עכשיו, ולא אם הוא רק מדבר עליה. פרגן לו בתגובה עצמה!` : "";
+      
     if (/ספירה לאחור|כמה זמן נשאר/ui.test(text.trim())) {
       try {
         const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
@@ -1427,6 +1428,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
       coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (remData.data ?? []).map((r: { text: string }) => r.text) }),
       moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
       deep.deep ? deepModeInstruction(deep.topic) : pace.instruction, surpriseInstruction(surprise, material), antiRepetitionInstruction(recentPhrases), decision.layer,
+      completionInstruction
     ];
 
     background(saveMessage(chatId, "user", text), "save_user");
@@ -1434,6 +1436,17 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     const reply = await askGemini(text, personality, history, "", layers, media);
 
     let finalReply = reply;
+    
+    const completeMatch = finalReply.match(/\[CMD_COMPLETE:\s*([^\]]+)\]/i);
+    if (completeMatch) {
+      finalReply = finalReply.replace(completeMatch[0], "").trim();
+      const reminderId = completeMatch[1].trim();
+      const pointsString = await markReminderDone(chatId, reminderId);
+      if (pointsString) {
+        finalReply += pointsString;
+      }
+    }
+
     let gifUrl: string | null = null;
     const gifMatch = finalReply.match(/\[GIF:\s*(.+?)\]/i);
     if (gifMatch) {
