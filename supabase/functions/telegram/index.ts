@@ -1395,7 +1395,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
       fetchEvents(supabase, chatId),
       fetchInsideJokes(supabase, chatId),
       fetchRecentPhrases(supabase, chatId),
-      supabase.from("reminders").select("text").eq("chat_id", chatId).eq("active", true),
+      supabase.from("reminders").select("id, text, time").eq("chat_id", chatId).eq("active", true),
     ]);
     const history = histData;
     const memories = rankMemories(memRaw).slice(0, 5);
@@ -1404,6 +1404,8 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     const events = eventsData.slice(0, 3);
     const jokes = jokesData;
     const recentPhrases = phrasesData;
+
+    const remindersContext = (remData.data && remData.data.length > 0) ? `[מערכת]: התזכורות הפעילות של המשתמש כרגע (עם תאריך ושעה):\n${remData.data.map((r: any) => `- ${r.text} (זמן מתוכנן: ${new Date(r.time).toLocaleString("he-IL", { timeZone: TZ })})`).join("\n")}\nהשתמש במידע זה כדי לענות במדויק אם המשתמש שואל מתי תזכורת מסוימת.` : "";
 
     const lastBot = [...history].reverse().find((item) => item.role === "assistant")?.content ?? "";
     const pace = computePacing(text, lastBot, profile);
@@ -1418,9 +1420,11 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 
     const lastMsg = history.length > 0 ? history[history.length - 1] : null;
     const gapMinutes = lastMsg?.created_at ? (Date.now() - new Date(lastMsg.created_at).getTime()) / 60_000 : 0;
+    
     let timeGapLayer = "";
     if (gapMinutes > 20) { // 20 minutes is enough to break context on WhatsApp
-      timeGapLayer = `שים לב: עברו ${Math.round(gapMinutes)} דקות מאז ההודעה האחרונה. זו חזרה לשיחה אחרי הפסקה. התייחס **אך ורק להודעה החדשה** של המשתמש. אל תחזור אחורה להודעות הקודמות מההיסטוריה (ואל תזכיר נושאים שכבר נסגרו כמו מה קרה קודם), אלא אם המשתמש שאל עליהם. תהיה קצר ולעניין.`;
+      timeGapLayer = `שים לב: זו חזרה לשיחה אחרי הפסקה של ${Math.round(gapMinutes)} דקות. התייחס **אך ורק להודעה החדשה** של המשתמש. תהיה קצר ולעניין.`;
+      history.length = 0; // Completely hide old messages from the LLM context so it doesn't hallucinate
     }
 
     const mode = /אין לי כוח|קשה לי|עייף|שרוף|נמאס|מבאס/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור|סידרתי|ניקיתי|הלכתי|כתבתי/.test(text) ? "success" : "casual";
@@ -1447,6 +1451,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
       currentTimeLayer,
       timeGapLayer,
       praiseLayer,
+      remindersContext,
       memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
       coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (remData.data ?? []).map((r: { text: string }) => r.text) }),
       moodInstruction(mood, 0), humor.instruction, toneOverrideInstruction(user.tone_override), followUpNudge(text), linkedReasoning(text, memories, goals, profile), selfCorrectionLayer(text, memories, goals),
