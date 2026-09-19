@@ -1444,8 +1444,10 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     const decision = decisionEngine({ text, pacing: pace, hasMemory: memories.length > 0, hasGoals: goals.length > 0, humorLevel: profile.humor_level, mood: moodLabel(mood) });
 
     const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, weekday: "long", hour: "2-digit", minute: "2-digit" });
+    const fullDateFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "long", day: "numeric" });
     const currentTimeStr = timeFormatter.format(new Date());
-    const currentTimeLayer = `[מידע רקע נסתר]: הזמן הנוכחי: יום ${currentTimeStr}. אל תציין את היום או השעה בתשובה שלך בשום אופן.`;
+    const currentDateStr = fullDateFormatter.format(new Date());
+    const currentTimeLayer = `[מידע רקע נסתר]: הזמן הנוכחי: יום ${currentTimeStr}, התאריך: ${currentDateStr}. אל תציין את היום או השעה בתשובה שלך בשום אופן.`;
 
     const layers = [
       currentTimeLayer,
