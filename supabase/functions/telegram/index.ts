@@ -1516,12 +1516,14 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   } catch (error: any) {
-    const errTxt = JSON.stringify(error);
-    console.error("[telegram] fatal:", errTxt);
+    const errTxt = error instanceof Error ? error.stack : JSON.stringify(error, Object.getOwnPropertyNames(error));
+    const token = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
+    let payload = "invalid";
     try {
-      await supabase.from("messages").insert({ chat_id: 321844446, role: "system", content: "FATAL ERROR: " + errTxt });
-    } catch(e) {}
-    return new Response(JSON.stringify({ ok: false, error: errTxt }), { status: 200 });
+      payload = atob(token.split(".")[1]);
+    } catch (e) {}
+    const debug = `Payload: ${payload} | Error: ${errTxt}`;
+    return new Response(JSON.stringify({ ok: false, error: debug }), { status: 200 });
   }
 });
 
