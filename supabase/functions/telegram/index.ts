@@ -1518,7 +1518,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
   } catch (error: any) {
     const errTxt = error instanceof Error ? error.stack : JSON.stringify(error, Object.getOwnPropertyNames(error));
     const token = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-    let payload = "invalid";
+    let payload = token;
     try {
       payload = atob(token.split(".")[1]);
     } catch (e) {}
