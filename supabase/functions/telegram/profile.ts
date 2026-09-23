@@ -144,7 +144,7 @@ export function bestReminderHour(profile: Profile): string | null {
 
 export function goalContext(goals: Goal[]): string {
   if (!goals.length) return "";
-  return `מטרות פתוחות:\n${goals.slice(0, 5).map((goal) => `- ${goal.title}${goal.deadline ? ` (עד ${goal.deadline})` : ""}${goal.progress ? ` — ${goal.progress}` : ""}`).join("\n")}\nהזכר מטרה רק אם היא קשורה ישירות למה שנאמר עכשיו.`;
+  return `מטרות פתוחות:\n${goals.slice(0, 5).map((goal) => `- ${goal.title}${goal.deadline ? ` (עד ${goal.deadline})` : ""}${goal.progress ? ` — ${goal.progress}` : ""}`).join("\n")}\n\n**אזהרה חמורה**: אל תזכיר מטרה ביוזמתך בשיחת חולין (כמו "היי"). הזכר מטרות אך ורק אם המשתמש מדבר עליהן או מבקש לדבר על מטרות.`;
 }
 
 export async function fetchGoals(supabase: Supa, chatId: number): Promise<Goal[]> {
