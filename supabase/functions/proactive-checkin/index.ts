@@ -3,7 +3,7 @@ import { lifeLoopDecide, markLifeLoopSent } from "./lifeloop.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
+const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -247,3 +247,4 @@ Deno.serve(async () => {
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
   }
 });
+
