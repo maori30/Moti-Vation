@@ -1149,7 +1149,7 @@ Deno.serve(async (req: Request) => {
     const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
     const { data: activeRemindersDue } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true).lte("time", soon);
     const completionInstruction = (activeRemindersDue && activeRemindersDue.length > 0) ? 
-      `חוק קריטי: אם המשתמש מדווח בבירור שביצע או סיים את אחת מהמטלות שלו (במיוחד מהרשימה הבאה:\n${activeRemindersDue.map((r: any) => `- ${r.text} (ID: ${r.id})`).join("\n")}), עליך להוסיף בסוף התשובה שלך את הפקודה: [CMD_COMPLETE:ID] (כאשר ID הוא ה-ID של המטלה). דוגמה: "כל הכבוד שסיימת! [CMD_COMPLETE:1234]". הוסף את הפקודה הזו רק אם הוא סיים אותה בפועל עכשיו. אם אתה לא בטוח לאיזו מטלה הוא התכוון, פשוט תן עידוד מבלי לשאול "זה קשור ל...?". פרגן לו! : "";
+      `חוק קריטי: אם המשתמש מדווח בבירור שביצע או סיים את אחת מהמטלות שלו (במיוחד מהרשימה הבאה:\n${activeRemindersDue.map((r: any) => `- ${r.text} (ID: ${r.id})`).join("\n")}), עליך להוסיף בסוף התשובה שלך את הפקודה: [CMD_COMPLETE:ID] (כאשר ID הוא ה-ID של המטלה). דוגמה: "כל הכבוד שסיימת! [CMD_COMPLETE:1234]". הוסף את הפקודה הזו רק אם הוא סיים אותה בפועל עכשיו. אם אתה לא בטוח לאיזו מטלה הוא התכוון, פשוט תן עידוד מבלי לשאול "זה קשור ל...?". פרגן לו!` : "";
       
     if (/ספירה לאחור|כמה זמן נשאר/ui.test(text.trim())) {
       try {
