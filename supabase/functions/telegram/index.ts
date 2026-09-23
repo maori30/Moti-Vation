@@ -1518,7 +1518,15 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
   } catch (error: any) {
     const errTxt = error instanceof Error ? error.stack : JSON.stringify(error, Object.getOwnPropertyNames(error));
     const token = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-    const keys = Object.keys(Deno.env.toObject()).join(", ");
+    
+    let payload = "invalid";
+    try {
+      const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      const pad = b64.length % 4;
+      const padded = pad ? b64 + "=".repeat(4 - pad) : b64;
+      payload = atob(padded);
+    } catch (e) {}
+
     const debug = `Keys: ${keys} | Error: ${errTxt}`;
     return new Response(JSON.stringify({ ok: false, error: debug }), { status: 200 });
   }
