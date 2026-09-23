@@ -1516,7 +1516,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   } catch (error: any) {
-    const errTxt = error instanceof Error ? error.stack : JSON.stringify(error, Object.getOwnPropertyNames(error));
+    const errTxt = JSON.stringify(error);
     console.error("[telegram] fatal:", errTxt);
     try {
       await supabase.from("messages").insert({ chat_id: 321844446, role: "system", content: "FATAL ERROR: " + errTxt });
