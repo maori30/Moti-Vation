@@ -1387,6 +1387,18 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
       }
     }
 
+    if (text === "/jwt") {
+      const token = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
+      let payload = "";
+      try {
+        const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+        const pad = b64.length % 4;
+        const padded = pad ? b64 + "=".repeat(4 - pad) : b64;
+        payload = atob(padded);
+      } catch (e) { payload = "error"; }
+      await sendMessage(chatId, "Token: " + token.substring(0, 10) + "... Payload: " + payload);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
     const [histData, memRaw, profData, goalsData, eventsData, jokesData, phrasesData, remData] = await Promise.all([
       getHistory(chatId),
       fetchMemories(supabase, chatId),
@@ -1518,15 +1530,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
   } catch (error: any) {
     const errTxt = error instanceof Error ? error.stack : JSON.stringify(error, Object.getOwnPropertyNames(error));
     const token = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-    
-    let payload = "invalid";
-    try {
-      const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-      const pad = b64.length % 4;
-      const padded = pad ? b64 + "=".repeat(4 - pad) : b64;
-      payload = atob(padded);
-    } catch (e) {}
-
+    const keys = Object.keys(Deno.env.toObject()).join(", ");
     const debug = `Keys: ${keys} | Error: ${errTxt}`;
     return new Response(JSON.stringify({ ok: false, error: debug }), { status: 200 });
   }
