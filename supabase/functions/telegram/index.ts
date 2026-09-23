@@ -69,7 +69,7 @@ import {
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
+const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
@@ -1517,8 +1517,8 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   } catch (error: any) {
     const errTxt = error instanceof Error ? error.stack : JSON.stringify(error, Object.getOwnPropertyNames(error));
-    const token = Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-    let payload = token;
+    const token = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
+    let payload = "invalid";
     try {
       payload = atob(token.split(".")[1]);
     } catch (e) {}
@@ -1526,5 +1526,6 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     return new Response(JSON.stringify({ ok: false, error: debug }), { status: 200 });
   }
 });
+
 
 
