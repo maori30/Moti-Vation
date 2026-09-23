@@ -1520,7 +1520,10 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     const token = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
     let payload = "invalid";
     try {
-      payload = atob(token.split(".")[1]);
+      const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      const pad = b64.length % 4;
+      const padded = pad ? b64 + "=".repeat(4 - pad) : b64;
+      payload = atob(padded);
     } catch (e) {}
     const debug = `Payload: ${payload} | Error: ${errTxt}`;
     return new Response(JSON.stringify({ ok: false, error: debug }), { status: 200 });
