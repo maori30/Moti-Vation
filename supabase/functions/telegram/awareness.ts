@@ -96,7 +96,7 @@ function relativeTime(when: string): string {
 export function eventContext(events: UserEvent[]): string {
   if (!events.length) return "";
   const lines = events.map((event) => `- ${IMPORTANCE_ICON[event.importance ?? 2]} ${event.title} (${event.when_at ? relativeTime(event.when_at) : event.when_text ?? "מועד לא ידוע"})`);
-  return `אירועים פתוחים של המשתמש:\n${lines.join("\n")}\nהזכר אירוע רק אם הוא קשור לשיחה או קרוב בזמן. אל תחזור עליו בכל הודעה.`;
+  return `אירועים פתוחים של המשתמש:\n${lines.join("\n")}\n\n**אזהרה חמורה**: מידע זה נועד להקשר בלבד. לעולם אל תזכיר אירועים אלה ביוזמתך בשיחות חולין (למשל כשהמשתמש רק אומר "היי"). הזכר אותם אך ורק אם המשתמש שאל עליהם במפורש או נושא השיחה מצדיק זאת באופן ישיר וברור.`;
 }
 
 export function implicitIntentLayer(text: string, context: { events: UserEvent[]; goals: Goal[]; reminders: string[] }): string {
