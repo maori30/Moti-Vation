@@ -261,8 +261,8 @@ function background(promise: Promise<unknown>, label: string): void {
 }
 
 async function markReminderDone(chatId: number, reminderId: string): Promise<string | null> {
-  const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", reminderId).maybeSingle();
-  if (!reminder) return null;
+  const { data: reminder } = await supabase.from("reminders").select("id, text, type, time, active").eq("id", reminderId).maybeSingle();
+  if (!reminder || reminder.active === false) return null;
   const { data: userData } = await supabase.from("users").select("points, streak_days, last_productive_day, badges").eq("chat_id", chatId).single();
   
   let points = (userData?.points || 0) + 10;
@@ -660,7 +660,7 @@ function reminderLabel(r: ActiveReminder): string {
 }
 
 async function showReminders(chatId: number) {
-  const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true).order("time");
+  const { data } = await supabase.from("reminders").select("id, text, type, time, active").eq("chat_id", chatId).eq("active", true).order("time");
   const reminders = (data ?? []) as ActiveReminder[];
   if (!reminders.length) {
     await sendMessage(chatId, "אין לך כרגע תזכורות פעילות.");
@@ -680,7 +680,7 @@ async function askDeleteReminder(chatId: number, reminder: ActiveReminder) {
 }
 
 async function findReminderForDeletion(chatId: number, text: string): Promise<ActiveReminder | null> {
-  const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
+  const { data } = await supabase.from("reminders").select("id, text, type, time, active").eq("chat_id", chatId).eq("active", true);
   const reminders = (data ?? []) as ActiveReminder[];
   if (!reminders.length) return null;
   const query = text.replace(/מחק|תמחק|לבטל|תבטל|הסר|תסיר|את התזכורת|תזכורת|אותה|אותו/gu, "").trim().toLowerCase();
@@ -916,7 +916,7 @@ Deno.serve(async (req: Request) => {
         await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality) + "\n(שברנו רצף. נודניק מוריד את הסטריק לאפס!)");
       } else if (data.startsWith("ask_delete_reminder_")) {
         const id = data.replace("ask_delete_reminder_", "");
-        const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", id).eq("chat_id", chatId).eq("active", true).maybeSingle();
+        const { data: reminder } = await supabase.from("reminders").select("id, text, type, time, active").eq("id", id).eq("chat_id", chatId).eq("active", true).maybeSingle();
         if (reminder) await askDeleteReminder(chatId, reminder as ActiveReminder);
       } else if (data.startsWith("confirm_delete_reminder_")) {
         const id = data.replace("confirm_delete_reminder_", "");
@@ -1306,7 +1306,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
       const isWeatherDependent = /גשם|מטריה|גשום|שמש|חם|קר|מזג אוויר|סערה|שלג/ui.test(text);
       const parsed = parseReminder(text);
       if (parsed && !isWeatherDependent) {
-        const { data: duplicates } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
+        const { data: duplicates } = await supabase.from("reminders").select("id, text, type, time, active").eq("chat_id", chatId).eq("active", true);
         const duplicate = (duplicates ?? []).find((item: any) => item.text.trim().toLowerCase() === parsed.task.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
         if (duplicate) {
           const r = `כבר יש לך תזכורת כזאת ל"${parsed.task}". לא הוספתי עוד אחת.`;
@@ -1387,18 +1387,6 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
       }
     }
 
-    if (text === "/jwt") {
-      const token = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-      let payload = "";
-      try {
-        const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-        const pad = b64.length % 4;
-        const padded = pad ? b64 + "=".repeat(4 - pad) : b64;
-        payload = atob(padded);
-      } catch (e) { payload = "error"; }
-      await sendMessage(chatId, "Token: " + token.substring(0, 10) + "... Payload: " + payload);
-      return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    }
     const [histData, memRaw, profData, goalsData, eventsData, jokesData, phrasesData, remData] = await Promise.all([
       getHistory(chatId),
       fetchMemories(supabase, chatId),
