@@ -299,7 +299,7 @@ function keyboardForReminder(id: string, needsConfirmation: boolean) {
 
 Deno.serve(async () => {
   try {
-    const now = new Date(); return new Response(JSON.stringify({ DUMMY: 123 }), { status: 200 });
+    const now = new Date();
     
     // Weekly Quick Notes Review: Sunday at 09:00 IL time
     const ilTime = new Date(now.toLocaleString("en-US", { timeZone: TZ }));
