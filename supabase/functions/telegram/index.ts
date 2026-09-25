@@ -1528,3 +1528,40 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 
 
 
+
+async function sendTelegramSticker(chatId: number, stickerUrl: string, caption: string): Promise<boolean> {
+  try {
+    const isWebp = stickerUrl.endsWith('.webp');
+    let endpoint = isWebp ? 'sendSticker' : 'sendAnimation';
+    let body: Record<string, unknown> = { chat_id: chatId, parse_mode: 'HTML' };
+    if (isWebp) {
+      body.sticker = stickerUrl;
+    } else {
+      body.animation = stickerUrl;
+      body.caption = caption;
+    }
+    let response = await fetch(https://api.telegram.org/bot + TG_TOKEN + / + endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok && isWebp) {
+      // Fallback to sendAnimation if sendSticker fails (e.g. animated webp rejected)
+      response = await fetch(https://api.telegram.org/bot + TG_TOKEN + /sendAnimation, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, animation: stickerUrl, caption, parse_mode: 'HTML' }),
+      });
+    }
+    if (!response.ok) {
+      return false;
+    }
+    if (isWebp && response.ok) {
+       // sendSticker doesn't support caption, so send the text separately
+       await sendMessage(chatId, caption);
+    }
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
