@@ -84,7 +84,8 @@ async function buildSummary(chatId: number): Promise<string> {
     for (const [text, count] of top) lines.push(`• ${text} — ${count} פעמים`);
   }
 
-  lines.push("", "יום טוב. דבר אחד קטן מספיק להתחלה.");
+  const endings = ["יום טוב. דבר אחד קטן מספיק להתחלה.", "בוקר אור! אל תשכח שאפילו צעד קטן הוא עדיין התקדמות.", "יאללה, יש לך את זה. שיהיה יום פורה.", "קום, תשתה קפה, ולך תטרוף את העולם.", "זכור: המאמץ של היום הוא ההצלחה של מחר. יום נהדר!", "בוקר מדהים. קח נשימה עמוקה וצא לדרך.", "אל תוותר לעצמך היום, גם אם ממש בא לך. בוקר טוב!", "כל בוקר הוא דף חלק. תכתוב בו משהו טוב."];
+  lines.push("", endings[Math.floor(Math.random() * endings.length)]);
   return lines.join("\n");
 }
 
