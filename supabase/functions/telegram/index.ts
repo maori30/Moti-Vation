@@ -1453,6 +1453,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     const currentDateStr = fullDateFormatter.format(new Date());
     const currentTimeLayer = `[מידע רקע נסתר]: הזמן הנוכחי: יום ${currentTimeStr}, התאריך: ${currentDateStr}. אל תציין את היום או השעה בתשובה שלך בשום אופן.`;
 
+    const pointsLayer = 'מידע פנימי: למשתמש יש כרגע ' + (user.points || 0) + ' נקודות, ורצף של ' + (user.streak_days || 0) + ' ימים. אם הוא שואל אותך על הנקודות שלו, חובה לענות לו עם המספרים האלו!';
     const layers = [
       currentTimeLayer,
       timeGapLayer,
