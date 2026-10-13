@@ -3,7 +3,7 @@ type Supa = any;
 
 export type LifeLoopReason = {
   score: number;
-  kind: "event_soon" | "event_passed" | "goal_stale" | "memory_callback" | "silence";
+  kind: "event_soon" | "event_passed" | "goal_stale" | "silence";
   message: string;
 };
 
@@ -23,7 +23,7 @@ export async function lifeLoopDecide(
   const reasons: LifeLoopReason[] = [];
 
   try {
-    const [{ data: events }, { data: goals }, { data: memories }] = await Promise.all([
+    const [{ data: events }, { data: goals }] = await Promise.all([
       supabase
         .from("user_events")
         .select("id, title, when_at, importance, status, asked_after_at")
@@ -34,12 +34,6 @@ export async function lifeLoopDecide(
         .select("id, title, progress, updated_at")
         .eq("chat_id", chatId)
         .eq("status", "open")
-        .limit(10),
-      supabase
-        .from("user_memories")
-        .select("value, kind, created_at, importance")
-        .eq("chat_id", chatId)
-        .in("kind", ["project", "request"])
         .limit(10),
     ]);
 
@@ -82,20 +76,6 @@ export async function lifeLoopDecide(
           message: pick([
             `מה קורה עם ${goal.title}? עדיין רלוונטי?`,
             `נזכרתי במטרה של ${goal.title}. התקדמת קצת?`,
-          ]),
-        });
-      }
-    }
-
-    for (const memory of memories ?? []) {
-      const staleDays = (now - new Date(memory.created_at).getTime()) / 86_400_000;
-      if (staleDays >= 7 && (memory.importance ?? 2) >= 2) {
-        reasons.push({
-          score: 3 + (memory.importance ?? 2),
-          kind: "memory_callback",
-          message: pick([
-            `נזכרתי ב"${memory.value}". מה קרה עם זה?`,
-            `"${memory.value}" עדיין על הפרק?`,
           ]),
         });
       }
