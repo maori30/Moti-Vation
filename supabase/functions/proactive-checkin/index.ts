@@ -134,26 +134,6 @@ async function sendDueFollowUps(): Promise<{ sent: number; chatsHandled: Set<num
   return { sent, chatsHandled };
 }
 
-async function findMemoryPrompt(chatId: number): Promise<string | null> {
-  const { data } = await supabase
-    .from("user_memories")
-    .select("value, kind, created_at")
-    .eq("chat_id", chatId)
-    .in("kind", ["project", "request"])
-    .order("created_at", { ascending: true })
-    .limit(5);
-
-  const old = (data ?? []).filter(
-    (memory) => Date.now() - new Date(memory.created_at).getTime() > 4 * 24 * 3_600_000,
-  );
-  if (!old.length) return null;
-
-  const memory = pick(old);
-  return pick([
-    `לפני כמה זמן אמרת: "${memory.value}". מה קרה עם זה בסוף?`,
-    `נזכרתי ב"${memory.value}". עדיין רלוונטי?`,
-  ]);
-}
 
 async function findTopicPrompt(chatId: number): Promise<string | null> {
   const { data: messages } = await supabase
@@ -228,9 +208,8 @@ Deno.serve(async () => {
       // No generic nagging for a user who was active recently.
       if (inactiveFor < MIN_HOURS_SINCE_USER_FOR_GENERIC_NUDGE) continue;
 
-      const memoryPrompt = await findMemoryPrompt(user.chat_id);
-      const topicPrompt = memoryPrompt ? null : await findTopicPrompt(user.chat_id);
-      const prompt = memoryPrompt ?? topicPrompt ?? pick(GENERIC_PROMPTS);
+      const topicPrompt = await findTopicPrompt(user.chat_id);
+      const prompt = topicPrompt ?? pick(GENERIC_PROMPTS);
 
       if (await sendTelegramMessage(user.chat_id, prompt)) {
         await supabase
