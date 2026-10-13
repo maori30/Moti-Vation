@@ -1545,14 +1545,14 @@ async function sendTelegramSticker(chatId: number, stickerUrl: string, caption: 
       body.animation = stickerUrl;
       body.caption = caption;
     }
-    let response = await fetch(https://api.telegram.org/bot + TG_TOKEN + / + endpoint, {
+    let response = await fetch("https://api.telegram.org/bot" + TG_TOKEN + "/" + endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!response.ok && isWebp) {
       // Fallback to sendAnimation if sendSticker fails (e.g. animated webp rejected)
-      response = await fetch(https://api.telegram.org/bot + TG_TOKEN + /sendAnimation, {
+      response = await fetch("https://api.telegram.org/bot" + TG_TOKEN + "/sendAnimation", {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId, animation: stickerUrl, caption, parse_mode: 'HTML' }),
