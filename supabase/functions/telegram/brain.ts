@@ -107,7 +107,7 @@ const KIND_LABEL: Record<string, string> = {
 
 export function memoryContext(memories: Memory[]): string {
   if (!memories.length) return "";
-  return `דברים שאתה יודע על המשתמש מהעבר. השתמש בהם רק כשזה רלוונטי וטבעי, ואל תקריא אותם כרשימה:\n${memories
+  return `דברים שאתה יודע על המשתמש מהעבר (רקע והקשר פנימי בלבד). השתמש בהם רק כהבנה ברקע כשהמשתמש מדבר עליהם בעצמו. **אזהרה חמורה**: לעולם אל תקריא, אל תצטט, ואל תפלוט את הרקע הזה למשתמש, ולעולם אל תדבר על המשתמש בגוף שלישי (אל תגיד 'המשתמש...')! פנה אליו תמיד ישירות בגוף שני בלבד:\n${memories
     .slice(0, 12)
     .map((memory) => `- (${KIND_LABEL[memory.kind] ?? memory.kind}) ${memory.value}`)
     .join("\n")}`;
