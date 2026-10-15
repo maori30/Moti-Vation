@@ -241,9 +241,9 @@ function resolveActivePersonality(user: Record<string, unknown>): string {
 }
 
 const DONEWORDS = ["סיימתי", "עשיתי", "לקחתי", "גמרתי", "טיפלתי", "שלחתי", "התקשרתי", "קניתי", "השלמתי"];
-const STRONGREMINDERTRIGGER = /תזכיר\s*לי|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|צריך תזכורת|רוצה תזכורת|אשמח לתזכורת/;
-const REMINDERTRIGGER = /תזכיר\s*לי|תזכורת|אל תשכח(?:\s*לי)?|תדע\s*להזכיר|תזכיר|כל\s*(?:יום|בוקר|ערב|לילה)/;
-const TIMEORANCHORSIGNAL = /(עוד\s*(?:כ\-?)?\d*\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב\s*-?\s*\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
+const STRONGREMINDERTRIGGER = /תזכיר\s*לי|תזכירי\s*לי|אל תשכח(?:\s*לי)?|אל תשכחי(?:\s*לי)?|תדע\s*להזכיר|תדעי\s*להזכיר|צריך תזכורת|צריכה תזכורת|רוצה תזכורת|אשמח לתזכורת|תתזכר(?:\s*אותי)?|תתזכרי(?:\s*אותי)?|תזכר(?:\s*אותי)?|לתזכר|להזכיר/;
+const REMINDERTRIGGER = /תזכיר\s*לי|תזכירי\s*לי|תזכורת|אל תשכח(?:\s*לי)?|אל תשכחי(?:\s*לי)?|תדע\s*להזכיר|תזכיר|תזכירי|תתזכר|תתזכרי|תזכר|לתזכר|להזכיר|כל\s*(?:יום|בוקר|ערב|לילה|שבוע|שני|שלישי|רביעי|חמישי|שישי|שבת)/;
+const TIMEORANCHORSIGNAL = /(עוד\s*(?:כ\-?)?\d*\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב\s*-?\s*\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה|שבוע|שני|שלישי|רביעי|חמישי|שישי|שבת)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
 const WEEKDAYS: Record<string, number> = { ראשון: 0, שני: 1, שלישי: 2, רביעי: 3, חמישי: 4, שישי: 5, שבת: 6 };
 
 function detectReminderIntent(text: string): boolean {
@@ -263,6 +263,21 @@ function background(promise: Promise<unknown>, label: string): void {
 async function markReminderDone(chatId: number, reminderId: string): Promise<string | null> {
   const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", reminderId).maybeSingle();
   if (!reminder) return null;
+
+  // Idempotency check: don't reward points multiple times for the same reminder completed today
+  const sinceHoursAgo = new Date(Date.now() - 16 * 3600 * 1000).toISOString();
+  const { data: existingComp } = await supabase
+    .from("reminder_completions")
+    .select("id")
+    .eq("chat_id", chatId)
+    .eq("reminder_id", reminder.id)
+    .gte("completed_at", sinceHoursAgo)
+    .limit(1);
+
+  if (existingComp && existingComp.length > 0) {
+    return null; // Already completed today!
+  }
+
   const { data: userData } = await supabase.from("users").select("points, streak_days, last_productive_day, badges").eq("chat_id", chatId).single();
   
   let points = (userData?.points || 0) + 10;
@@ -1150,10 +1165,15 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    const soon = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
-    const { data: activeRemindersDue } = await supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true);
+    const sinceHoursAgo = new Date(Date.now() - 16 * 3600 * 1000).toISOString();
+    const [{ data: activeReminders }, { data: todayComps }] = await Promise.all([
+      supabase.from("reminders").select("id, text").eq("chat_id", chatId).eq("active", true),
+      supabase.from("reminder_completions").select("reminder_id").eq("chat_id", chatId).gte("completed_at", sinceHoursAgo)
+    ]);
+    const completedIds = new Set((todayComps ?? []).map((c: any) => c.reminder_id));
+    const activeRemindersDue = (activeReminders ?? []).filter((r: any) => !completedIds.has(r.id));
     const completionInstruction = (activeRemindersDue && activeRemindersDue.length > 0) ? 
-      `חוק קריטי: אם המשתמש מדווח בבירור שביצע או סיים את אחת מהמטלות שלו (במיוחד מהרשימה הבאה:\n${activeRemindersDue.map((r: any) => `- ${r.text} (ID: ${r.id})`).join("\n")}), עליך להוסיף בסוף התשובה שלך את הפקודה: [CMD_COMPLETE:ID] (כאשר ID הוא ה-ID של המטלה). דוגמה: "כל הכבוד שסיימת! [CMD_COMPLETE:1234]". הוסף את הפקודה הזו רק אם הוא סיים אותה בפועל עכשיו. אם אתה לא בטוח לאיזו מטלה הוא התכוון, פשוט תן עידוד מבלי לשאול "זה קשור ל...?". פרגן לו! **אזהרה חמורה**: אל תדבר על המטלות שברשימה ביוזמתך ואל תציק לו לבצע אותן, הרשימה נועדה אך ורק כדי לזהות אם הוא הודיע שהוא סיים אותן!` : "";
+      `חוק קריטי: אם המשתמש מדווח בבירור שביצע או סיים את אחת מהמטלות שלו (במיוחד מהרשימה הבאה:\n${activeRemindersDue.map((r: any) => `- ${r.text} (ID: ${r.id})`).join("\n")}), עליך להוסיף בסוף התשובה שלך את הפקודה: [CMD_COMPLETE:ID] (כאשר ID הוא ה-ID של המטלה). דוגמה: "כל הכבוד שסיימת! [CMD_COMPLETE:1234]". הוסף את הפקודה הזו אך ורק בהודעה המדויקת שבה המשתמש מודיע לראשונה שסיים אותה עכשיו! אם המשתמש או אתה רק ממשיכים לדבר על זה בהודעות עוקבות (כמו "זה לא אקמול" או "על מה אתה מדבר"), אל תוסיף את הפקודה הזו שוב בשום פנים ואופן! אם אתה לא בטוח לאיזו מטלה הוא התכוון, פשוט תן עידוד מבלי לשאול "זה קשור ל...?". פרגן לו! **אזהרה חמורה**: אל תדבר על המטלות שברשימה ביוזמתך ואל תציק לו לבצע אותן, הרשימה נועדה אך ורק כדי לזהות אם הוא הודיע שהוא סיים אותן!` : "";
       
     if (/ספירה לאחור|כמה זמן נשאר/ui.test(text.trim())) {
       try {
@@ -1346,6 +1366,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
 החזר אך ורק אובייקט JSON תקני עם:
 "task": ניסוח קצר של המשימה נטו ללא מילות התנאי (למשל "לקחת מטריה").
 "time": תאריך ושעה בפורמט ISO 8601 מדויק ותקני לחלוטין. דוגמה: "2026-11-25T14:00:00+02:00". אל תשתמש בפורמט אחר. חייב להיות בעתיד!
+"type": סוג התזכורת - "once" (חד פעמי), "daily" (אם המשתמש ביקש "כל יום"), או "weekly" (אם ביקש "כל שבוע" או "כל יום שלישי" וכד').
 "is_smart_guess": boolean (true אם המשתמש לא ציין זמן והיית צריך להסיק לבד, false אם הוא ציין זמן במפורש).
 "reason": הסבר קצר לזמן שנבחר.
 "weather_condition": מילת מפתח באנגלית לתנאי ("rain", "clear", "hot", "cold") או null אם אין תנאי.
@@ -1359,8 +1380,9 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
           if (smart.time && smart.task) {
             const dueAt = new Date(smart.time);
             if (dueAt.getTime() > Date.now()) {
-              await supabase.from("reminders").insert({ chat_id: chatId, text: smart.task, type: "once", time: dueAt.toISOString(), weather_condition: smart.weather_condition || null, active: true });
-              const label = reminderScheduleLabel(dueAt, "once");
+              const reminderType = (smart.type === "daily" || smart.type === "weekly") ? smart.type : "once";
+              await supabase.from("reminders").insert({ chat_id: chatId, text: smart.task, type: reminderType, time: dueAt.toISOString(), weather_condition: smart.weather_condition || null, active: true });
+              const label = reminderScheduleLabel(dueAt, reminderType);
               const personality = resolveActivePersonality(user);
               const customMessage = pickReminderCreated(personality, smart.task, label);
               
