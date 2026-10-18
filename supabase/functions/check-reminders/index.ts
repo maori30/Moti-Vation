@@ -28,7 +28,8 @@ async function sendTelegramMessage(chatId: number, text: string, keyboard?: obje
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      const errTxt = await response.text(); await supabase.from("messages").insert({ chat_id: chatId, role: "system", content: "DEBUG check-reminders send msg failed: " + response.status + " " + errTxt }); return false;
+      const errTxt = await response.text();
+      console.error(`[check-reminders] send msg failed: ${response.status} ${errTxt}`);
       return false;
     }
     return true;
@@ -86,7 +87,7 @@ async function fetchGifForTask(task: string, personality: string, botMessage: st
   try {
     let englishQuery = "motivation";
     if (GEMINI_API_KEY) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
       const prompt = `You are a bot with personality '${personality}'.
 You just sent the user this message: "${botMessage}"
 For the task: "${task}"
@@ -518,7 +519,9 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         }
 
         if (!success) {
-          await supabase.from("messages").insert({ chat_id: reminder.chat_id, role: "system", content: "DEBUG failure inside loop!" }); failed++; continue;
+          console.error(`[check-reminders] failure sending reminder ${reminder.id}`);
+          failed++;
+          continue;
         }
 
         if (reminder.type === "once" && needsConfirmation && !isNudge) {
@@ -537,7 +540,8 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
         }
         sent++;
       } catch (error) {
-        console.error(`[check-reminders] reminder ${reminder.id} failed:`, error); await supabase.from("messages").insert({ chat_id: reminder.chat_id, role: "system", content: "DEBUG exception: " + String(error) }); failed++; 
+        console.error(`[check-reminders] reminder ${reminder.id} exception:`, error);
+        failed++; 
       }
     }
 
@@ -551,5 +555,3 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
 
 
 
-
-// dummy comment to trigger deploy 1

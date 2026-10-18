@@ -48,7 +48,7 @@ export function confidenceContext(memories: Memory[]): string {
   const lines: string[] = [];
   if (solid.length) lines.push(`דברים ודאיים: ${solid.slice(0, 5).map((m) => m.value).join(" | ")}`);
   if (uncertain.length) lines.push(`דברים לא ודאיים: ${uncertain.slice(0, 4).map((m) => m.value).join(" | ")}. אל תציג אותם כעובדה.`);
-  return lines.length ? `רמות ודאות:\n${lines.join("\n")}` : "";
+  return lines.length ? `רמות ודאות (הקשר פנימי בלבד - לעולם אל תצטט או תפלוט משפטים אלה למשתמש, ואל תדבר עליו בגוף שלישי):\n${lines.join("\n")}` : "";
 }
 
 export async function fetchEvents(supabase: Supa, chatId: number): Promise<UserEvent[]> {

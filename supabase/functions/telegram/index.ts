@@ -931,12 +931,11 @@ Deno.serve(async (req: Request) => {
         background(
           Promise.all([
             supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null, snooze_count: newSnoozeCount }).eq("id", id),
-            supabase.from("users").update({ streak_days: 0 }).eq("chat_id", chatId),
             logBehavior(supabase, chatId, "reminder_snoozed"),
           ]),
           "snooze_writes",
         );
-        await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality) + "\n(שברנו רצף. נודניק מוריד את הסטריק לאפס!)");
+        await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality));
       } else if (data.startsWith("ask_delete_reminder_")) {
         const id = data.replace("ask_delete_reminder_", "");
         const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", id).eq("chat_id", chatId).eq("active", true).maybeSingle();
@@ -1334,18 +1333,31 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
       const isWeatherDependent = /גשם|מטריה|גשום|שמש|חם|קר|מזג אוויר|סערה|שלג/ui.test(text);
       const parsed = parseReminder(text);
       if (parsed && !isWeatherDependent) {
+        let taskTitle = parsed.task;
+        if (!taskTitle || /^(תזכורת|שוב|מעולה שוב|עוד פעם|אותו דבר)$/ui.test(taskTitle.trim())) {
+          const { data: lastRem } = await supabase
+            .from("reminders")
+            .select("text")
+            .eq("chat_id", chatId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (lastRem && lastRem.text && lastRem.text !== "תזכורת") {
+            taskTitle = lastRem.text;
+          }
+        }
         const { data: duplicates } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
-        const duplicate = (duplicates ?? []).find((item: any) => item.text.trim().toLowerCase() === parsed.task.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
+        const duplicate = (duplicates ?? []).find((item: any) => item.text.trim().toLowerCase() === taskTitle.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
         if (duplicate) {
-          const r = `כבר יש לך תזכורת כזאת ל"${parsed.task}". לא הוספתי עוד אחת.`;
+          const r = `כבר יש לך תזכורת כזאת ל"${taskTitle}". לא הוספתי עוד אחת.`;
           await sendMessage(chatId, r);
           background(saveMessage(chatId, "user", text), "save_user");
           background(saveMessage(chatId, "assistant", r), "save_reply");
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
-        await supabase.from("reminders").insert({ chat_id: chatId, text: parsed.task, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
+        await supabase.from("reminders").insert({ chat_id: chatId, text: taskTitle, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
         const label = reminderScheduleLabel(parsed.dueAt, parsed.type);
-        const replyText = pickReminderCreated(personality, parsed.task, label);
+        const replyText = pickReminderCreated(personality, taskTitle, label);
         await sendMessage(chatId, replyText);
         background(saveMessage(chatId, "user", text), "save_user");
         background(saveMessage(chatId, "assistant", replyText), "save_reply");
@@ -1378,13 +1390,26 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
           if (!jsonMatch) throw new Error("No JSON object found in response: " + res.content);
           const smart = JSON.parse(jsonMatch[0]);
           if (smart.time && smart.task) {
+            let taskTitle = smart.task;
+            if (!taskTitle || /^(תזכורת|שוב|מעולה שוב|עוד פעם|אותו דבר)$/ui.test(taskTitle.trim())) {
+              const { data: lastRem } = await supabase
+                .from("reminders")
+                .select("text")
+                .eq("chat_id", chatId)
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (lastRem && lastRem.text && lastRem.text !== "תזכורת") {
+                taskTitle = lastRem.text;
+              }
+            }
             const dueAt = new Date(smart.time);
             if (dueAt.getTime() > Date.now()) {
               const reminderType = (smart.type === "daily" || smart.type === "weekly") ? smart.type : "once";
-              await supabase.from("reminders").insert({ chat_id: chatId, text: smart.task, type: reminderType, time: dueAt.toISOString(), weather_condition: smart.weather_condition || null, active: true });
+              await supabase.from("reminders").insert({ chat_id: chatId, text: taskTitle, type: reminderType, time: dueAt.toISOString(), weather_condition: smart.weather_condition || null, active: true });
               const label = reminderScheduleLabel(dueAt, reminderType);
               const personality = resolveActivePersonality(user);
-              const customMessage = pickReminderCreated(personality, smart.task, label);
+              const customMessage = pickReminderCreated(personality, taskTitle, label);
               
               let replyText = "";
               if (smart.is_smart_guess) {

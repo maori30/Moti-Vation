@@ -29,27 +29,39 @@ async function sendTelegramMessage(chatId: number, text: string): Promise<boolea
   }
 }
 
+function israelYesterday(): string {
+  const d = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
 async function updateStreaks() {
   const { data: users } = await supabase
     .from("users")
-    .select("chat_id, current_streak, last_active_date");
+    .select("chat_id, streak_days, current_streak, last_productive_day, last_active_date");
   if (!users) return;
 
   const today = israelDate();
-  const since24Hours = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const yesterday = israelYesterday();
 
   for (const user of users) {
     if (user.last_active_date === today) continue;
-    const { count } = await supabase
-      .from("reminder_completions")
-      .select("id", { count: "exact", head: true })
-      .eq("chat_id", user.chat_id)
-      .gte("completed_at", since24Hours);
 
-    const currentStreak = (count ?? 0) > 0 ? (user.current_streak ?? 0) + 1 : 0;
+    // Check if the user was productive yesterday or today
+    const wasProductiveRecently = user.last_productive_day === today || user.last_productive_day === yesterday;
+    
+    let streak = user.streak_days ?? user.current_streak ?? 0;
+    if (!wasProductiveRecently) {
+      streak = 0;
+    }
+
     await supabase
       .from("users")
-      .update({ current_streak: currentStreak, last_active_date: today })
+      .update({ streak_days: streak, current_streak: streak, last_active_date: today })
       .eq("chat_id", user.chat_id);
   }
 }
@@ -59,7 +71,7 @@ async function buildSummary(chatId: number): Promise<string> {
   const [{ count: total }, { count: today }, { data: user }, { data: completions }] = await Promise.all([
     supabase.from("reminder_completions").select("id", { count: "exact", head: true }).eq("chat_id", chatId),
     supabase.from("reminder_completions").select("id", { count: "exact", head: true }).eq("chat_id", chatId).gte("completed_at", since24Hours),
-    supabase.from("users").select("goals_achieved, current_streak").eq("chat_id", chatId).single(),
+    supabase.from("users").select("goals_achieved, streak_days, current_streak").eq("chat_id", chatId).single(),
     supabase.from("reminder_completions").select("reminder_text").eq("chat_id", chatId).order("completed_at", { ascending: false }).limit(200),
   ]);
 
@@ -71,12 +83,13 @@ async function buildSummary(chatId: number): Promise<string> {
   }
   const top = [...frequency.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
 
+  const activeStreak = user?.streak_days ?? user?.current_streak ?? 0;
   const lines = [
     "☀️ <b>סיכום בוקר קצר</b>",
     "",
     `השלמת ביממה האחרונה: <b>${today ?? 0}</b>`,
     `השלמות בסך הכול: <b>${total ?? 0}</b>`,
-    `רצף פעיל: <b>${user?.current_streak ?? 0}</b> ימים`,
+    `רצף פעיל: <b>${activeStreak}</b> ימים`,
   ];
 
   if (top.length) {
