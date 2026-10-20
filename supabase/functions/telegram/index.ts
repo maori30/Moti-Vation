@@ -615,20 +615,29 @@ async function updateUser(chatId: number, changes: Record<string, unknown>) {
   if (error) console.error("[users] update failed:", error.message);
 }
 
-async function touchUser(chatId: number, firstName: string) {
-  const { data, error } = await supabase
+async function touchUser(chatId: number, defaultName?: string): Promise<{ user: any; isNew: boolean }> {
+  const { data: existing, error: selectError } = await supabase.from("users").select("*").eq("chat_id", chatId).maybeSingle();
+  if (existing) {
+    background(supabase.from("users").update({ last_message_at: new Date().toISOString() }).eq("chat_id", chatId), "touch_user_ts");
+    return { user: existing, isNew: false };
+  }
+  const { data: created, error: insertError } = await supabase
     .from("users")
-    .upsert(
-      { chat_id: chatId, first_name: firstName, last_message_at: new Date().toISOString() },
-      { onConflict: "chat_id" },
-    )
+    .insert({
+      chat_id: chatId,
+      first_name: defaultName || null,
+      state: "awaiting_name",
+      last_message_at: new Date().toISOString(),
+    })
     .select()
     .single();
-  if (!error && data) return data;
-  const { data: existing, error: selectError } = await supabase.from("users").select("*").eq("chat_id", chatId).maybeSingle();
-  if (existing) return existing;
-  if (selectError) throw selectError;
-  throw error ?? new Error("touchUser: no row");
+  if (created) return { user: created, isNew: true };
+  if (insertError) {
+    const { data: fallback } = await supabase.from("users").select("*").eq("chat_id", chatId).maybeSingle();
+    if (fallback) return { user: fallback, isNew: false };
+    throw insertError;
+  }
+  throw new Error("touchUser: failed to create user");
 }
 
 async function getHistory(chatId: number): Promise<HistoryMessage[]> {
@@ -782,6 +791,17 @@ function parseReminder(text: string): ParsedReminder | null {
   return { dueAt, task, type };
 }
 
+function genderKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "🙋‍♂️ בלשון זכר", callback_data: "gender_male" },
+        { text: "🙋‍♀️ בלשון נקבה", callback_data: "gender_female" },
+      ],
+    ],
+  };
+}
+
 function personalityKeyboard() {
   return { inline_keyboard: [
     [{ text: "🧠 המאמן", callback_data: "personality_coach" }, { text: "😈 הציני", callback_data: "personality_cynic" }],
@@ -897,11 +917,29 @@ Deno.serve(async (req: Request) => {
       const callback = update.callback_query;
       const chatId = callback.message.chat.id as number;
       const data = String(callback.data ?? "");
-      const user = await touchUser(chatId, callback.from?.first_name ?? "חבר");
+      const { user } = await touchUser(chatId, callback.from?.first_name ?? "חבר");
       const activePersonality = resolveActivePersonality(user);
       await answerCallback(callback.id);
 
-      if (data.startsWith("personality_")) {
+      if (data === "gender_male" || data === "gender_female") {
+        const isFemale = data === "gender_female";
+        const gender = isFemale ? "female" : "male";
+        const addressStyle = isFemale ? "לשון נקבה" : "לשון זכר";
+        background(
+          Promise.all([
+            updateUser(chatId, { gender, state: "chatting" }),
+            saveProfile(supabase, chatId, { address_style: addressStyle }),
+          ]),
+          "save_gender_callback",
+        );
+        if (callback.message?.message_id) {
+          background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
+        }
+        const confirmText = isFemale
+          ? "מעולה, נרשם בלשון נקבה! ✨\nבאיזה סגנון תרצי שנדבר? בחרי אישיות:"
+          : "מעולה, נרשם בלשון זכר! ✨\nבאיזה סגנון תרצה שנדבר? בחר אישיות:";
+        await sendMessage(chatId, confirmText, personalityKeyboard());
+      } else if (data.startsWith("personality_")) {
         const personality = data.replace("personality_", "");
         background(updateUser(chatId, { personality, temp_personality: null, temp_personality_until: null, state: "chatting" }), "personality_switch");
         await sendMessage(chatId, GREETINGS[personality] ?? "סגור. דבר איתי.");
@@ -1051,8 +1089,79 @@ Deno.serve(async (req: Request) => {
 
     background(sendChatAction(chatId, "typing"), "initial_typing");
 
-    const user = await touchUser(chatId, firstName);
+    const { user, isNew } = await touchUser(chatId, firstName);
     const personality = resolveActivePersonality(user);
+
+    if (isNew) {
+      await sendMessage(
+        chatId,
+        "שלום וברוך הבא! 👋\nנעים להכיר, אני מוטי הבוט שלך למשימות ותזכורות.\nלפני שנתחיל — איך קוראים לך?",
+      );
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    if (user.state === "awaiting_name") {
+      let rawName = text.trim();
+      let cleaned = rawName
+        .replace(/^(?:שלום|היי)?\s*(?:נעים להכיר\s*)?(?:אני\s+|קוראים\s+לי\s+|שמי\s+(?:הוא\s+)?|השם\s+שלי\s+(?:הוא\s+)?)/i, "")
+        .replace(/[.!?]+$/, "")
+        .trim();
+      if (!cleaned || cleaned.length > 40) {
+        cleaned = firstName || "חבר";
+      }
+
+      // Check if Telegram provided gender
+      const telegramGender = (message.from as any)?.gender;
+      if (telegramGender === "female" || telegramGender === "male") {
+        const addressStyle = telegramGender === "female" ? "לשון נקבה" : "לשון זכר";
+        background(
+          Promise.all([
+            updateUser(chatId, { first_name: cleaned, gender: telegramGender, state: "chatting" }),
+            saveProfile(supabase, chatId, { address_style: addressStyle }),
+          ]),
+          "save_onboarding",
+        );
+        const greeting = telegramGender === "female"
+          ? `נעים להכיר, ${cleaned}! 😊\nבאיזה סגנון תרצי שנדבר? בחרי אישיות:`
+          : `נעים להכיר, ${cleaned}! 😊\nבאיזה סגנון תרצה שנדבר? בחר אישיות:`;
+        await sendMessage(chatId, greeting, personalityKeyboard());
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+
+      // Telegram has no gender - ask the user
+      background(updateUser(chatId, { first_name: cleaned, state: "awaiting_gender" }), "save_name");
+      await sendMessage(
+        chatId,
+        `נעים להכיר, ${cleaned}! 😊\nאיך לפנות אליך?`,
+        genderKeyboard(),
+      );
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    if (user.state === "awaiting_gender") {
+      const isFemale = /(?:נקבה|בת|אישה|בחורה|לשון\s*נקבה)/i.test(text);
+      const isMale = /(?:זכר|בן|גבר|בחור|לשון\s*זכר)/i.test(text);
+
+      if (isFemale || isMale) {
+        const gender = isFemale ? "female" : "male";
+        const addressStyle = isFemale ? "לשון נקבה" : "לשון זכר";
+        background(
+          Promise.all([
+            updateUser(chatId, { gender, state: "chatting" }),
+            saveProfile(supabase, chatId, { address_style: addressStyle }),
+          ]),
+          "save_gender_text",
+        );
+        const confirmText = isFemale
+          ? "מעולה, נרשם בלשון נקבה! ✨\nבאיזה סגנון תרצי שנדבר? בחרי אישיות:"
+          : "מעולה, נרשם בלשון זכר! ✨\nבאיזה סגנון תרצה שנדבר? בחר אישיות:";
+        await sendMessage(chatId, confirmText, personalityKeyboard());
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      } else {
+        await sendMessage(chatId, "לא הייתי בטוח — בחר בבקשה איך לפנות אליך:", genderKeyboard());
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    }
 
     if (text === "DEBUG_MODELS") {
       const models = await listAvailableModels(GEMINI_API_KEY) ?? [];
@@ -1068,7 +1177,38 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/start") {
-      await sendMessage(chatId, `שלום ${firstName}! בחר מי ידבר איתך:`, personalityKeyboard());
+      const isFemale = user.gender === "female";
+      const name = user.first_name || firstName;
+      const promptText = isFemale ? `שלום ${name}! בחרי מי ידבר איתך:` : `שלום ${name}! בחר מי ידבר איתך:`;
+      await sendMessage(chatId, promptText, personalityKeyboard());
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+
+    // Name change intent in normal conversation
+    const nameChangeMatch = text.trim().match(/^(?:תקרא\s+לי|שנה\s+(?:לי\s+)?(?:את\s+)?(?:ה)?שם\s+(?:שלי\s+)?ל|השם\s+שלי\s+הוא)\s+([א-תa-zA-Z\s'-]+)$/i);
+    if (nameChangeMatch && nameChangeMatch[1]) {
+      const newName = nameChangeMatch[1].trim();
+      if (newName.length > 0 && newName.length <= 40) {
+        background(updateUser(chatId, { first_name: newName }), "update_name");
+        await sendMessage(chatId, `סגור, מעכשיו אני קורא לך ${newName}! 👍`);
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+    }
+
+    // Gender change intent in normal conversation
+    if (/^(?:תפנה|תפני)\s+אליי\s+בלשון\s+(זכר|נקבה)/i.test(text.trim())) {
+      const isFemale = /נקבה/i.test(text);
+      const gender = isFemale ? "female" : "male";
+      const addressStyle = isFemale ? "לשון נקבה" : "לשון זכר";
+      background(
+        Promise.all([
+          updateUser(chatId, { gender }),
+          saveProfile(supabase, chatId, { address_style: addressStyle }),
+        ]),
+        "update_gender",
+      );
+      const reply = isFemale ? "סגור, מעכשיו אני פונה אלייך בלשון נקבה! ✨" : "סגור, מעכשיו אני פונה אליך בלשון זכר! 👍";
+      await sendMessage(chatId, reply);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (text === "/menu") {
@@ -1505,10 +1645,22 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     const currentTimeLayer = `[מידע רקע נסתר]: הזמן הנוכחי: יום ${currentTimeStr}, התאריך: ${currentDateStr}. אל תציין את היום או השעה בתשובה שלך בשום אופן.`;
 
     const pointsLayer = 'מידע פנימי: למשתמש יש כרגע ' + (user.points || 0) + ' נקודות, ורצף של ' + (user.streak_days || 0) + ' ימים. אם הוא שואל אותך על הנקודות שלו, חובה לענות לו עם המספרים האלו!';
+    const isFemale = user.gender === "female" || profile.address_style?.includes("נקבה");
+    const isMale = user.gender === "male" || profile.address_style?.includes("זכר");
+    const genderLayer = isFemale
+      ? "חוק ברזל לשוני: המשתמשת היא אישה! חובה מוחלטת לפנות אליה אך ורק בלשון נקבה (למשל: את, רוצה, תעשי, הלכת, תזכרי, איתך, שלך)!"
+      : isMale
+      ? "חוק ברזל לשוני: המשתמש הוא גבר! חובה מוחלטת לפנות אליו אך ורק בלשון זכר (למשל: אתה, רוצה, תעשה, הלכת, תזכור, איתך, שלך)!"
+      : "";
+    const nameLayer = user.first_name ? `שם המשתמש: ${user.first_name}. פנה אליו/אליה בשם זה בטבעיות מדי פעם.` : "";
+
     const layers = [
       currentTimeLayer,
       timeGapLayer,
       praiseLayer,
+      genderLayer,
+      nameLayer,
+      pointsLayer,
       remindersContext,
       memoryContext(memories), confidenceContext(memories), profileContext(profile), goalContext(goals), eventContext(events), insideJokeContext(jokes),
       coreferenceInstruction(text, history), implicitIntentLayer(text, { events, goals, reminders: (remData.data ?? []).map((r: { text: string }) => r.text) }),

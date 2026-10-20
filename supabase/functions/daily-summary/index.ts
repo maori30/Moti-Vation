@@ -71,7 +71,7 @@ async function buildSummary(chatId: number): Promise<string> {
   const [{ count: total }, { count: today }, { data: user }, { data: completions }] = await Promise.all([
     supabase.from("reminder_completions").select("id", { count: "exact", head: true }).eq("chat_id", chatId),
     supabase.from("reminder_completions").select("id", { count: "exact", head: true }).eq("chat_id", chatId).gte("completed_at", since24Hours),
-    supabase.from("users").select("goals_achieved, streak_days, current_streak").eq("chat_id", chatId).single(),
+    supabase.from("users").select("goals_achieved, streak_days, current_streak, gender").eq("chat_id", chatId).single(),
     supabase.from("reminder_completions").select("reminder_text").eq("chat_id", chatId).order("completed_at", { ascending: false }).limit(200),
   ]);
 
@@ -97,7 +97,28 @@ async function buildSummary(chatId: number): Promise<string> {
     for (const [text, count] of top) lines.push(`• ${text} — ${count} פעמים`);
   }
 
-  const endings = ["יום טוב. דבר אחד קטן מספיק להתחלה.", "בוקר אור! אל תשכח שאפילו צעד קטן הוא עדיין התקדמות.", "יאללה, יש לך את זה. שיהיה יום פורה.", "קום, תשתה קפה, ולך תטרוף את העולם.", "זכור: המאמץ של היום הוא ההצלחה של מחר. יום נהדר!", "בוקר מדהים. קח נשימה עמוקה וצא לדרך.", "אל תוותר לעצמך היום, גם אם ממש בא לך. בוקר טוב!", "כל בוקר הוא דף חלק. תכתוב בו משהו טוב."];
+  const isFemale = user?.gender === "female";
+  const endingsMale = [
+    "יום טוב. דבר אחד קטן מספיק להתחלה.",
+    "בוקר אור! אל תשכח שאפילו צעד קטן הוא עדיין התקדמות.",
+    "יאללה, יש לך את זה. שיהיה יום פורה ומלא עשייה.",
+    "קום, תשתה קפה, ולך תטרוף את העולם.",
+    "זכור: המאמץ של היום הוא ההצלחה של מחר. יום נהדר!",
+    "בוקר מדהים. קח נשימה עמוקה וצא לדרך.",
+    "אל תוותר לעצמך היום, גם אם ממש בא לך. בוקר טוב!",
+    "כל בוקר הוא דף חלק. תכתוב בו משהו טוב.",
+  ];
+  const endingsFemale = [
+    "יום טוב. דבר אחד קטן מספיק להתחלה.",
+    "בוקר אור! אל תשכחי שאפילו צעד קטן הוא עדיין התקדמות.",
+    "יאללה, יש לך את זה. שיהיה יום פורה ומלא עשייה.",
+    "קומי, תשתי קפה, ולכי לטרוף את העולם.",
+    "זכרי: המאמץ של היום הוא ההצלחה של מחר. יום נהדר!",
+    "בוקר מדהים. קחי נשימה עמוקה וצאי לדרך.",
+    "אל תוותרי לעצמך היום, גם אם ממש בא לך. בוקר טוב!",
+    "כל בוקר הוא דף חלק. תכתבי בו משהו טוב.",
+  ];
+  const endings = isFemale ? endingsFemale : endingsMale;
   lines.push("", endings[Math.floor(Math.random() * endings.length)]);
   return lines.join("\n");
 }

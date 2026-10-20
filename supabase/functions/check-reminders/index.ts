@@ -432,13 +432,25 @@ Deno.serve(async () => {
     const chatIds = [...new Set(reminders.map((row) => row.chat_id))];
     const { data: users } = await supabase
       .from("users")
-      .select("chat_id, personality")
+      .select("chat_id, personality, gender, first_name")
       .in("chat_id", chatIds);
     const personalities = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.personality ?? "cynic"]));
+    const userGenders = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.gender ?? "male"]));
+    const userNames = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.first_name ?? ""]));
 
-async function generateNaturalReminder(apiKey: string, personality: string, text: string, isNudge: boolean): Promise<string> {
+async function generateNaturalReminder(apiKey: string, personality: string, text: string, isNudge: boolean, gender?: string, name?: string): Promise<string> {
   if (!apiKey) return "";
-  const systemPrompt = "You are an Israeli assistant with personality '" + personality + "'.\nYour task is to generate a natural, flowing Hebrew sentence to remind the user about their task: '" + text + "'.\nDo NOT use colons (:) or robotic formats like 'תזכורת: לקחת כדור'. Integrate the task naturally.\n" + (isNudge ? "This is a NUDGE because they didn't confirm the first time. Be a bit more insistent." : "This is the first reminder.") + "\nKeep it short, max 1-2 sentences. Output ONLY the Hebrew text.";
+  const genderInstruction = gender === "female"
+    ? "The user is FEMALE. You MUST address her in Hebrew strictly in FEMININE form (e.g. את, תעשי, תזכרי, הלכת)."
+    : "The user is MALE. You MUST address him in Hebrew strictly in MASCULINE form (e.g. אתה, תעשה, תזכור, הלכת).";
+  const nameInstruction = name ? `The user's name is '${name}'. You may include their name naturally.` : "";
+  const systemPrompt = `You are an Israeli assistant with personality '${personality}'.
+Your task is to generate a natural, flowing Hebrew sentence to remind the user about their task: '${text}'.
+${genderInstruction}
+${nameInstruction}
+Do NOT use colons (:) or robotic formats like 'תזכורת: לקחת כדור'. Integrate the task naturally.
+${isNudge ? "This is a NUDGE because they didn't confirm the first time. Be a bit more insistent." : "This is the first reminder."}
+Keep it short, max 1-2 sentences. Output ONLY the Hebrew text.`;
 
   try {
     const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + apiKey, {
@@ -498,9 +510,11 @@ async function checkWeatherCondition(condition: string): Promise<boolean> {
           }
         }
         const personality = personalities.get(reminder.chat_id) ?? "cynic";
+        const gender = userGenders.get(reminder.chat_id) ?? "male";
+        const userName = userNames.get(reminder.chat_id) ?? "";
         const needsConfirmation = reminder.confirm_needed === true;
         const isNudge = needsConfirmation && Boolean(reminder.nudge_sent_at);
-        let message = await generateNaturalReminder(Deno.env.get("GEMINI_API_KEY") || "", personality, reminder.text, isNudge);
+        let message = await generateNaturalReminder(Deno.env.get("GEMINI_API_KEY") || "", personality, reminder.text, isNudge, gender, userName);
         if (!message) {
           const base = buildReminderMessage(personality, reminder.text);
           message = isNudge ? buildNudgeMessage(base) : base;

@@ -130,10 +130,10 @@ export async function learnFromBehavior(supabase: Supa, chatId: number, profile:
 export function profileContext(profile: Profile): string {
   const lines: string[] = [];
   if (profile.address_style) lines.push(`סגנון פנייה מועדף: ${profile.address_style}`);
-  if (profile.topics.length) lines.push(`נושאים שמעניינים אותו: ${profile.topics.slice(0, 5).join(", ")}`);
+  if (profile.topics.length) lines.push(`נושאים שמעניינים: ${profile.topics.slice(0, 5).join(", ")}`);
   if (profile.habits.length) lines.push(`הרגלים: ${profile.habits.slice(0, 5).join(", ")}`);
   if (profile.procrastinates.length) lines.push(`נוטה לדחות: ${profile.procrastinates.slice(0, 4).join(", ")}`);
-  if (profile.prefers_short) lines.push("הוא מעדיף תשובות קצרות. זה לא אומר לענות ביבש; משפט או שניים מספיקים.");
+  if (profile.prefers_short) lines.push("העדפה לתשובות קצרות. משפט או שניים מספיקים.");
   return lines.length ? `פרופיל משתמש, לשימוש פנימי בלבד. **אזהרה חמורה**: לעולם אל תצטט פרטים אלה למשתמש ואל תדבר עליו בגוף שלישי (אל תגיד 'המשתמש...'):\n${lines.map((line) => `- ${line}`).join("\n")}` : "";
 }
 
