@@ -907,7 +907,15 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method !== "POST") return new Response("OK", { status: 200 });
+  if (req.method !== "POST") {
+    // Keep-alive ping: actively query database via Supabase client to prevent auto-pause
+    try {
+      await supabase.from("users").select("chat_id").limit(1);
+    } catch (e) {
+      console.error("[keepalive] db ping error:", e);
+    }
+    return new Response("OK", { status: 200 });
+  }
 
   const reqStart = performance.now();
   try {
