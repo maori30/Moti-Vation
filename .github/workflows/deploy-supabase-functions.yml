@@ -42,6 +42,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         function:
           - telegram
@@ -59,8 +60,10 @@ jobs:
 
       - name: Deploy ${{ matrix.function }}
         run: |
+          # CLI v3: --remote replaces --project-ref, and non-interactive runs need --yes.
           supabase functions deploy ${{ matrix.function }} \
-            --project-ref hulthqpmolqtwvdwyoej \
-            --no-verify-jwt
+            --remote=hulthqpmolqtwvdwyoej \
+            --no-verify-jwt \
+            --yes
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
