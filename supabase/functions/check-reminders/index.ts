@@ -47,7 +47,7 @@ async function gemini(prompt: string, maxOutputTokens: number): Promise<string> 
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
-        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens } }),
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens, thinkingConfig: { thinkingLevel: "minimal" } } }),
         signal: controller.signal,
       }).finally(() => clearTimeout(timer));
       if (!res.ok) {
