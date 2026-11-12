@@ -92,8 +92,11 @@ export async function headerMatchesConfig(req: Request, db: Db, header: string, 
 
 /** Returns true exactly once per key (atomic insert into bot_config). */
 export async function runOnce(db: Db, key: string): Promise<boolean> {
-  const { error } = await db.from("bot_config").insert({ key: `job:${key}`, value: new Date().toISOString() });
-  return !error;
+  // INSERT ... ON CONFLICT DO NOTHING RETURNING: a row comes back only for the first caller.
+  const { data, error } = await db.from("bot_config")
+    .upsert({ key: `job:${key}`, value: new Date().toISOString() }, { onConflict: "key", ignoreDuplicates: true })
+    .select("key");
+  return !error && Array.isArray(data) && data.length > 0;
 }
 
 // ---------------------------------------------------------------- Israel time

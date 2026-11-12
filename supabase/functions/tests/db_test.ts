@@ -25,6 +25,11 @@ Deno.test("upsert builds ON CONFLICT DO UPDATE", () => {
   assert.equal(q.text, 'INSERT INTO "habit_logs" ("habit_id", "chat_id", "date_logged") VALUES ($1, $2, $3) ON CONFLICT ("habit_id", "date_logged") DO UPDATE SET "chat_id" = EXCLUDED."chat_id"');
 });
 
+Deno.test("upsert with ignoreDuplicates builds DO NOTHING (used by runOnce)", () => {
+  const q = db.from("bot_config").upsert({ key: "job:x", value: "1" }, { onConflict: "key", ignoreDuplicates: true }).select("key").toSQL();
+  assert.equal(q.text, 'INSERT INTO "bot_config" ("key", "value") VALUES ($1, $2) ON CONFLICT ("key") DO NOTHING RETURNING "key"');
+});
+
 Deno.test("update / delete / is / not / in", () => {
   const upd = db.from("reminders").update({ active: false }).eq("id", "x").toSQL();
   assert.equal(upd.text, 'UPDATE "reminders" SET "active" = $2 WHERE "id" = $1');
