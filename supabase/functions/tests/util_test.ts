@@ -28,3 +28,13 @@ Deno.test("advanceRecurring catches up missed occurrences and never returns the 
   const yearly = advanceRecurring(new Date(Date.now() - 400 * 86_400_000), "yearly");
   assert.ok(yearly.getTime() > Date.now());
 });
+
+import { gifDecision } from "../_shared/util.ts";
+
+Deno.test("gifDecision: at most one GIF every few hours, and only sometimes", () => {
+  const now = new Date("2026-11-12T12:00:00Z");
+  assert.equal(gifDecision(null, now, 0.1), true);
+  assert.equal(gifDecision(null, now, 0.9), false); // dice says no
+  assert.equal(gifDecision("2026-11-12T11:00:00Z", now, 0.0), false); // 1h ago -> too soon
+  assert.equal(gifDecision("2026-11-12T08:30:00Z", now, 0.1), true); // 3.5h ago -> allowed
+});

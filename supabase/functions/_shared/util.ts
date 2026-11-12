@@ -99,6 +99,28 @@ export async function runOnce(db: Db, key: string): Promise<boolean> {
   return !error && Array.isArray(data) && data.length > 0;
 }
 
+// ---------------------------------------------------------------- GIF rate limit
+// The model asked for a GIF on almost every reply. Enforce it in code: at most one GIF per chat
+// every GIF_MIN_GAP_HOURS, and even then only sometimes.
+export const GIF_MIN_GAP_HOURS = 3;
+
+export function gifDecision(lastGifAt: string | null, now = new Date(), roll = Math.random(), chance = 0.4): boolean {
+  if (lastGifAt) {
+    const last = new Date(lastGifAt).getTime();
+    if (!Number.isNaN(last) && now.getTime() - last < GIF_MIN_GAP_HOURS * 3_600_000) return false;
+  }
+  return roll < chance;
+}
+
+export async function gifAllowed(db: Db, chatId: number, chance = 0.4): Promise<boolean> {
+  const { data } = await db.from("bot_config").select("value").eq("key", `gif_last:${chatId}`).maybeSingle();
+  return gifDecision((data?.value as string | undefined) ?? null, new Date(), Math.random(), chance);
+}
+
+export async function markGifSent(db: Db, chatId: number): Promise<void> {
+  await db.from("bot_config").upsert({ key: `gif_last:${chatId}`, value: new Date().toISOString() }, { onConflict: "key" });
+}
+
 // ---------------------------------------------------------------- Israel time
 export function israelParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {

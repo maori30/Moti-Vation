@@ -1,6 +1,6 @@
 import { createDb } from "../_shared/db.ts";
 import {
-  advanceRecurring, escapeHtml, isCronAuthorized, israelParts, runOnce, telegramCall, toTelegramHtml,
+  advanceRecurring, escapeHtml, gifAllowed, isCronAuthorized, israelParts, markGifSent, runOnce, telegramCall, toTelegramHtml,
 } from "../_shared/util.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
@@ -385,8 +385,10 @@ async function processReminder(reminder: Reminder, users: Map<number, any>, now:
   const html = toTelegramHtml(message);
   const keyboard = keyboardForReminder(reminder.id);
 
-  const gifUrl = await fetchGifForTask(reminder.text, personality, message);
+  // Same rate limit as chat replies: a GIF at most every few hours, and only sometimes.
+  const gifUrl = await gifAllowed(supabase, reminder.chat_id, 0.3) ? await fetchGifForTask(reminder.text, personality, message) : null;
   let success = gifUrl ? await sendAnimation(reminder.chat_id, gifUrl, html, keyboard) : false;
+  if (success) await markGifSent(supabase, reminder.chat_id);
   if (!success) success = await sendHtml(reminder.chat_id, html, keyboard);
   if (!success) {
     // Restore the original time so the next run retries right away.

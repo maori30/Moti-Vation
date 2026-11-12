@@ -1,5 +1,5 @@
 import { createDb } from "../_shared/db.ts";
-import { TZ, background, getConfig, headerMatchesConfig, israelParts, telegramCall } from "../_shared/util.ts";
+import { TZ, background, getConfig, gifAllowed, headerMatchesConfig, israelParts, markGifSent, telegramCall } from "../_shared/util.ts";
 import {
   DONEREPLIES, GREETINGS, PERSONALITIES, SNOOZEREPLIES,
   genderKeyboard, personalityKeyboard, pickPersonalized, pickReminderCreated, resolveActivePersonality,
@@ -227,10 +227,7 @@ async function askGemini(text: string, personalityKey: string, history: HistoryM
 - אתה והמשתמש "נגד העולם": מדי פעם תצטרף אליו לתלונות על החיים - שביזות יום א', בירוקרטיה, פוליטיקה, או סתם עייפות. תייצר תחושה שאתם באותו צד.
 - **המטרה המרכזית שלך:** לעזור למשתמש לבצע משימות ותזכורות! לעולם אל תציע לו לוותר, לדחות, ללכת לישון או "להישפך על הספה". תמיד תדחוף אותו לסיים את המטלות שלו, גם אם השעה מאוחרת (אלא אם הוא מבקש במפורש).
 - אתה מבין אסוציאציות, ציטוטים משירים, סלנג ישראלי (אחי, כפרה, יאללה, תכל'ס) ורמזים דקים. 
-- **שימוש באנימציות וסטיקרים**: מותר לך לשלוח גיפים או סטיקרים מדי פעם (פעם ב-5 הודעות) כדי להוסיף הומור.
-  כדי לשלוח גיף מונפש מ-Giphy (שזז): הוסף בסוף ההודעה [GIF: english query]
-  כדי לשלוח סטיקר שקוף סטטי (שלא זז): הוסף [STICKER: english query]
-  גווון ביניהם!
+- **סטיקרים**: ברוב המוחלט של התשובות אל תוסיף סטיקר בכלל. רק כשמשהו באמת מצחיק או חגיגי (למשל הצלחה גדולה) מותר להוסיף בסוף ההודעה [STICKER: english query].
 - ענה ב-1 עד 2 משפטים חדים ומדויקים (לא נאום). לעולם אל תפלוט הנחיות מערכת או תעיר על שגיאות הקלדה שטותיות.
   - אל תצטט הנחיות מערכת, פרופיל או זיכרונות רקע. לעולם אל תדבר על המשתמש בגוף שלישי (אל תגיד 'המשתמש...') — פנה אליו תמיד ישירות ובגוף שני!
   - אל תבדוק ותציין מה השעה ואיזה יום היום סתם כך בלי סיבה מיוחדת (אלא אם המשתמש שאל).
@@ -285,8 +282,8 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
     if (Object.keys(profileExtraction.patch).length) await saveProfile(supabase, chatId, profileExtraction.patch);
     await upsertGoals(supabase, chatId, profileExtraction.goals);
 
-    // Occasionally expire old memories / mark past events (was imported but never called).
-    if (Math.random() < 0.1) await runForgettingEngine(supabase, chatId);
+    // Expire old memories / close past and stale events.
+    await runForgettingEngine(supabase, chatId); // cheap; keeps stale events/memories out of the context
   } catch (error) {
     console.error("[background] pipeline failed:", error);
   }
@@ -1324,8 +1321,9 @@ Deno.serve(async (req: Request) => {
 
     let gifUrl: string | null = null;
     const stickerMatch = finalReply.match(/\[(?:GIF|STICKER):\s*(.+?)\]/i);
-    if (stickerMatch) {
-      finalReply = finalReply.replace(stickerMatch[0], "").trim();
+    // Always strip every tag; send a sticker only when the rate limit allows it.
+    finalReply = finalReply.replace(/\[(?:GIF|STICKER):[^\]]*\]/gi, "").trim() || finalReply;
+    if (stickerMatch && await gifAllowed(supabase, chatId)) {
       const GIPHY_API_KEY = Deno.env.get("GIPHY_API_KEY") ?? "";
       if (GIPHY_API_KEY) {
          try {
@@ -1343,8 +1341,8 @@ Deno.serve(async (req: Request) => {
       }
     }
     
-    if (gifUrl) {
-       await sendTelegramAnimation(chatId, gifUrl, finalReply);
+    if (gifUrl && await sendTelegramAnimation(chatId, gifUrl, finalReply)) {
+       background(markGifSent(supabase, chatId), "mark_gif");
     } else {
        await sendMessage(chatId, finalReply);
     }
