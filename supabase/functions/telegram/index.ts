@@ -415,6 +415,7 @@ async function callGoogleGeminiModel(
   text: string,
   timeoutMs = 12_000,
   media?: MediaPart | null,
+  thinkingLevel?: "minimal" | "low",
 ): Promise<{ ok: true; content: string } | { ok: false; status: number; error: string }> {
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -432,6 +433,8 @@ async function callGoogleGeminiModel(
             temperature: 0.88,
             topP: 0.9,
             maxOutputTokens: 2048,
+            // Default "thinking" added ~4.5s per reply (measured 5.7s -> 1.1s with "minimal").
+            ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
           },
         }),
       },
@@ -450,6 +453,10 @@ async function callGoogleGeminiModel(
     }
 
     const errText = await res.text();
+    if (res.status === 400 && thinkingLevel) {
+      // A model that doesn't accept thinkingConfig: retry once without it.
+      return callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, media, undefined);
+    }
     console.error(`[gemini-error:${model}] HTTP ${res.status}: ${errText.slice(0, 300)}`);
     return { ok: false, status: res.status, error: errText };
   } catch (err) {
@@ -459,9 +466,11 @@ async function callGoogleGeminiModel(
 }
 
 async function callModelWithFailover(apiKey: string, prompt: string, history: HistoryMessage[], text: string, timeoutMs: number, media?: MediaPart | null) {
-  const available = availableModels ?? await listAvailableModels(apiKey);
+  // Don't block the reply on model discovery: start with the preferred list, refresh in background.
+  const available = availableModels;
+  if (!available) background(listAvailableModels(apiKey), "list_models");
   for (const model of candidateModels(available)) {
-    const res = await callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, media);
+    const res = await callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, media, "minimal");
     if (res.ok) {
       goodModel = model;
       modelHealth.set(model, 0);
@@ -476,7 +485,7 @@ async function callModelWithFailover(apiKey: string, prompt: string, history: Hi
     } else if (status === 400 && media) {
       // Bad input (usually the attachment). Retrying other models with the same media is pointless;
       // retry once without it so the user still gets an answer.
-      const retry = await callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, null);
+      const retry = await callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, null, "minimal");
       if (retry.ok) return { content: retry.content, debug: model };
       break;
     }
@@ -485,7 +494,11 @@ async function callModelWithFailover(apiKey: string, prompt: string, history: Hi
 }
 
 // Raw call that sends a full generateContent body (systemInstruction, generationConfig...).
-async function callGeminiRaw(model: string, payload: Record<string, unknown>, timeoutMs = 10_000): Promise<{ ok: boolean; data?: any }> {
+async function callGeminiRaw(model: string, payload: Record<string, unknown>, timeoutMs = 10_000, allowThinkingConfig = true): Promise<{ ok: boolean; data?: any }> {
+  if (allowThinkingConfig) {
+    const gen = (payload.generationConfig ?? {}) as Record<string, unknown>;
+    if (!gen.thinkingConfig) payload = { ...payload, generationConfig: { ...gen, thinkingConfig: { thinkingLevel: "minimal" } } };
+  }
   try {
     const res = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -493,7 +506,13 @@ async function callGeminiRaw(model: string, payload: Record<string, unknown>, ti
       timeoutMs,
     );
     if (!res.ok) {
-      console.error(`[gemini-raw:${model}] HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const errText = (await res.text()).slice(0, 200);
+      if (res.status === 400 && allowThinkingConfig) {
+        const gen = { ...((payload.generationConfig ?? {}) as Record<string, unknown>) };
+        delete gen.thinkingConfig;
+        return callGeminiRaw(model, { ...payload, generationConfig: gen }, timeoutMs, false);
+      }
+      console.error(`[gemini-raw:${model}] HTTP ${res.status}: ${errText}`);
       return { ok: false };
     }
     return { ok: true, data: await res.json() };
@@ -575,7 +594,8 @@ async function generateAiReply(
 }
 
 async function extractionModel(apiKey: string): Promise<string> {
-  const available = availableModels ?? await listAvailableModels(apiKey);
+  const available = availableModels;
+  if (!available) background(listAvailableModels(apiKey), "list_models");
   for (const model of candidateModels(available)) {
     if (modelHealth.get(model) && modelHealth.get(model)! > Date.now()) continue;
     return model;
