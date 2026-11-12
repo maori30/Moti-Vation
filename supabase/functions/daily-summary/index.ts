@@ -1,10 +1,8 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createDb } from "../_shared/db.ts";
+import { TZ, escapeHtml, isCronAuthorized, telegramCall } from "../_shared/util.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createDb();
 
 function israelDate(): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -15,18 +13,8 @@ function israelDate(): string {
   }).format(new Date());
 }
 
-async function sendTelegramMessage(chatId: number, text: string): Promise<boolean> {
-  try {
-    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
-    });
-    return response.ok;
-  } catch (error) {
-    console.error(`[daily-summary] Telegram failed for ${chatId}:`, error);
-    return false;
-  }
+async function sendTelegramMessage(chatId: number, html: string): Promise<boolean> {
+  return Boolean(await telegramCall(TG_TOKEN, "sendMessage", { chat_id: chatId, text: html, parse_mode: "HTML" }));
 }
 
 function israelYesterday(): string {
@@ -94,7 +82,7 @@ async function buildSummary(chatId: number): Promise<string> {
 
   if (top.length) {
     lines.push("", "<b>מה נסגר הכי הרבה:</b>");
-    for (const [text, count] of top) lines.push(`• ${text} — ${count} פעמים`);
+    for (const [text, count] of top) lines.push(`• ${escapeHtml(text)} — ${count} פעמים`);
   }
 
   const isFemale = user?.gender === "female";
@@ -123,7 +111,10 @@ async function buildSummary(chatId: number): Promise<string> {
   return lines.join("\n");
 }
 
-Deno.serve(async () => {
+Deno.serve(async (req: Request) => {
+  if (!(await isCronAuthorized(req, supabase))) {
+    return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
+  }
   try {
     await updateStreaks();
     const today = israelDate();

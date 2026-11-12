@@ -165,7 +165,8 @@ export function moodLabel(mood: Mood): string {
   return ({ calm: "רגוע", funny: "מצחיק", serious: "רציני", busy: "עסוק", energetic: "אנרגטי", mildly_frustrated: "מתוסכל קלות", warm: "מפרגן" } as Record<Mood, string>)[mood];
 }
 
-const HEAVY_RE = /(מוות|מת|אובדני|בית חולים|אשפוז|פיטורים|גירושין|דיכאון|חרדה קשה|אלימות|ניתוח)/;
+// "מת" must be a whole word, otherwise it matches "מתי", "אמת", "מתחיל"... and kills all humor.
+const HEAVY_RE = /(מוות|נפטר|נפטרה|(?<![\p{L}])מת(?:ה)?(?![\p{L}])|אובדני|בית חולים|אשפוז|פיטורים|פוטרתי|גירושין|דיכאון|חרדה קשה|אלימות|ניתוח)/u;
 
 export function humorPolicy(args: { text: string; mode: string; tone: string; intensity: number; mood: Mood; userHumorLevel: number }) {
   if (HEAVY_RE.test(args.text)) return { level: 0, instruction: "אפס הומור. הנושא כבד, הקשב באמת." };
@@ -188,8 +189,12 @@ export function detectSwitchRequest(text: string): { type: "personality"; key: s
   if (/(תהיה רציני|בלי בדיחות|עזוב ציניות|תפסיק להתלוצץ)/.test(t)) return { type: "tone", tone: "serious" };
   if (/(תהיה עדין|יותר בעדינות|תרד ממני)/.test(t)) return { type: "tone", tone: "softer" };
   if (/(תהיה מצחיק|יותר מצחיק|יותר ציני|תעקוץ)/.test(t)) return { type: "tone", tone: "funnier" };
+  // Only explicit requests ("תהיה הסבתא", "תדבר כמו מאמן", "תעבור לציני") — not any sentence
+  // that happens to contain "חבר" and "דבר" ("תדבר עם החבר שלי").
   for (const [alias, key] of Object.entries(ALIASES)) {
-    if (t.includes(alias) && /(תהיה|תדבר|דבר|מעכשיו|תעבור)/.test(t)) {
+    const a = alias.replace(/"/g, '"?');
+    const explicit = new RegExp(`(?:תהיה|תהיי|תדבר כמו|דבר כמו|תדבר איתי כמו|תעבור ל|עבור ל|תחליף ל|מעכשיו (?:אתה|את|תהיה)?)\\s*(?:ה)?${a}(?![\\p{L}])`, "u");
+    if (explicit.test(t)) {
       return { type: "personality", key, scope: /(מעכשיו|תמיד|קבוע|מהיום)/.test(t) ? "permanent" : "session" };
     }
   }
@@ -262,7 +267,11 @@ export async function runExtraction(callModel: ModelCall, args: { userText: stri
   return {
     memories: Array.isArray(parsed.memories) ? parsed.memories.filter((m) => m?.mem_key && m?.value).slice(0, 6) : [],
     forget: Array.isArray(parsed.forget) ? parsed.forget.slice(0, 5) : [],
-    followUps: Array.isArray(parsed.followUps) ? parsed.followUps.filter((f) => f?.question && Number(f.in_hours) >= 0).slice(0, 2) : [],
+    // The prompt asks for "follow_ups" (snake_case); accept both spellings.
+    followUps: (() => {
+      const raw = (parsed as any).follow_ups ?? parsed.followUps;
+      return Array.isArray(raw) ? raw.filter((f: any) => f?.question && Number(f.in_hours) >= 0).slice(0, 2) : [];
+    })(),
   };
 }
 

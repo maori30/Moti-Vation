@@ -1,4 +1,5 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createDb } from "../_shared/db.ts";
+import { background, getConfig, headerMatchesConfig, israelParts, telegramCall, toTelegramHtml } from "../_shared/util.ts";
 import {
   anchorMemoryKeyFor,
   anchorQuestion,
@@ -69,12 +70,12 @@ import {
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
 const HISTORY_LIMIT = 10;
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// Direct Postgres connection (see _shared/db.ts for why we no longer use the REST API key).
+const supabase = createDb();
 
 type HistoryMessage = { role: string; content: string; created_at?: string };
 type ParsedReminder = { dueAt: Date; task: string; type: "once" | "daily" | "weekly" };
@@ -240,7 +241,6 @@ function resolveActivePersonality(user: Record<string, unknown>): string {
   return ((temporary ? user.temp_personality : user.personality) as string) || "cynic";
 }
 
-const DONEWORDS = ["סיימתי", "עשיתי", "לקחתי", "גמרתי", "טיפלתי", "שלחתי", "התקשרתי", "קניתי", "השלמתי"];
 const STRONGREMINDERTRIGGER = /תזכיר\s*לי|תזכירי\s*לי|אל תשכח(?:\s*לי)?|אל תשכחי(?:\s*לי)?|תדע\s*להזכיר|תדעי\s*להזכיר|צריך תזכורת|צריכה תזכורת|רוצה תזכורת|אשמח לתזכורת|תתזכר(?:\s*אותי)?|תתזכרי(?:\s*אותי)?|תזכר(?:\s*אותי)?|לתזכר|להזכיר/;
 const REMINDERTRIGGER = /תזכיר\s*לי|תזכירי\s*לי|תזכורת|אל תשכח(?:\s*לי)?|אל תשכחי(?:\s*לי)?|תדע\s*להזכיר|תזכיר|תזכירי|תתזכר|תתזכרי|תזכר|לתזכר|להזכיר|כל\s*(?:יום|בוקר|ערב|לילה|שבוע|שני|שלישי|רביעי|חמישי|שישי|שבת)/;
 const TIMEORANCHORSIGNAL = /(עוד\s*(?:כ\-?)?\d*\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב\s*-?\s*\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה|שבוע|שני|שלישי|רביעי|חמישי|שישי|שבת)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
@@ -251,17 +251,11 @@ function detectReminderIntent(text: string): boolean {
   return STRONGREMINDERTRIGGER.test(lower) || (REMINDERTRIGGER.test(lower) && TIMEORANCHORSIGNAL.test(lower));
 }
 
-function detectDone(text: string): boolean {
-  const lower = text.toLowerCase();
-  return DONEWORDS.some((word) => lower.includes(word));
-}
-
-function background(promise: Promise<unknown>, label: string): void {
-  promise.catch((error) => console.error(`[background:${label}] failed:`, error));
-}
 
 async function markReminderDone(chatId: number, reminderId: string): Promise<string | null> {
-  const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", reminderId).maybeSingle();
+  // Always scope by chat_id: the id may come from the AI ([CMD_COMPLETE:...]) or from a button.
+  if (!/^[0-9a-f-]{36}$/i.test(reminderId)) return null;
+  const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", reminderId).eq("chat_id", chatId).maybeSingle();
   if (!reminder) return null;
 
   // Idempotency check: don't reward points multiple times for the same reminder completed today
@@ -282,11 +276,11 @@ async function markReminderDone(chatId: number, reminderId: string): Promise<str
   
   let points = (userData?.points || 0) + 10;
   let streak = userData?.streak_days || 0;
-  const today = new Date().toLocaleString("en-CA", { timeZone: "Asia/Jerusalem" }).split(",")[0];
+  const today = israelParts().date;
   
   let streakMsg = "";
   if (userData?.last_productive_day !== today) {
-    const yesterday = new Date(Date.now() - 86400000).toLocaleString("en-CA", { timeZone: "Asia/Jerusalem" }).split(",")[0];
+    const yesterday = israelParts(new Date(Date.now() - 86_400_000)).date;
     if (userData?.last_productive_day === yesterday) {
       streak += 1;
       streakMsg = `\n🔥 רצף פעילות: ${streak} ימים!`;
@@ -301,13 +295,13 @@ async function markReminderDone(chatId: number, reminderId: string): Promise<str
   if (points >= 500 && !badges.includes("מכונת_פרודוקטיביות")) { badges.push("מכונת_פרודוקטיביות"); badgeMsg = "\n🏅 קיבלת תג: מכונת פרודוקטיביות! (500 נק')"; }
   if (points >= 1000 && !badges.includes("בלתי_עציר")) { badges.push("בלתי_עציר"); badgeMsg = "\n👑 קיבלת תג: בלתי עציר! (1000 נק')"; }
 
-  const writes: Promise<unknown>[] = [
+  const writes: PromiseLike<unknown>[] = [
     supabase.from("users").update({ points, streak_days: streak, last_productive_day: today, badges }).eq("chat_id", chatId),
     supabase.from("reminder_completions").insert({ chat_id: chatId, reminder_id: reminder.id, reminder_text: reminder.text }),
-    logBehavior(supabase, chatId, "reminder_done", { hour: new Date(reminder.time).getHours() }),
+    logBehavior(supabase, chatId, "reminder_done", { hour: israelParts(new Date(reminder.time)).hour }),
   ];
   if (reminder.type === "once") writes.push(supabase.from("reminders").update({ active: false }).eq("id", reminder.id));
-  background(Promise.all(writes), "done_reminder_writes");
+  await Promise.all(writes);
   
   return `\n+10 נק' (סה"כ ${points})${streakMsg}${badgeMsg}`;
 }
@@ -326,7 +320,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 
 async function getTelegramFile(fileId: string): Promise<MediaPart | null> {
   try {
-    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getFile?file_id=${fileId}`);
+    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
     const json = await res.json();
     if (!json.ok) return null;
 
@@ -351,14 +345,15 @@ async function getTelegramFile(fileId: string): Promise<MediaPart | null> {
     
     const base64 = arrayBufferToBase64(buffer);
     
-    let mimeType = "application/octet-stream";
-    if (ext === "ogg" || ext === "oga") mimeType = "audio/ogg";
-    else if (ext === "mp3") mimeType = "audio/mp3";
-    else if (ext === "jpg" || ext === "jpeg") mimeType = "image/jpeg";
-    else if (ext === "png") mimeType = "image/png";
-    else if (ext === "webp") mimeType = "image/webp";
-    else if (ext === "mp4") mimeType = "video/mp4";
-    else if (ext === "webm") mimeType = "video/webm";
+    // Only types Gemini accepts inline. Anything else is dropped (sending it would make
+    // Gemini return 400 for every model).
+    const MIME: Record<string, string> = {
+      ogg: "audio/ogg", oga: "audio/ogg", mp3: "audio/mp3", m4a: "audio/mp4", wav: "audio/wav",
+      jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", heic: "image/heic",
+      mp4: "video/mp4", webm: "video/webm", pdf: "application/pdf", txt: "text/plain", vcf: "text/vcard",
+    };
+    const mimeType = MIME[ext ?? ""];
+    if (!mimeType) return null;
 
     return { mimeType, data: base64 };
   } catch (error) {
@@ -422,14 +417,14 @@ async function callGoogleGeminiModel(
   media?: MediaPart | null,
 ): Promise<{ ok: true; content: string } | { ok: false; status: number; error: string }> {
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     const contents = buildGeminiContents(history, text, media);
 
     const res = await fetchWithTimeout(
       url,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: prompt }] },
           contents,
@@ -472,13 +467,40 @@ async function callModelWithFailover(apiKey: string, prompt: string, history: Hi
       modelHealth.set(model, 0);
       return { content: res.content, debug: model };
     }
-    if ((res as any).status === 404 || (res as any).status === 403 || (res as any).status === 400) {
+    const status = (res as { status: number }).status;
+    if (status === 404) {
+      // Model does not exist for this key: skip it for an hour.
       modelHealth.set(model, Date.now() + 3_600_000);
       if (goodModel === model) goodModel = null;
       availableCheckedAt = 0;
+    } else if (status === 400 && media) {
+      // Bad input (usually the attachment). Retrying other models with the same media is pointless;
+      // retry once without it so the user still gets an answer.
+      const retry = await callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, null);
+      if (retry.ok) return { content: retry.content, debug: model };
+      break;
     }
   }
   throw new Error("All candidate models failed API requests");
+}
+
+// Raw call that sends a full generateContent body (systemInstruction, generationConfig...).
+async function callGeminiRaw(model: string, payload: Record<string, unknown>, timeoutMs = 10_000): Promise<{ ok: boolean; data?: any }> {
+  try {
+    const res = await fetchWithTimeout(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY }, body: JSON.stringify(payload) },
+      timeoutMs,
+    );
+    if (!res.ok) {
+      console.error(`[gemini-raw:${model}] HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      return { ok: false };
+    }
+    return { ok: true, data: await res.json() };
+  } catch (error) {
+    console.error(`[gemini-raw:${model}] exception:`, error);
+    return { ok: false };
+  }
 }
 
 // Current active generation models in Google AI Studio
@@ -497,8 +519,8 @@ async function listAvailableModels(apiKey: string): Promise<string[] | null> {
   if (availableModels && Date.now() - availableCheckedAt < 6 * 3_600_000) return availableModels;
   try {
     const res = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=200`,
-      { method: "GET" },
+      `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200`,
+      { method: "GET", headers: { "x-goog-api-key": apiKey } },
       5_000,
     );
     if (!res.ok) return availableModels;
@@ -558,48 +580,28 @@ async function extractionModel(apiKey: string): Promise<string> {
     if (modelHealth.get(model) && modelHealth.get(model)! > Date.now()) continue;
     return model;
   }
-  return "gemini-1.5-flash";
+  return MODEL_PREFERENCE[MODEL_PREFERENCE.length - 1];
 }
 
+// All bot text goes through toTelegramHtml: user/AI text is escaped (a "<3" used to make Telegram
+// reject the whole message) and **bold** becomes <b>bold</b>.
 async function sendMessage(chatId: number, text: string, keyboard?: object): Promise<number | null> {
-  try {
-    const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
-    if (keyboard) body.reply_markup = keyboard;
-    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      console.error(`[telegram] sendMessage ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      return null;
-    }
-    const resData = await response.json();
-    return resData?.result?.message_id ?? null;
-  } catch (error) {
-    console.error("[telegram] sendMessage exception:", error);
-    return null;
-  }
+  const body: Record<string, unknown> = { chat_id: chatId, text: toTelegramHtml(text), parse_mode: "HTML" };
+  if (keyboard) body.reply_markup = keyboard;
+  const result = await telegramCall(TG_TOKEN, "sendMessage", body);
+  return result?.result?.message_id ?? null;
 }
 
 async function sendTelegramAnimation(chatId: number, animationUrl: string, caption: string, keyboard?: object): Promise<boolean> {
-  try {
-    const body: Record<string, unknown> = { chat_id: chatId, animation: animationUrl, caption, parse_mode: "HTML" };
-    if (keyboard) body.reply_markup = keyboard;
-    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendAnimation`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      console.error(`[telegram] sendAnimation ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error("[telegram] sendAnimation exception:", error);
-    return false;
-  }
+  const body: Record<string, unknown> = { chat_id: chatId, animation: animationUrl, caption: toTelegramHtml(caption), parse_mode: "HTML" };
+  if (keyboard) body.reply_markup = keyboard;
+  return Boolean(await telegramCall(TG_TOKEN, "sendAnimation", body, "caption"));
+}
+
+async function sendPhoto(chatId: number, photo: string, caption?: string): Promise<boolean> {
+  const body: Record<string, unknown> = { chat_id: chatId, photo };
+  if (caption) { body.caption = toTelegramHtml(caption); body.parse_mode = "HTML"; }
+  return Boolean(await telegramCall(TG_TOKEN, "sendPhoto", body, "caption"));
 }
 
 async function pinChatMessage(chatId: number, messageId: number) {
@@ -758,7 +760,14 @@ function parseReminder(text: string): ParsedReminder | null {
       const add = day[0] === "מחר" ? 1 : day[0] === "מחרתיים" ? 2 : 0;
       const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
       const hour = time ? extractHour(time) : 9;
-      dueAt = israelTime(hour, time?.[2] ? +time[2] : 0, now, add);
+      const minute = time?.[2] ? +time[2] : 0;
+      dueAt = israelTime(hour, minute, now, add);
+      if (add === 0 && dueAt <= now) {
+        // "היום ב-8" at 10:00 most likely means 20:00. Otherwise let the AI scheduler decide.
+        const pm = time && !time[3] && hour < 12 ? israelTime(hour + 12, minute, now) : null;
+        if (!pm || pm <= now) return null;
+        dueAt = pm;
+      }
       span = day[0] + (time ? time[0] : "");
     }
   }
@@ -767,7 +776,7 @@ function parseReminder(text: string): ParsedReminder | null {
     const weekday = input.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
     if (weekday) {
       const target = WEEKDAYS[weekday[1]];
-      let add = (target - now.getDay() + 7) % 7;
+      let add = (target - israelParts(now).weekday + 7) % 7;
       if (!add) add = 7;
       const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
       const hour = time ? extractHour(time) : 9;
@@ -780,8 +789,13 @@ function parseReminder(text: string): ParsedReminder | null {
     const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
     if (time) {
       const hour = extractHour(time);
-      dueAt = israelTime(hour, time[2] ? +time[2] : 0, now);
-      if (dueAt <= now) dueAt = israelTime(hour, time[2] ? +time[2] : 0, now, 1);
+      const minute = time[2] ? +time[2] : 0;
+      dueAt = israelTime(hour, minute, now);
+      if (dueAt <= now) {
+        // "ב-8" said at 10:00 → 20:00 today (when no בבוקר/בערב was given), else tomorrow.
+        const pm = !time[3] && hour < 12 ? israelTime(hour + 12, minute, now) : null;
+        dueAt = pm && pm > now ? pm : israelTime(hour, minute, now, 1);
+      }
       span = time[0];
     }
   }
@@ -879,12 +893,8 @@ ${layers.filter(Boolean).join("\n")}
 
 async function runBackgroundPipelines(chatId: number, text: string, reply: string, history: HistoryMessage[], memories: Memory[], profile: Profile) {
   try {
-    const caller = async (payload: any) => {
-      const model = await extractionModel(GEMINI_API_KEY);
-      const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "חלץ נתוני זיכרון ב-JSON בלבד", [], JSON.stringify(payload), 8_000);
-      if (res.ok) return { ok: true, data: { candidates: [{ content: { parts: [{ text: res.content }] } }] } };
-      return { ok: false };
-    };
+    // Each extractor sends its own systemInstruction + generationConfig (JSON mode, low temperature).
+    const caller = async (payload: Record<string, unknown>) => callGeminiRaw(await extractionModel(GEMINI_API_KEY), payload, 10_000);
 
     const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, weekday: "long", hour: "2-digit", minute: "2-digit" });
     const currentTimeStr = timeFormatter.format(new Date());
@@ -901,14 +911,74 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
     const profileExtraction = await runProfileExtraction(caller, { userText: text, replyText: reply, history, profile });
     if (Object.keys(profileExtraction.patch).length) await saveProfile(supabase, chatId, profileExtraction.patch);
     await upsertGoals(supabase, chatId, profileExtraction.goals);
+
+    // Occasionally expire old memories / mark past events (was imported but never called).
+    if (Math.random() < 0.1) await runForgettingEngine(supabase, chatId);
   } catch (error) {
     console.error("[background] pipeline failed:", error);
   }
 }
 
+const OK = () => new Response(JSON.stringify({ ok: true }), { status: 200 });
+
+// One-time / repeatable webhook registration with a secret token. Called from pg_cron/SQL with
+// the cron secret: POST /telegram?setup=webhook  (header x-cron-secret)
+async function registerWebhook(): Promise<Response> {
+  const secret = await getConfig(supabase, "webhook_secret");
+  if (!secret) return new Response(JSON.stringify({ ok: false, error: "webhook_secret missing" }), { status: 500 });
+  const result = await telegramCall(TG_TOKEN, "setWebhook", {
+    url: `${SUPABASE_URL}/functions/v1/telegram`,
+    secret_token: secret,
+    allowed_updates: ["message", "callback_query"],
+    max_connections: 20,
+  });
+  const info = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getWebhookInfo`).then((r) => r.json()).catch(() => null);
+  const safeInfo = info?.result ? { url: info.result.url, pending: info.result.pending_update_count, last_error: info.result.last_error_message ?? null } : null;
+  return new Response(JSON.stringify({ ok: Boolean(result?.ok), info: safeInfo }), { status: 200 });
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Self-healing webhook setup: the first invocation after deploy (or after the secret changes)
+// registers the webhook with the secret_token, then remembers it in bot_config.
+let webhookChecked = false;
+async function ensureWebhook(): Promise<void> {
+  if (webhookChecked) return;
+  try {
+    const secret = await getConfig(supabase, "webhook_secret");
+    if (!secret) return;
+    const marker = (await sha256Hex(`${secret}|${SUPABASE_URL}`)).slice(0, 32);
+    const { data } = await supabase.from("bot_config").select("value").eq("key", "webhook_registered").maybeSingle();
+    if (data?.value !== marker) {
+      const res = await registerWebhook();
+      const body = await res.json().catch(() => null);
+      if (!body?.ok) { console.error("[webhook] registration failed:", JSON.stringify(body)); return; }
+      await supabase.from("bot_config").upsert({ key: "webhook_registered", value: marker }, { onConflict: "key" });
+      console.log("[webhook] registered with secret token");
+    }
+    webhookChecked = true;
+  } catch (error) {
+    console.error("[webhook] ensure failed:", error);
+  }
+}
+
+function isAdmin(chatId: number, adminId: string | null): boolean {
+  return Boolean(adminId) && String(chatId) === String(adminId);
+}
+
 Deno.serve(async (req: Request) => {
+  await ensureWebhook();
+  const url = new URL(req.url);
+  if (url.searchParams.get("setup") === "webhook") {
+    if (!(await headerMatchesConfig(req, supabase, "x-cron-secret", "cron_secret"))) return new Response("unauthorized", { status: 401 });
+    return await registerWebhook();
+  }
+
   if (req.method !== "POST") {
-    // Keep-alive ping: actively query database via Supabase client to prevent auto-pause
+    // Keep-warm ping from pg_cron: touch the DB so the connection pool stays hot.
     try {
       await supabase.from("users").select("chat_id").limit(1);
     } catch (e) {
@@ -917,9 +987,19 @@ Deno.serve(async (req: Request) => {
     return new Response("OK", { status: 200 });
   }
 
-  const reqStart = performance.now();
+  // Only Telegram knows the secret_token we registered with setWebhook.
+  if (!(await headerMatchesConfig(req, supabase, "x-telegram-bot-api-secret-token", "webhook_secret"))) {
+    return new Response("unauthorized", { status: 401 });
+  }
+
   try {
     const update = await req.json();
+
+    // Telegram re-sends an update if we were slow to answer; process each update_id once.
+    if (typeof update.update_id === "number") {
+      const { error: dupError } = await supabase.from("processed_updates").insert({ update_id: update.update_id });
+      if (dupError) return OK();
+    }
 
     if (update.callback_query) {
       const callback = update.callback_query;
@@ -971,23 +1051,27 @@ Deno.serve(async (req: Request) => {
         if (callback.message?.message_id) {
           background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
         }
-        const { data: rem } = await supabase.from("reminders").select("snooze_count").eq("id", id).single();
-        const newSnoozeCount = (rem?.snooze_count || 0) + 1;
-        
-        background(
-          Promise.all([
-            supabase.from("reminders").update({ time: new Date(Date.now() + 15 * 60_000).toISOString(), nudge_sent_at: null, snooze_count: newSnoozeCount }).eq("id", id),
-            logBehavior(supabase, chatId, "reminder_snoozed"),
-          ]),
-          "snooze_writes",
-        );
-        await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality));
+        const { data: rem } = await supabase.from("reminders").select("id, text, type, time, snooze_count").eq("id", id).eq("chat_id", chatId).maybeSingle();
+        if (rem) {
+          const snoozeUntil = new Date(Date.now() + 15 * 60_000).toISOString();
+          const writes: PromiseLike<unknown>[] = [logBehavior(supabase, chatId, "reminder_snoozed")];
+          if (rem.type === "once") {
+            writes.push(supabase.from("reminders").update({ time: snoozeUntil, nudge_sent_at: null, snooze_count: (rem.snooze_count || 0) + 1, active: true }).eq("id", id).eq("chat_id", chatId));
+          } else {
+            // Recurring reminders keep their schedule; the snooze is a separate one-off copy.
+            writes.push(supabase.from("reminders").update({ snooze_count: (rem.snooze_count || 0) + 1 }).eq("id", id).eq("chat_id", chatId));
+            writes.push(supabase.from("reminders").insert({ chat_id: chatId, text: rem.text, type: "once", time: snoozeUntil, active: true }));
+          }
+          await Promise.all(writes);
+          await sendMessage(chatId, pickPersonalized(SNOOZEREPLIES, activePersonality));
+        }
       } else if (data.startsWith("ask_delete_reminder_")) {
         const id = data.replace("ask_delete_reminder_", "");
         const { data: reminder } = await supabase.from("reminders").select("id, text, type, time").eq("id", id).eq("chat_id", chatId).eq("active", true).maybeSingle();
         if (reminder) await askDeleteReminder(chatId, reminder as ActiveReminder);
       } else if (data.startsWith("confirm_delete_reminder_")) {
         const id = data.replace("confirm_delete_reminder_", "");
+        if (callback.message?.message_id) background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
         const { error } = await supabase.from("reminders").update({ active: false }).eq("id", id).eq("chat_id", chatId);
         await sendMessage(chatId, error ? "לא הצלחתי למחוק. נסה שוב עוד רגע." : "נמחקה. לא אטריד אותך על זה יותר.");
       } else if (data === "cancel_delete_reminder") {
@@ -995,6 +1079,16 @@ Deno.serve(async (req: Request) => {
           background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
         }
         await sendMessage(chatId, "סבבה, נשארת כמו שהיא.");
+      } else if (data.startsWith("activate_reminder_")) {
+        const id = data.replace("activate_reminder_", "");
+        if (callback.message?.message_id) background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
+        const { data: rem } = await supabase.from("reminders").update({ active: true }).eq("id", id).eq("chat_id", chatId).select("text, time, type").maybeSingle();
+        await sendMessage(chatId, rem ? pickReminderCreated(activePersonality, rem.text, reminderScheduleLabel(new Date(rem.time), rem.type)) : "לא מצאתי את התזכורת הזאת.");
+      } else if (data.startsWith("discard_reminder_")) {
+        const id = data.replace("discard_reminder_", "");
+        if (callback.message?.message_id) background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
+        await supabase.from("reminders").delete().eq("id", id).eq("chat_id", chatId).eq("active", false);
+        await sendMessage(chatId, "סבבה, לא קבעתי כלום.");
       } else if (data === "dismiss") {
         if (callback.message?.message_id) {
           background(editMessageReplyMarkup(chatId, callback.message.message_id), "clear_markup");
@@ -1044,39 +1138,45 @@ Deno.serve(async (req: Request) => {
         // Handle vCard upload directly here
         const vcardFile = await getTelegramFile(message.document.file_id);
         if (vcardFile && vcardFile.mimeType === "text/vcard") {
-          const vcardText = atob(vcardFile.data); // Decode base64
-          const birthdays = [];
-          const lines = vcardText.split("\n");
+          const bytes = Uint8Array.from(atob(vcardFile.data), (c) => c.charCodeAt(0));
+          const vcardText = new TextDecoder().decode(bytes); // UTF-8 safe (Hebrew names)
+          const birthdays: Array<{ name: string; month: number; day: number }> = [];
           let currentName = "איש קשר";
-          for (const line of lines) {
-            if (line.startsWith("FN:")) currentName = line.replace("FN:", "").trim();
-            if (line.startsWith("BDAY:")) {
-              const bdayMatch = line.match(/BDAY.*:([0-9-]{10})/);
-              if (bdayMatch) {
-                birthdays.push({ name: currentName, date: bdayMatch[1] });
-              }
+          for (const rawLine of vcardText.split(/\r?\n/)) {
+            const line = rawLine.trim();
+            if (/^BEGIN:VCARD/i.test(line)) currentName = "איש קשר";
+            if (/^FN[;:]/i.test(line)) currentName = line.slice(line.indexOf(":") + 1).trim() || currentName;
+            if (/^BDAY[;:]/i.test(line)) {
+              // Accepts 1990-05-17, 19900517, --05-17, --0517
+              const value = line.slice(line.indexOf(":") + 1).trim();
+              const m = value.match(/^(?:\d{4}|--)-?(\d{2})-?(\d{2})/);
+              if (m) birthdays.push({ name: currentName, month: +m[1], day: +m[2] });
             }
           }
           if (birthdays.length > 0) {
-            const inserts = [];
-            for (const bday of birthdays) {
-              const [year, month, day] = bday.date.split("-");
-              const nextDate = new Date();
-              nextDate.setMonth(parseInt(month) - 1, parseInt(day));
-              nextDate.setHours(9, 0, 0, 0); // 09:00 AM
-              // Subtract 2 days for the reminder
-              nextDate.setDate(nextDate.getDate() - 2);
-              if (nextDate.getTime() < Date.now()) nextDate.setFullYear(nextDate.getFullYear() + 1);
-              inserts.push({
+            const now = new Date();
+            const inserts = birthdays.map((b) => {
+              // Reminder at 09:00 Israel time, two days before the birthday, next occurrence.
+              const p = israelParts(now);
+              let year = p.year;
+              const at = (y: number) => {
+                const naive = Date.UTC(y, b.month - 1, b.day - 2, 9, 0, 0);
+                return israelTime(9, 0, new Date(naive));
+              };
+              let due = at(year);
+              if (due.getTime() <= now.getTime()) due = at(++year);
+              return {
                 chat_id: chatId,
-                text: `לקנות מתנה ליום ההולדת של ${bday.name} (שחל ב-${day}/${month})`,
+                text: `לקנות מתנה ליום ההולדת של ${b.name} (שחל ב-${String(b.day).padStart(2, "0")}/${String(b.month).padStart(2, "0")})`,
                 type: "yearly",
-                time: nextDate.toISOString(),
+                time: due.toISOString(),
                 active: true,
-              });
-            }
-            await supabase.from("reminders").insert(inserts);
-            await sendMessage(chatId, `🎉 מיובא! סינכרנתי ${birthdays.length} ימי הולדת מהאנשי קשר שלך. אני אזכיר לך יומיים לפני כל יום הולדת כדי שתספיק להתארגן.`);
+              };
+            });
+            const { error: insertError } = await supabase.from("reminders").insert(inserts);
+            await sendMessage(chatId, insertError
+              ? "משהו השתבש בשמירת ימי ההולדת. נסה שוב עוד רגע."
+              : `🎉 מיובא! סינכרנתי ${birthdays.length} ימי הולדת מאנשי הקשר שלך. אזכיר לך יומיים לפני כל יום הולדת כדי שתספיק להתארגן.`);
           } else {
             await sendMessage(chatId, "לא מצאתי תאריכי ימי הולדת בקובץ הזה. 🤷");
           }
@@ -1171,14 +1271,18 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    if (text === "DEBUG_MODELS") {
+    const adminChatId = Deno.env.get("BOT_ADMIN_CHAT_ID") ?? await getConfig(supabase, "admin_chat_id");
+    const adminOnly = ["DEBUG_MODELS", "/testai", "/diag"].includes(text);
+    if (adminOnly && !isAdmin(chatId, adminChatId)) {
+      // Not for regular users: fall through and treat it as normal chat text.
+    } else if (text === "DEBUG_MODELS") {
       const models = await listAvailableModels(GEMINI_API_KEY) ?? [];
       const msg = `Models (${models.length}):\n${models.join(", ")}`;
       await sendMessage(chatId, msg);
       await supabase.from("messages").insert({ chat_id: chatId, role: "assistant", content: msg });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
-    if (text === "/testai") {
+    if (adminOnly && isAdmin(chatId, adminChatId) && text === "/testai") {
       const res = await generateAiReply("test", [], "test");
       await sendMessage(chatId, `AI used model: ${res?.debug ?? "failed"}`);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -1223,7 +1327,7 @@ Deno.serve(async (req: Request) => {
       await sendMessage(chatId, "מה בא לך לעשות?", { inline_keyboard: [[{ text: "⏰ תזכורת", callback_data: "menu_reminder" }], [{ text: "🎭 אישיות", callback_data: "menu_personality" }]] });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
-    if (text === "/diag") {
+    if (adminOnly && isAdmin(chatId, adminChatId) && text === "/diag") {
       const available = await listAvailableModels(GEMINI_API_KEY);
       const lines = [
         `מפתח Gemini: ${GEMINI_API_KEY ? "מוגדר ✅" : "חסר ❌"}`,
@@ -1288,7 +1392,10 @@ Deno.serve(async (req: Request) => {
         ? { personality: switchRequest.key, temp_personality: null, temp_personality_until: null }
         : { temp_personality: switchRequest.key, temp_personality_until: new Date(Date.now() + 2 * 3_600_000).toISOString() };
       background(updateUser(chatId, changes), "switch_personality");
-      await sendMessage(chatId, `${PERSONALITIES[switchRequest.key]?.emoji ?? "💬"} סגור, לשעתיים הקרובות.`);
+      const switchedName = PERSONALITIES[switchRequest.key]?.name ?? "";
+      await sendMessage(chatId, switchRequest.scope === "permanent"
+        ? `${PERSONALITIES[switchRequest.key]?.emoji ?? "💬"} סגור, מעכשיו אני ${switchedName}.`
+        : `${PERSONALITIES[switchRequest.key]?.emoji ?? "💬"} סגור, ${switchedName} לשעתיים הקרובות.`);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (switchRequest?.type === "tone") {
@@ -1302,7 +1409,12 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    if (/(מחק|תמחק|לבטל|תבטל|הסר|תסיר)/u.test(text) && /(תזכור|כדור|אותה|אותו|ה)/u.test(text)) {
+    // Old check matched the letter "ה" (= almost any sentence), so "אני צריך לבטל את הפגישה"
+    // was treated as "delete a reminder". Now it must mention a reminder, or be a short
+    // "תמחק אותה" right after the bot talked about one.
+    const deleteVerb = /(מחק|תמחק|תמחקי|לבטל|תבטל|תבטלי|הסר|תסיר|תסירי)/u.test(text);
+    const aboutReminder = /(תזכורת|התזכורת|תזכורות|ההתראה)/u.test(text) || (/^\S+\s+(אותה|אותו)[.!]?$/u.test(text.trim()));
+    if (deleteVerb && aboutReminder) {
       const reminder = await findReminderForDeletion(chatId, text);
       if (reminder) {
         await askDeleteReminder(chatId, reminder);
@@ -1373,15 +1485,6 @@ Deno.serve(async (req: Request) => {
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
-
-async function sendPhoto(chatId: number, photo: string, caption?: string): Promise<boolean> {
-  const body: Record<string, unknown> = { chat_id: chatId, photo };
-  if (caption) body.caption = caption;
-  const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendPhoto`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  });
-  return response.ok;
-}
 
     if (/^(הוסף הרגל|הרגל חדש)\s*(.+)/ui.test(text)) {
       const match = text.match(/^(הוסף הרגל|הרגל חדש)\s*(.+)/ui);
@@ -1465,10 +1568,18 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
           if (smart.task && smart.time) {
             const dueAt = new Date(smart.time);
             if (dueAt.getTime() > Date.now()) {
-              await supabase.from("reminders").insert({ chat_id: chatId, text: smart.task, type: "once", time: dueAt.toISOString(), active: true });
-              const label = reminderScheduleLabel(dueAt, "once");
-              await sendMessage(chatId, `ראיתי שיש בתמונה פרטים על "${smart.task}". קבעתי לך תזכורת אוטומטית ל-${label}!\n\n(סיבה: ${smart.reason})`);
-              return new Response(JSON.stringify({ ok: true }), { status: 200 });
+              // Saved inactive; the user confirms with a button (a meme with a date shouldn't create a reminder).
+              const { data: pending } = await supabase.from("reminders").insert({ chat_id: chatId, text: String(smart.task).slice(0, 200), type: "once", time: dueAt.toISOString(), active: false }).select("id").single();
+              if (pending?.id) {
+                const label = reminderScheduleLabel(dueAt, "once");
+                await sendMessage(chatId, `ראיתי בתמונה פרטים על "${smart.task}" (${label}).\nלקבוע לך תזכורת?${smart.reason ? `\n\n(${smart.reason})` : ""}`, {
+                  inline_keyboard: [[
+                    { text: "✅ כן, תזכיר לי", callback_data: `activate_reminder_${pending.id}` },
+                    { text: "לא צריך", callback_data: `discard_reminder_${pending.id}` },
+                  ]],
+                });
+                return new Response(JSON.stringify({ ok: true }), { status: 200 });
+              }
             }
           }
         }
@@ -1503,7 +1614,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
           background(saveMessage(chatId, "assistant", r), "save_reply");
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
-        await supabase.from("reminders").insert({ chat_id: chatId, text: taskTitle, type: parsed.type, time: parsed.dueAt.toISOString(), active: true });
+        await supabase.from("reminders").insert({ chat_id: chatId, text: taskTitle, type: parsed.type, time: parsed.dueAt.toISOString(), active: true, confirm_needed: parseSmartHints(text).confirmNeeded === true });
         const label = reminderScheduleLabel(parsed.dueAt, parsed.type);
         const replyText = pickReminderCreated(personality, taskTitle, label);
         await sendMessage(chatId, replyText);
@@ -1554,7 +1665,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
             const dueAt = new Date(smart.time);
             if (dueAt.getTime() > Date.now()) {
               const reminderType = (smart.type === "daily" || smart.type === "weekly") ? smart.type : "once";
-              await supabase.from("reminders").insert({ chat_id: chatId, text: taskTitle, type: reminderType, time: dueAt.toISOString(), weather_condition: smart.weather_condition || null, active: true });
+              await supabase.from("reminders").insert({ chat_id: chatId, text: taskTitle, type: reminderType, time: dueAt.toISOString(), weather_condition: smart.weather_condition || null, active: true, confirm_needed: parseSmartHints(text).confirmNeeded === true });
               const label = reminderScheduleLabel(dueAt, reminderType);
               const personality = resolveActivePersonality(user);
               const customMessage = pickReminderCreated(personality, taskTitle, label);
@@ -1579,10 +1690,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
            throw new Error(`API Error: ${res.status} - ${res.error}`);
         }
       } catch (e) {
-        const availableStr = availableModels ? availableModels.join(", ") : "null";
-        const debugMsg = `DEBUG: Smart Scheduling failed! Reason: ${(e as Error).message}\nAvailable models: ${availableStr}`;
-        await sendMessage(chatId, debugMsg);
-        await supabase.from("messages").insert({ chat_id: chatId, role: "assistant", content: debugMsg });
+        console.error("[smart-scheduling] failed:", (e as Error).message);
         // Fallback to conversational request for time
         background(updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text }), "reminder_time_state");
         await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
@@ -1631,7 +1739,7 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     }
 
     const mode = /אין לי כוח|קשה לי|עייף|שרוף|נמאס|מבאס/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור|סידרתי|ניקיתי|הלכתי|כתבתי/.test(text) ? "success" : "casual";
-    const mood = pickMood(personality, { mode, hourLocal: new Date().getHours(), repeatStreak: 0, gapMinutes, prevMood: user.mood });
+    const mood = pickMood(personality, { mode, hourLocal: israelParts().hour, repeatStreak: 0, gapMinutes, prevMood: user.mood });
     const humor = humorPolicy({ text, mode, tone: "neutral", intensity: 0, mood, userHumorLevel: profile.humor_level });
     const deep = detectDeepMode(text, history);
     
@@ -1729,51 +1837,10 @@ async function sendPhoto(chatId: number, photo: string, caption?: string): Promi
     background(runBackgroundPipelines(chatId, text, reply, history, memories, profile), "pipelines");
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
-  } catch (error: any) {
-    const errTxt = error instanceof Error ? error.stack : JSON.stringify(error, Object.getOwnPropertyNames(error));
-    const token = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-    const keys = Object.keys(Deno.env.toObject()).join(", ");
-    const debug = `Keys: ${keys} | Error: ${errTxt}`;
-    return new Response(JSON.stringify({ ok: false, error: debug }), { status: 200 });
+  } catch (error) {
+    // Log server-side only. Always answer 200 so Telegram doesn't retry the same update forever.
+    console.error("[telegram] unhandled error:", error instanceof Error ? error.stack : error);
+    background(supabase.from("bot_errors").insert({ code: "unhandled", message: String(error instanceof Error ? error.message : error).slice(0, 1000), status: 500 }), "log_error");
+    return OK();
   }
 });
-
-
-
-
-async function sendTelegramSticker(chatId: number, stickerUrl: string, caption: string): Promise<boolean> {
-  try {
-    const isWebp = stickerUrl.endsWith('.webp');
-    let endpoint = isWebp ? 'sendSticker' : 'sendAnimation';
-    let body: Record<string, unknown> = { chat_id: chatId, parse_mode: 'HTML' };
-    if (isWebp) {
-      body.sticker = stickerUrl;
-    } else {
-      body.animation = stickerUrl;
-      body.caption = caption;
-    }
-    let response = await fetch("https://api.telegram.org/bot" + TG_TOKEN + "/" + endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok && isWebp) {
-      // Fallback to sendAnimation if sendSticker fails (e.g. animated webp rejected)
-      response = await fetch("https://api.telegram.org/bot" + TG_TOKEN + "/sendAnimation", {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, animation: stickerUrl, caption, parse_mode: 'HTML' }),
-      });
-    }
-    if (!response.ok) {
-      return false;
-    }
-    if (isWebp && response.ok) {
-       // sendSticker doesn't support caption, so send the text separately
-       await sendMessage(chatId, caption);
-    }
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
