@@ -1,16 +1,19 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createDb } from "../_shared/db.ts";
+import {
+  advanceRecurring, escapeHtml, isCronAuthorized, israelParts, runOnce, telegramCall, toTelegramHtml,
+} from "../_shared/util.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const GIPHY_API_KEY = Deno.env.get("GIPHY_API_KEY") ?? "";
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+const GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
+const supabase = createDb();
 
 type Reminder = {
   id: string;
   chat_id: number;
   text: string;
-  type: "once" | "daily" | "weekly";
+  type: "once" | "daily" | "weekly" | "yearly";
   time: string;
   active: boolean;
   confirm_needed: boolean | null;
@@ -18,145 +21,75 @@ type Reminder = {
   weather_condition?: string | null;
 };
 
-async function sendTelegramMessage(chatId: number, text: string, keyboard?: object): Promise<boolean> {
-  try {
-    const body: Record<string, unknown> = { chat_id: chatId, text, parse_mode: "HTML" };
-    if (keyboard) body.reply_markup = keyboard;
-    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      const errTxt = await response.text();
-      console.error(`[check-reminders] send msg failed: ${response.status} ${errTxt}`);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error("[check-reminders] Telegram text exception:", error);
-    return false;
-  }
+// `html` must already be safe Telegram HTML (use toTelegramHtml / escapeHtml on any user/AI text).
+async function sendHtml(chatId: number, html: string, keyboard?: object): Promise<boolean> {
+  const body: Record<string, unknown> = { chat_id: chatId, text: html, parse_mode: "HTML" };
+  if (keyboard) body.reply_markup = keyboard;
+  return Boolean(await telegramCall(TG_TOKEN, "sendMessage", body));
 }
 
-async function editTelegramMessageText(chatId: number, messageId: number, text: string): Promise<boolean> {
-  try {
-    const body: Record<string, unknown> = { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML" };
-    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/editMessageText`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      console.error(`[check-reminders] Telegram edit ${response.status}: ${(await response.text()).slice(0, 300)}`); return false;
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error("[check-reminders] Telegram edit exception:", error);
-    return false;
-  }
+async function editHtml(chatId: number, messageId: number, html: string): Promise<boolean> {
+  return Boolean(await telegramCall(TG_TOKEN, "editMessageText", { chat_id: chatId, message_id: messageId, text: html, parse_mode: "HTML" }));
 }
 
-async function sendTelegramAnimation(chatId: number, animationUrl: string, caption: string, keyboard?: object): Promise<boolean> {
-  try {
-    const body: Record<string, unknown> = { chat_id: chatId, animation: animationUrl, caption, parse_mode: "HTML" };
-    if (keyboard) body.reply_markup = keyboard;
-    const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendAnimation`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      console.error(`[check-reminders] Telegram anim ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error("[check-reminders] Telegram anim exception:", error);
-    return false;
-  }
+async function sendAnimation(chatId: number, animationUrl: string, captionHtml: string, keyboard?: object): Promise<boolean> {
+  const body: Record<string, unknown> = { chat_id: chatId, animation: animationUrl, caption: captionHtml, parse_mode: "HTML" };
+  if (keyboard) body.reply_markup = keyboard;
+  return Boolean(await telegramCall(TG_TOKEN, "sendAnimation", body, "caption"));
 }
 
-const GIPHY_API_KEY = Deno.env.get("GIPHY_API_KEY") ?? "";
-
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+async function gemini(prompt: string, maxOutputTokens: number): Promise<string> {
+  if (!GEMINI_API_KEY) return "";
+  for (const model of GEMINI_MODELS) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8_000);
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens } }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
+      if (!res.ok) {
+        if (res.status === 404) continue; // model not available for this key, try the next one
+        console.error(`[check-reminders] gemini ${model} ${res.status}`);
+        continue;
+      }
+      const data = await res.json();
+      const text = (data?.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("").trim();
+      if (text) return text;
+    } catch (error) {
+      console.error(`[check-reminders] gemini ${model} exception:`, error);
+    }
+  }
+  return "";
+}
 
 async function fetchGifForTask(task: string, personality: string, botMessage: string): Promise<string | null> {
   if (!GIPHY_API_KEY) return null;
   try {
-    let englishQuery = "motivation";
-    if (GEMINI_API_KEY) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-      const prompt = `You are a bot with personality '${personality}'.
+    const prompt = `You are a bot with personality '${personality}'.
 You just sent the user this message: "${botMessage}"
 For the task: "${task}"
-Generate a short (1-3 words) English search query for Giphy that perfectly matches the emotion, tone, and context of your message. 
-For example, if you are cynical and sarcastic, maybe "rolling eyes" or "whatever". If you are a strict coach, maybe "yelling coach" or "do it now".
+Generate a short (1-3 words) English search query for Giphy that matches the emotion and tone of your message.
 Return ONLY the english keywords, nothing else.`;
-      const aiRes = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 10 }
-        })
-      });
-      if (aiRes.ok) {
-        const data = await aiRes.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        if (text) englishQuery = text;
-      }
-    }
+    const englishQuery = (await gemini(prompt, 10)).replace(/[^a-zA-Z\s]/g, "").trim() || "motivation";
 
-    let query = encodeURIComponent(englishQuery);
-    let url = `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${query}&limit=5`;
-    let res = await fetch(url);
-    let data = res.ok ? await res.json() : null;
-    
-    // Fallback if no results
-    if (!data?.data?.length) {
+    const search = async (q: string, limit: number) => {
+      const res = await fetch(`https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(q)}&limit=${limit}&rating=pg-13`);
+      return res.ok ? (await res.json())?.data ?? [] : [];
+    };
+    let results = await search(englishQuery, 5);
+    if (!results.length) {
       const fallbacks = ["just do it", "motivation", "you can do it", "get to work", "do it now"];
-      const randomFallback = fallbacks[Math.floor(Math.random() * fallbacks.length)];
-      query = encodeURIComponent(randomFallback);
-      url = `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${query}&limit=10`;
-      res = await fetch(url);
-      data = res.ok ? await res.json() : null;
+      results = await search(fallbacks[Math.floor(Math.random() * fallbacks.length)], 10);
     }
-    
-    if (!data?.data?.length) return null;
-    const randomGif = data.data[Math.floor(Math.random() * data.data.length)];
-    return randomGif?.images?.original?.url || null;
+    if (!results.length) return null;
+    return results[Math.floor(Math.random() * results.length)]?.images?.original?.url || null;
   } catch (e) {
     console.error("[check-reminders] Giphy failed", e);
     return null;
   }
-}
-
-function getTzOffsetMinutes(date: Date, timeZone: string): number {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-  });
-  const parts = formatter.formatToParts(date).reduce((out, part) => {
-    out[part.type] = part.value;
-    return out;
-  }, {} as Record<string, string>);
-  const utc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
-  return (utc - date.getTime()) / 60_000;
-}
-
-function nextOccurrence(previous: Date, days: number): Date {
-  const offset = getTzOffsetMinutes(previous, TZ);
-  const local = new Date(previous.getTime() + offset * 60_000);
-  const naive = Date.UTC(
-    local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + days,
-    local.getUTCHours(), local.getUTCMinutes(), 0,
-  );
-  const nextOffset = getTzOffsetMinutes(new Date(naive), TZ);
-  return new Date(naive - nextOffset * 60_000);
 }
 
 function cleanTaskText(task: string): string {
@@ -271,13 +204,10 @@ function buildReminderMessage(personality: string, rawTask: string): string {
 
 const NUDGE_PREFIXES = [
   (base: string) => `פספסת את זה? ${base}`,
-  (base: string) => `אני לא אומר שאתה מתעלם, אבל ${base}`,
   (base: string) => `שוב אני: ${base}`,
   (base: string) => `עדיין מחכה: ${base}`,
-  (base: string) => `תזכורת חוזרת (כי למה לא?): ${base}`,
   (base: string) => `היי, מנדנד קצת: ${base}`,
   (base: string) => `סליחה על החפירה, אבל: ${base}`,
-  (base: string) => `עדכון סטטוס: עדיין לא עשית את זה. ${base}`,
   (base: string) => `אני עקשן. ${base}`,
   (base: string) => `שעון החול מתקתק... ${base}`,
 ];
@@ -286,286 +216,238 @@ function buildNudgeMessage(base: string): string {
   return NUDGE_PREFIXES[Math.floor(Math.random() * NUDGE_PREFIXES.length)](base);
 }
 
-function keyboardForReminder(id: string, needsConfirmation: boolean) {
-  if (!needsConfirmation) return undefined;
+// Done / snooze buttons on every reminder; the follow-up nudge only happens when confirm_needed.
+function keyboardForReminder(id: string) {
   return {
-    inline_keyboard: [
-      [
-        { text: "✅ סיימתי", callback_data: `done_reminder_${id}` },
-        { text: "⏰ עוד 15 דק'", callback_data: `snooze_${id}` },
-      ],
-    ],
+    inline_keyboard: [[
+      { text: "✅ סיימתי", callback_data: `done_reminder_${id}` },
+      { text: "⏰ עוד 15 דק'", callback_data: `snooze_${id}` },
+    ]],
   };
 }
 
-Deno.serve(async () => {
-  try {
-    const now = new Date();
-    
-    // Weekly Quick Notes Review: Sunday at 09:00 IL time
-    const ilTime = new Date(now.toLocaleString("en-US", { timeZone: TZ }));
-    if (ilTime.getDay() === 0 && ilTime.getHours() === 9 && ilTime.getMinutes() === 0) {
-      const { data: usersData } = await supabase.from("users").select("chat_id");
-      if (usersData) {
-        for (const user of usersData) {
-          const { data: notes } = await supabase.from("quick_notes").select("id, text").eq("chat_id", user.chat_id).eq("active", true);
-          if (notes && notes.length > 0) {
-            const randomNote = notes[Math.floor(Math.random() * notes.length)];
-            const message = `💡 **הפינה השבועית: מגירת הרעיונות**\n\nפעם כתבת לי את הרעיון הזה:\n"${randomNote.text}"\n\nרוצה שנקבע לזה תזכורת או נשאיר את זה במגירה? (אם בא לך לקדם את זה, פשוט תגיד לי "תזכיר לי על הרעיון הזה מחר ב-10")`;
-            await sendTelegramMessage(user.chat_id, message);
-          }
-        }
-      }
-    }
-    
-    // Daily Jewish Holidays Check: Every day at 10:00 IL time
-    if (ilTime.getHours() === 10 && ilTime.getMinutes() === 0) {
-      try {
-        const res = await fetch("https://www.hebcal.com/hebcal?v=1&cfg=json&maj=on&year=now");
-        if (res.ok) {
-          const data = await res.json();
-          // Get tomorrow's date string in YYYY-MM-DD format (Israel Time)
-          const tomorrowStr = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(Date.now() + 86400000));
-          
-          const holidays = data.items?.filter((item: any) => item.date === tomorrowStr && item.category === "holiday");
-          if (holidays && holidays.length > 0) {
-            const holidayNames = holidays.map((h: any) => h.hebrew).join(" ו-");
-            const message = `🍎 **תזכורת מועדי ישראל:**\nמחר יחול ${holidayNames}!\nשלא תגיד שלא אמרתי לך להתארגן.`;
-            
-            const { data: usersData } = await supabase.from("users").select("chat_id");
-            if (usersData) {
-              for (const user of usersData) {
-                await sendTelegramMessage(user.chat_id, message);
-              }
-            }
-          }
-        }
-      } catch (e) {
-        console.error("[hebcal] failed:", e);
-      }
-    }
-    
-    // Weekly Procrastination Review: Thursday at 18:00 IL time
-    if (ilTime.getDay() === 4 && ilTime.getHours() === 18 && ilTime.getMinutes() === 0) {
-      const { data: usersData } = await supabase.from("users").select("chat_id");
-      if (usersData) {
-        for (const user of usersData) {
-          const { data: stuck } = await supabase.from("reminders").select("id, text, snooze_count").eq("chat_id", user.chat_id).eq("active", true).gte("snooze_count", 3);
-          if (stuck && stuck.length > 0) {
-            const list = stuck.map(r => `• ${r.text} (${r.snooze_count} דחיות)`).join("\n");
-            await sendTelegramMessage(user.chat_id, `⚠️ **פינת הדחיינות השבועית**\n\nשמתי לב שממש נתקעת על המשימות האלה:\n${list}\n\nרוצה שנפרק אותן לצעדים קטנים יותר או פשוט נמחק ונוותר עליהן? אין בושה בלשחרר!`);
-          }
-        }
-      }
-    }
-    // Process Follow-ups
-    const { data: followUps } = await supabase.from("follow_ups").select("id, chat_id, topic, question").eq("active", true).lte("due_at", now.toISOString());
-    if (followUps && followUps.length > 0) {
-      for (const fu of followUps) {
-        await sendTelegramMessage(fu.chat_id, `היי! שאלה קטנה: לגבי ${fu.topic} - ${fu.question}`);
-        await supabase.from("follow_ups").update({ active: false }).eq("id", fu.id);
-      }
-    }
-
-    // Daily Random Banter: 16:00 IL time
-    if (ilTime.getHours() === 16 && ilTime.getMinutes() === 0) {
-      const { data: inactiveUsers } = await supabase.from("users").select("chat_id, personality").lt("last_message_at", new Date(now.getTime() - 48 * 3600000).toISOString());
-      if (inactiveUsers && inactiveUsers.length > 0) {
-        for (const user of inactiveUsers) {
-          const p = user.personality || "cynic";
-          let banterList = [
-            "תגיד, לאן נעלמת? אני מדבר פה עם הקירות.",
-            "שמע, הייתי חייב לשאול – גם אתה מרגיש שזה יום די מיותר היום? או שזה רק אני?",
-            "סתם עברתי בשכונה הווירטואלית וחשבתי לבדוק אם אתה עדיין חי.",
-          ];
-          if (p === "grandma") {
-            banterList = ["כפרה, לא שמעתי ממך יומיים. אכלת משהו היום?", "חיים של סבתא, הכל בסדר? אתה מסנן אותי כמו הנכדים האמיתיים שלי.", "נעלמת לי. אם לא תכתוב לי משהו אני באה עם סיר קציצות."];
-          } else if (p === "coach" || p === "sergeant") {
-            banterList = ["יומיים שקט. אני מקווה שזה בגלל שאתה עובד קשה ולא בגלל שויתרת.", "איפה נעלמת? צא מאזור הנוחות שלך ובוא לעדכן מה קורה.", "אפס דיווחים 48 שעות. חזור לשגרה מיד."];
-          } else if (p === "therapist") {
-            banterList = ["היי, שמתי לב שהתרחקת קצת. הכל בסדר במרחב האישי שלך?", "לפעמים שתיקה אומרת המון. איך אתה מרגיש היום?", "רק רציתי לשלוח אנרגיות טובות. קח את הזמן שלך."];
-          } else if (p === "friend" || p === "hype") {
-            banterList = ["אחיייי לאן נעלמת?? מתגעגע פה!", "יוו עברו יומיים, תן איזה סימן חיים כפרה!", "יאללה בוא נדבר מה קורה איתך, משעמם פה טילים!"];
-          }
-          const msg = banterList[Math.floor(Math.random() * banterList.length)];
-          await sendTelegramMessage(user.chat_id, msg);
-        }
-      }
-    }
-
-    // Hourly Countdowns Update: At minute 0 of every hour
-    if (now.getMinutes() === 0) {
-      const { data: countdowns } = await supabase.from("countdowns").select("*").eq("active", true);
-      if (countdowns) {
-        for (const cd of countdowns) {
-          const target = new Date(cd.target_date);
-          const diffMs = target.getTime() - now.getTime();
-          
-          if (diffMs <= 0) {
-            await editTelegramMessageText(cd.chat_id, cd.message_id, `🎉 **הגיע הזמן: ${cd.title}**!`);
-            await supabase.from("countdowns").update({ active: false }).eq("id", cd.id);
-          } else {
-            const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-            const hours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
-            let text = `⏳ **ספירה לאחור: ${cd.title}**\n`;
-            if (days > 0) text += `נותרו: ${days} ימים ו-${hours} שעות.`;
-            else text += `נותרו: ${hours} שעות בלבד!`;
-            
-            await editTelegramMessageText(cd.chat_id, cd.message_id, text);
-          }
-        }
-      }
-    }
-    const { data: due, error } = await supabase
-      .from("reminders")
-      .select("id, chat_id, text, type, time, active, confirm_needed, nudge_sent_at, weather_condition")
-      .eq("active", true)
-      .lte("time", now.toISOString());
-
-    if (error) {
-      console.error("[check-reminders] query failed:", error.message);
-      return new Response(JSON.stringify({ ok: false, error: error.message }), { status: 200 });
-    }
-    if (!due?.length) return new Response(JSON.stringify({ ok: true, sent: 0 }), { status: 200 });
-
-    const reminders = due as Reminder[];
-    const chatIds = [...new Set(reminders.map((row) => row.chat_id))];
-    const { data: users } = await supabase
-      .from("users")
-      .select("chat_id, personality, gender, first_name")
-      .in("chat_id", chatIds);
-    const personalities = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.personality ?? "cynic"]));
-    const userGenders = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.gender ?? "male"]));
-    const userNames = new Map<number, string>((users ?? []).map((user) => [user.chat_id, user.first_name ?? ""]));
-
-async function generateNaturalReminder(apiKey: string, personality: string, text: string, isNudge: boolean, gender?: string, name?: string): Promise<string> {
-  if (!apiKey) return "";
+async function generateNaturalReminder(personality: string, text: string, isNudge: boolean, gender?: string, name?: string): Promise<string> {
   const genderInstruction = gender === "female"
     ? "The user is FEMALE. You MUST address her in Hebrew strictly in FEMININE form (e.g. את, תעשי, תזכרי, הלכת)."
     : "The user is MALE. You MUST address him in Hebrew strictly in MASCULINE form (e.g. אתה, תעשה, תזכור, הלכת).";
   const nameInstruction = name ? `The user's name is '${name}'. You may include their name naturally.` : "";
-  const systemPrompt = `You are an Israeli assistant with personality '${personality}'.
+  const prompt = `You are an Israeli assistant with personality '${personality}'.
 Your task is to generate a natural, flowing Hebrew sentence to remind the user about their task: '${text}'.
 ${genderInstruction}
 ${nameInstruction}
 Do NOT use colons (:) or robotic formats like 'תזכורת: לקחת כדור'. Integrate the task naturally.
 ${isNudge ? "This is a NUDGE because they didn't confirm the first time. Be a bit more insistent." : "This is the first reminder."}
 Keep it short, max 1-2 sentences. Output ONLY the Hebrew text.`;
-
-  try {
-    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=" + apiKey, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: systemPrompt }] }]
-      })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-      rawText = rawText.replace(/\*\*/g, ""); // strip markdown bold
-      rawText = rawText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); // escape HTML for Telegram
-      return rawText;
-    }
-    return "";
-  } catch (e) {
-    return "";
-  }
+  return (await gemini(prompt, 200)).replace(/\*\*/g, "");
 }
+
+let weatherCache: { at: number; precip: number; temp: number } | null = null;
 
 async function checkWeatherCondition(condition: string): Promise<boolean> {
   try {
-    const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=32.08&longitude=34.78&daily=precipitation_sum,temperature_2m_max&timezone=Asia%2FJerusalem");
-    if (!res.ok) return true; // Default to true if API fails
-    const data = await res.json();
-    const todayPrecip = data.daily?.precipitation_sum?.[0] || 0;
-    const todayTemp = data.daily?.temperature_2m_max?.[0] || 25;
-    
-    if (condition.toLowerCase() === "rain") return todayPrecip > 0.5;
-    if (condition.toLowerCase() === "clear") return todayPrecip <= 0.5;
-    if (condition.toLowerCase() === "hot") return todayTemp > 28;
-    if (condition.toLowerCase() === "cold") return todayTemp < 18;
-    return true; // Unrecognized condition
+    if (!weatherCache || Date.now() - weatherCache.at > 30 * 60_000) {
+      const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=32.08&longitude=34.78&daily=precipitation_sum,temperature_2m_max&timezone=Asia%2FJerusalem");
+      if (!res.ok) return true; // fail open: better to remind than to silently skip
+      const data = await res.json();
+      weatherCache = { at: Date.now(), precip: data.daily?.precipitation_sum?.[0] ?? 0, temp: data.daily?.temperature_2m_max?.[0] ?? 25 };
+    }
+    const c = condition.toLowerCase();
+    if (c === "rain") return weatherCache.precip > 0.5;
+    if (c === "clear") return weatherCache.precip <= 0.5;
+    if (c === "hot") return weatherCache.temp > 28;
+    if (c === "cold") return weatherCache.temp < 18;
+    return true;
   } catch (e) {
     console.error("[weather] check failed:", e);
     return true;
   }
 }
 
-    let errs = []; let sent = 0; let failed = 0;
+async function allChatIds(): Promise<number[]> {
+  const { data } = await supabase.from("users").select("chat_id");
+  return (data ?? []).map((u: { chat_id: number }) => u.chat_id);
+}
 
-    for (const reminder of reminders) {
-      try {
-        if (reminder.weather_condition) {
-          const conditionMet = await checkWeatherCondition(reminder.weather_condition);
-          if (!conditionMet) {
-            // Weather condition not met, skip and advance/deactivate
-            if (reminder.type === "once") {
-              await supabase.from("reminders").update({ active: false }).eq("id", reminder.id);
-            } else {
-              const nextTime = new Date(new Date(reminder.time).getTime() + (reminder.type === "weekly" ? 7 : 1) * 86400000);
-              await supabase.from("reminders").update({ time: nextTime.toISOString() }).eq("id", reminder.id);
-            }
-            continue;
-          }
-        }
-        const personality = personalities.get(reminder.chat_id) ?? "cynic";
-        const gender = userGenders.get(reminder.chat_id) ?? "male";
-        const userName = userNames.get(reminder.chat_id) ?? "";
-        const needsConfirmation = reminder.confirm_needed === true;
-        const isNudge = needsConfirmation && Boolean(reminder.nudge_sent_at);
-        let message = await generateNaturalReminder(Deno.env.get("GEMINI_API_KEY") || "", personality, reminder.text, isNudge, gender, userName);
-        if (!message) {
-          const base = buildReminderMessage(personality, reminder.text);
-          message = isNudge ? buildNudgeMessage(base) : base;
-        }
+// Periodic broadcasts. Each runs once per period thanks to runOnce(), so a delayed or
+// skipped cron minute no longer means the job is missed (old code required minute === 0).
+async function runPeriodicJobs(now: Date) {
+  const il = israelParts(now);
 
-        const gifUrl = await fetchGifForTask(reminder.text, personality, message);
-        const keyboard = keyboardForReminder(reminder.id, needsConfirmation);
-        
-        let success = false;
-        if (gifUrl) {
-          success = await sendTelegramAnimation(reminder.chat_id, gifUrl, message, keyboard);
-          // Fallback to text if animation sending fails
-          if (!success) success = await sendTelegramMessage(reminder.chat_id, message, keyboard);
-        } else {
-          success = await sendTelegramMessage(reminder.chat_id, message, keyboard);
-        }
-
-        if (!success) {
-          console.error(`[check-reminders] failure sending reminder ${reminder.id}`);
-          failed++;
-          continue;
-        }
-
-        if (reminder.type === "once" && needsConfirmation && !isNudge) {
-          await supabase.from("reminders").update({
-            nudge_sent_at: now.toISOString(),
-            time: new Date(now.getTime() + 20 * 60_000).toISOString(),
-          }).eq("id", reminder.id);
-        } else if (reminder.type === "once") {
-          await supabase.from("reminders").update({ active: false }).eq("id", reminder.id);
-        } else {
-          const days = reminder.type === "weekly" ? 7 : 1;
-          await supabase.from("reminders").update({
-            time: nextOccurrence(new Date(reminder.time), days).toISOString(),
-            nudge_sent_at: null,
-          }).eq("id", reminder.id);
-        }
-        sent++;
-      } catch (error) {
-        console.error(`[check-reminders] reminder ${reminder.id} exception:`, error);
-        failed++; 
+  // Weekly quick-notes review: Sunday from 09:00
+  if (il.weekday === 0 && il.hour >= 9 && il.hour < 21 && await runOnce(supabase, `weekly_notes:${il.date}`)) {
+    for (const chatId of await allChatIds()) {
+      const { data: notes } = await supabase.from("quick_notes").select("id, text").eq("chat_id", chatId).eq("active", true);
+      if (notes?.length) {
+        const note = notes[Math.floor(Math.random() * notes.length)];
+        await sendHtml(chatId, `💡 <b>הפינה השבועית: מגירת הרעיונות</b>\n\nפעם כתבת לי את הרעיון הזה:\n"${escapeHtml(note.text)}"\n\nרוצה שנקבע לזה תזכורת או נשאיר את זה במגירה? (אם בא לך לקדם את זה, פשוט תגיד לי "תזכיר לי על הרעיון הזה מחר ב-10")`);
       }
     }
+  }
 
-    return new Response(JSON.stringify({ ok: true, sent, failed, errs }), { status: 200 });
+  // Jewish holidays: daily from 10:00
+  if (il.hour >= 10 && il.hour < 21 && await runOnce(supabase, `holidays:${il.date}`)) {
+    try {
+      const res = await fetch(`https://www.hebcal.com/hebcal?v=1&cfg=json&maj=on&i=on&year=${il.year}`);
+      if (res.ok) {
+        const data = await res.json();
+        const tomorrow = israelParts(new Date(now.getTime() + 86_400_000)).date;
+        const holidays = (data.items ?? []).filter((item: any) => item.date === tomorrow && item.category === "holiday");
+        if (holidays.length) {
+          const names = escapeHtml(holidays.map((h: any) => h.hebrew).join(" ו-"));
+          for (const chatId of await allChatIds()) {
+            await sendHtml(chatId, `🍎 <b>תזכורת מועדי ישראל:</b>\nמחר יחול ${names}!\nשלא תגיד שלא אמרתי לך להתארגן.`);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("[hebcal] failed:", e);
+    }
+  }
+
+  // Weekly procrastination review: Thursday from 18:00
+  if (il.weekday === 4 && il.hour >= 18 && il.hour < 22 && await runOnce(supabase, `procrastination:${il.date}`)) {
+    for (const chatId of await allChatIds()) {
+      const { data: stuck } = await supabase.from("reminders").select("id, text, snooze_count").eq("chat_id", chatId).eq("active", true).gte("snooze_count", 3);
+      if (stuck?.length) {
+        const list = stuck.map((r: any) => `• ${escapeHtml(r.text)} (${r.snooze_count} דחיות)`).join("\n");
+        await sendHtml(chatId, `⚠️ <b>פינת הדחיינות השבועית</b>\n\nשמתי לב שממש נתקעת על המשימות האלה:\n${list}\n\nרוצה שנפרק אותן לצעדים קטנים יותר או פשוט נמחק ונוותר עליהן? אין בושה בלשחרר!`);
+      }
+    }
+  }
+
+  // Random banter for users silent > 48h: from 16:00, at most once a week per user
+  // (proactive-checkin also nudges silent users; last_proactive_at keeps them from piling up).
+  if (il.hour >= 16 && il.hour < 20 && await runOnce(supabase, `banter:${il.date}`)) {
+    const silentSince = new Date(now.getTime() - 48 * 3_600_000).toISOString();
+    const { data: inactive } = await supabase.from("users").select("chat_id, personality, last_proactive_at").lt("last_message_at", silentSince);
+    for (const user of inactive ?? []) {
+      if (user.last_proactive_at && now.getTime() - new Date(user.last_proactive_at).getTime() < 7 * 86_400_000) continue;
+      const p = user.personality || "cynic";
+      let banter = [
+        "תגיד, לאן נעלמת? אני מדבר פה עם הקירות.",
+        "סתם עברתי בשכונה הווירטואלית וחשבתי לבדוק אם אתה עדיין חי.",
+      ];
+      if (p === "grandma") banter = ["כפרה, לא שמעתי ממך כמה ימים. אכלת משהו היום?", "נעלמת לי. אם לא תכתוב לי משהו אני באה עם סיר קציצות."];
+      else if (p === "coach" || p === "sergeant") banter = ["כמה ימים שקט. אני מקווה שזה בגלל שאתה עובד קשה ולא בגלל שויתרת.", "אפס דיווחים. חזור לשגרה מיד."];
+      else if (p === "therapist") banter = ["היי, שמתי לב שהתרחקת קצת. הכל בסדר?", "רק רציתי לשלוח אנרגיות טובות. קח את הזמן שלך."];
+      else if (p === "friend" || p === "hype") banter = ["אחיייי לאן נעלמת?? מתגעגע פה!", "יאללה בוא נדבר מה קורה איתך!"];
+      if (await sendHtml(user.chat_id, escapeHtml(banter[Math.floor(Math.random() * banter.length)]))) {
+        await supabase.from("users").update({ last_proactive_at: now.toISOString() }).eq("chat_id", user.chat_id);
+      }
+    }
+  }
+
+  // Countdown pins: refresh once per hour
+  if (await runOnce(supabase, `countdowns:${il.date}T${il.hour}`)) {
+    const { data: countdowns } = await supabase.from("countdowns").select("*").eq("active", true);
+    for (const cd of countdowns ?? []) {
+      const diffMs = new Date(cd.target_date).getTime() - now.getTime();
+      const title = escapeHtml(cd.title);
+      if (diffMs <= 0) {
+        await editHtml(cd.chat_id, cd.message_id, `🎉 <b>הגיע הזמן: ${title}</b>!`);
+        await supabase.from("countdowns").update({ active: false }).eq("id", cd.id);
+      } else {
+        const days = Math.floor(diffMs / 86_400_000);
+        const hours = Math.floor((diffMs / 3_600_000) % 24);
+        await editHtml(cd.chat_id, cd.message_id, `⏳ <b>ספירה לאחור: ${title}</b>\n${days > 0 ? `נותרו: ${days} ימים ו-${hours} שעות.` : `נותרו: ${hours} שעות בלבד!`}`);
+      }
+    }
+  }
+}
+
+async function processReminder(reminder: Reminder, users: Map<number, any>, now: Date): Promise<"sent" | "skipped" | "failed"> {
+  // Claim the reminder by pushing its time forward a few minutes. If another run already
+  // claimed it (time changed), the conditional update matches nothing and we skip it.
+  // If sending fails, the lease simply expires and the next run retries.
+  const lease = new Date(now.getTime() + 3 * 60_000).toISOString();
+  const { data: claimed } = await supabase.from("reminders").update({ time: lease }).eq("id", reminder.id).eq("time", reminder.time).eq("active", true).select("id");
+  if (!claimed?.length) return "skipped";
+
+  const recurring = reminder.type !== "once";
+  const nextTime = recurring ? advanceRecurring(new Date(reminder.time), reminder.type) : null;
+
+  if (reminder.weather_condition && !(await checkWeatherCondition(reminder.weather_condition))) {
+    if (recurring) await supabase.from("reminders").update({ time: nextTime!.toISOString(), nudge_sent_at: null }).eq("id", reminder.id);
+    else await supabase.from("reminders").update({ active: false }).eq("id", reminder.id);
+    return "skipped";
+  }
+
+  const user = users.get(reminder.chat_id) ?? {};
+  const personality = user.personality ?? "cynic";
+  const needsConfirmation = reminder.confirm_needed === true;
+  const isNudge = needsConfirmation && Boolean(reminder.nudge_sent_at);
+
+  let message = await generateNaturalReminder(personality, reminder.text, isNudge, user.gender ?? "male", user.first_name ?? "");
+  if (!message) {
+    const base = buildReminderMessage(personality, reminder.text);
+    message = isNudge ? buildNudgeMessage(base) : base;
+  }
+  const html = toTelegramHtml(message);
+  const keyboard = keyboardForReminder(reminder.id);
+
+  const gifUrl = await fetchGifForTask(reminder.text, personality, message);
+  let success = gifUrl ? await sendAnimation(reminder.chat_id, gifUrl, html, keyboard) : false;
+  if (!success) success = await sendHtml(reminder.chat_id, html, keyboard);
+  if (!success) {
+    // Restore the original time so the next run retries right away.
+    await supabase.from("reminders").update({ time: reminder.time }).eq("id", reminder.id).eq("time", lease);
+    return "failed";
+  }
+
+  if (needsConfirmation && !isNudge && reminder.type === "once") {
+    // Ask again in 20 minutes unless the user presses ✅.
+    await supabase.from("reminders").update({ nudge_sent_at: now.toISOString(), time: new Date(now.getTime() + 20 * 60_000).toISOString() }).eq("id", reminder.id);
+  } else if (!recurring) {
+    await supabase.from("reminders").update({ active: false }).eq("id", reminder.id);
+  } else {
+    await supabase.from("reminders").update({ time: nextTime!.toISOString(), nudge_sent_at: null, last_sent_at: now.toISOString() }).eq("id", reminder.id);
+  }
+  return "sent";
+}
+
+Deno.serve(async (req: Request) => {
+  if (!(await isCronAuthorized(req, supabase))) {
+    return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
+  }
+  try {
+    const now = new Date();
+    try {
+      await runPeriodicJobs(now);
+    } catch (error) {
+      console.error("[check-reminders] periodic jobs failed:", error);
+    }
+
+    const { data: due, error } = await supabase
+      .from("reminders")
+      .select("id, chat_id, text, type, time, active, confirm_needed, nudge_sent_at, weather_condition")
+      .eq("active", true)
+      .lte("time", now.toISOString())
+      .order("time")
+      .limit(50);
+    if (error) {
+      console.error("[check-reminders] query failed:", error.message);
+      return new Response(JSON.stringify({ ok: false }), { status: 200 });
+    }
+    if (!due?.length) return new Response(JSON.stringify({ ok: true, sent: 0 }), { status: 200 });
+
+    const reminders = due as Reminder[];
+    const chatIds = [...new Set(reminders.map((r) => r.chat_id))];
+    const { data: users } = await supabase.from("users").select("chat_id, personality, gender, first_name").in("chat_id", chatIds);
+    const userMap = new Map<number, any>((users ?? []).map((u: any) => [u.chat_id, u]));
+
+    let sent = 0, failed = 0, skipped = 0;
+    for (const reminder of reminders) {
+      try {
+        const result = await processReminder(reminder, userMap, now);
+        if (result === "sent") sent++; else if (result === "failed") failed++; else skipped++;
+      } catch (error) {
+        console.error(`[check-reminders] reminder ${reminder.id} exception:`, error);
+        failed++;
+      }
+    }
+    return new Response(JSON.stringify({ ok: true, sent, failed, skipped }), { status: 200 });
   } catch (error) {
     console.error("[check-reminders] fatal:", error);
     return new Response(JSON.stringify({ ok: false }), { status: 200 });
   }
 });
-
-
-
-

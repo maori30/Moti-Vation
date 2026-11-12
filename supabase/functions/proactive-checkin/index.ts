@@ -1,32 +1,16 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createDb } from "../_shared/db.ts";
+import { TZ, isCronAuthorized, telegramCall, toTelegramHtml } from "../_shared/util.ts";
 import { lifeLoopDecide, markLifeLoopSent } from "./lifeloop.ts";
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SB_SERVICE_ROLE_KEY") ?? "";
-const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createDb();
 
 const MIN_HOURS_SINCE_USER_FOR_GENERIC_NUDGE = 48;
 const MIN_HOURS_BETWEEN_PROACTIVE_MESSAGES = 20;
 
+// Messages here are plain text (some contain AI-extracted titles), so always escape.
 async function sendTelegramMessage(chatId: number, text: string): Promise<boolean> {
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
-    });
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.error(`[proactive] Telegram failed for ${chatId}: ${res.status} ${errorText.slice(0, 300)}`);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error(`[proactive] Telegram exception for ${chatId}:`, error);
-    return false;
-  }
+  return Boolean(await telegramCall(TG_TOKEN, "sendMessage", { chat_id: chatId, text: toTelegramHtml(text), parse_mode: "HTML" }));
 }
 
 function israelHour(): number {
@@ -108,6 +92,7 @@ async function sendDueFollowUps(): Promise<{ sent: number; chatsHandled: Set<num
     .select("id, chat_id, question")
     .is("sent_at", null)
     .eq("cancelled", false)
+    .order("due_at")
     .lte("due_at", new Date().toISOString())
     .limit(20);
 
@@ -164,7 +149,10 @@ async function findTopicPrompt(chatId: number): Promise<string | null> {
   return null;
 }
 
-Deno.serve(async () => {
+Deno.serve(async (req: Request) => {
+  if (!(await isCronAuthorized(req, supabase))) {
+    return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
+  }
   try {
     if (isQuietHoursNow()) {
       return new Response(JSON.stringify({ ok: true, skipped: "quiet_hours" }), { status: 200 });
