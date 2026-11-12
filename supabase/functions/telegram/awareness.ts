@@ -55,13 +55,26 @@ export async function fetchEvents(supabase: Supa, chatId: number): Promise<UserE
   try {
     const { data } = await supabase
       .from("user_events")
-      .select("id, title, kind, when_at, when_text, importance, confidence, status, asked_after_at")
+      .select("id, title, kind, when_at, when_text, importance, confidence, status, asked_after_at, created_at, updated_at")
       .eq("chat_id", chatId)
       .eq("status", "open")
       .order("importance", { ascending: false })
-      .limit(15);
-    return (data ?? []) as UserEvent[];
+      .limit(30);
+    return filterFreshEvents((data ?? []) as Array<UserEvent & { created_at?: string; updated_at?: string }>).slice(0, 15);
   } catch { return []; }
+}
+
+/** Days an undated event stays relevant. An event from September with no date ("להכין מחשב ודו\"צ")
+ *  kept being injected into every conversation forever. */
+export const UNDATED_EVENT_TTL_DAYS = 10;
+
+/** Keeps events that are still relevant: dated in the future (or within the last 12h), or undated but recent. */
+export function filterFreshEvents<T extends { when_at?: string | null; created_at?: string; updated_at?: string }>(events: T[], now = new Date()): T[] {
+  return events.filter((event) => {
+    if (event.when_at) return new Date(event.when_at).getTime() > now.getTime() - 12 * 3_600_000;
+    const touched = new Date(event.updated_at ?? event.created_at ?? 0).getTime();
+    return now.getTime() - touched < UNDATED_EVENT_TTL_DAYS * 86_400_000;
+  });
 }
 
 export async function upsertEvents(supabase: Supa, chatId: number, events: UserEvent[]) {
@@ -142,9 +155,10 @@ export function insideJokeContext(jokes: InsideJoke[]): string {
 export function rollSurprise(hasMaterial: boolean, deepMode: boolean): SurpriseMode {
   if (!hasMaterial || deepMode) return "none";
   const roll = Math.random();
-  if (roll < 0.7) return "none";
-  if (roll < 0.85) return "mention";
-  if (roll < 0.95) return "tease";
+  // Was ~30% of replies, which made old topics pop up out of nowhere. Now ~10%.
+  if (roll < 0.9) return "none";
+  if (roll < 0.95) return "mention";
+  if (roll < 0.98) return "tease";
   return "callback";
 }
 
@@ -219,6 +233,9 @@ export async function runForgettingEngine(supabase: Supa, chatId: number) {
   const now = new Date().toISOString();
   try {
     await supabase.from("user_events").update({ status: "passed", updated_at: now }).eq("chat_id", chatId).eq("status", "open").lt("when_at", now);
+    // Undated events that nobody mentioned for a while are no longer "open".
+    const staleBefore = new Date(Date.now() - UNDATED_EVENT_TTL_DAYS * 86_400_000).toISOString();
+    await supabase.from("user_events").update({ status: "expired", updated_at: now }).eq("chat_id", chatId).eq("status", "open").is("when_at", null).lt("updated_at", staleBefore);
     await supabase.from("user_memories").delete().eq("chat_id", chatId).not("expires_at", "is", null).lt("expires_at", now);
   } catch (error) { console.error("[forget] failed:", error); }
 }
