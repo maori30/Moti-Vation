@@ -99,3 +99,54 @@ Deno.test("normalizeIntent: reschedule keeps the reminder's recurrence for past 
   assert.equal(a?.kind, "reschedule_reminder");
   if (a?.kind === "reschedule_reminder") assert.equal(local(a.dueAt!), "2026-11-13 06:30");
 });
+
+// ---------------------------------------------------------------- Israeli dates (DAY/MONTH)
+import { explicitNumericDate } from "../telegram/intent.ts";
+
+Deno.test("explicitNumericDate: DAY/MONTH order, next occurrence", () => {
+  // NOW = 2026-11-12
+  assert.deepEqual(explicitNumericDate("תזכיר לי ב-25/11 לשלם", NOW), { date: "2026-11-25", yearGiven: false });
+  assert.deepEqual(explicitNumericDate("ב-5/1 תור לרופא", NOW), { date: "2027-01-05", yearGiven: false }); // 5 January, next year
+  assert.deepEqual(explicitNumericDate("ב-1/12", NOW), { date: "2026-12-01", yearGiven: false }); // 1 December, not 12 January
+  assert.deepEqual(explicitNumericDate("ב-15/3 יום הולדת", NOW), { date: "2027-03-15", yearGiven: false }); // passed -> next year
+  assert.deepEqual(explicitNumericDate("היום 12/11", NOW), { date: "2026-11-12", yearGiven: false }); // today stays today
+});
+
+Deno.test("explicitNumericDate: explicit year", () => {
+  assert.deepEqual(explicitNumericDate("ב-20/12/2027", NOW), { date: "2027-12-20", yearGiven: true });
+  assert.deepEqual(explicitNumericDate("ב-20/12/27", NOW), { date: "2027-12-20", yearGiven: true });
+  assert.deepEqual(explicitNumericDate("ב-20.12.26", NOW, true), { date: "2026-12-20", yearGiven: true });
+});
+
+Deno.test("explicitNumericDate: rejects invalid, ambiguous and time-like input", () => {
+  assert.equal(explicitNumericDate("ב-31/4", NOW), null); // April has 30 days
+  assert.equal(explicitNumericDate("ב-5/13", NOW), null); // no 13th month
+  assert.equal(explicitNumericDate("בין 5/1 ל-7/1", NOW), null); // two dates -> let the model decide
+  assert.equal(explicitNumericDate("בשעה 14:00", NOW), null);
+  assert.equal(explicitNumericDate("ב-8.30", NOW), null); // dots are a time unless the model saw a date
+});
+
+Deno.test("normalizeIntent: user's DD/MM wins over a model that read MM/DD", () => {
+  // User wrote 5/1 (5 January) but the model answered May 1st.
+  const a = normalizeIntent({ intent: "create_reminder", confidence: 0.95, task: "תור", date: "2027-05-01", time: "10:00" }, ctx, "תזכיר לי ב-5/1 ב-10 תור");
+  assert.equal(a?.kind, "create_reminder");
+  if (a?.kind === "create_reminder") assert.equal(local(a.dueAt!), "2027-01-05 10:00");
+});
+
+Deno.test("normalizeIntent: year-less date that already passed rolls to next year", () => {
+  // Model returned this year's 15 March (in the past) for "ב-15 במרץ"
+  const a = normalizeIntent({ intent: "create_reminder", confidence: 0.95, task: "יום הולדת", date: "2026-03-15", time: "09:00", year_given: false }, ctx, "תזכיר לי ב-15 במרץ יום הולדת");
+  if (a?.kind === "create_reminder") assert.equal(local(a.dueAt!), "2027-03-15 09:00");
+  else assert.fail("expected create_reminder");
+});
+
+Deno.test("normalizeIntent: explicit past year is NOT moved (asks instead)", () => {
+  const a = normalizeIntent({ intent: "create_reminder", confidence: 0.95, task: "x", date: "2026-03-15", time: "09:00", year_given: true }, ctx, "ב-15/3/2026");
+  assert.equal(a?.kind === "create_reminder" && a.dueAt, null);
+});
+
+Deno.test("normalizeIntent: countdown with DD/MM", () => {
+  const a = normalizeIntent({ intent: "countdown", confidence: 0.95, text: "טיסה", date: "2026-12-20", time: "06:30" }, ctx, "ספירה לאחור לטיסה ב-20/12 ב-06:30");
+  if (a?.kind === "countdown") assert.equal(local(a.targetAt!), "2026-12-20 06:30");
+  else assert.fail("expected countdown");
+});

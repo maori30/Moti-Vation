@@ -70,6 +70,7 @@ export const ROUTER_SCHEMA = {
     in_minutes: { type: "INTEGER", nullable: true },
     weekday: { type: "INTEGER", nullable: true, description: "0=Sunday ... 6=Saturday" },
     complex_date: { type: "BOOLEAN", nullable: true },
+    year_given: { type: "BOOLEAN", nullable: true, description: "true only if the user wrote the year explicitly" },
     weather: { type: "STRING", enum: ["rain", "clear", "hot", "cold"], nullable: true },
     confirm_needed: { type: "BOOLEAN", nullable: true },
     guessed_time: { type: "BOOLEAN", nullable: true },
@@ -119,6 +120,9 @@ Intents:
   task = short Hebrew task without time words ("לקחת כדור"). If the user says "עוד פעם"/"שוב"/"אותו דבר", take the task from the conversation.
   Time: use in_minutes for relative times ("עוד 20 דקות" => 20, "עוד שעתיים" => 120, "עוד חצי שעה" => 30).
   Otherwise date (YYYY-MM-DD) and/or time (HH:MM). "מחר" = tomorrow's date. For "ביום שלישי" set weekday=2.
+  Dates are written the ISRAELI way: DAY/MONTH[/YEAR]. "5/1" = 5 January, "1/12" = 1 December, "20.12.26" = 20 December 2026.
+  Hebrew month names: ינואר=1 פברואר=2 מרץ=3 אפריל=4 מאי=5 יוני=6 יולי=7 אוגוסט=8 ספטמבר=9 אוקטובר=10 נובמבר=11 דצמבר=12 ("ב-3 בדצמבר" = 3 December).
+  If no year was written, use the NEXT occurrence of that date: if it already passed this year, use next year. Set year_given=true only when the user wrote the year.
   Hebrew hours: "ב-8 בערב" = 20:00, "ב-3 אחה\\"צ" = 15:00, "בשמונה וחצי" = 08:30 or 20:30 by context. If an hour 1-11 has no בבוקר/בערב and that time today already passed, prefer the PM time if it is still ahead today.
   If no time was given, choose a sensible one, set guessed_time=true and explain in reason (Hebrew).
   recurrence: daily ("כל יום", "כל בוקר"), weekly ("כל שבוע", "כל יום שני"), yearly (birthdays/anniversaries every year), else once.
@@ -159,6 +163,46 @@ function parseHHMM(s: unknown): { h: number; m: number } | null {
   if (!m) return null;
   const h = +m[1], min = +m[2];
   return h <= 23 && min <= 59 ? { h, m: min } : null;
+}
+
+/**
+ * Deterministic safety net for numeric dates in the user's own text (Israeli DAY/MONTH order).
+ * Returns "YYYY-MM-DD" (next occurrence when no year is written) or null if there is no single clear date.
+ * `allowDots`: "8.12" may also be a time, so dotted dates are only trusted when the model saw a date too.
+ */
+export function explicitNumericDate(text: string, now: Date, allowDots = false): { date: string; yearGiven: boolean } | null {
+  const re = allowDots
+    ? /(?<![\d:])(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2}|\d{4}))?(?![\d:])/g
+    : /(?<![\d:])(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?(?![\d:])/g;
+  const matches = [...text.matchAll(re)];
+  if (matches.length !== 1) return null; // none, or ambiguous (two dates)
+  const [, d, m, y] = matches[0];
+  const day = +d, month = +m;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const today = israelParts(now);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const valid = (yy: number) => {
+    const dt = new Date(Date.UTC(yy, month - 1, day));
+    return dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day; // rejects 31/4, 30/2...
+  };
+  if (y) {
+    const year = y.length === 2 ? 2000 + +y : +y;
+    return valid(year) ? { date: `${year}-${pad(month)}-${pad(day)}`, yearGiven: true } : null;
+  }
+  let year = today.year;
+  const todayKey = today.month * 100 + today.day;
+  if (month * 100 + day < todayKey) year += 1; // already passed this year -> next year
+  if (!valid(year)) return null;
+  return { date: `${year}-${pad(month)}-${pad(day)}`, yearGiven: false };
+}
+
+/** Moves a date-only result to next year when the year wasn't written and the date already passed. */
+function rollYearIfPassed(raw: any, now: Date): any {
+  if (!validDateStr(raw?.date) || raw?.year_given === true) return raw;
+  const today = israelParts(now).date;
+  if (raw.date >= today) return raw;
+  const next = `${+raw.date.slice(0, 4) + 1}${raw.date.slice(4)}`;
+  return validDateStr(next) && next >= today ? { ...raw, date: next } : raw;
 }
 
 /** Converts the model's local time parts to an absolute Date in Israel time. Never returns a past time. */
@@ -203,8 +247,14 @@ function str(v: unknown, max = 200): string | null {
 }
 
 /** Validates and normalizes the raw router JSON. Pure — unit tested. */
-export function normalizeIntent(raw: any, ctx: IntentContext): Action | null {
+export function normalizeIntent(raw: any, ctx: IntentContext, userText = ""): Action | null {
   if (!raw || typeof raw !== "object" || !INTENTS.includes(raw.intent)) return null;
+  if (["create_reminder", "reschedule_reminder", "countdown"].includes(raw.intent) && raw.complex_date !== true) {
+    // Trust the user's own DD/MM over the model's reading, then roll year-less past dates forward.
+    const explicit = explicitNumericDate(userText, ctx.now, validDateStr(raw.date));
+    if (explicit) raw = { ...raw, date: explicit.date, year_given: explicit.yearGiven, in_minutes: null, weekday: null };
+    raw = rollYearIfPassed(raw, ctx.now);
+  }
   const confidence = Number(raw.confidence ?? 0);
   if (raw.intent === "chat" || !(confidence >= 0.55)) return { kind: "chat" };
 
@@ -299,7 +349,7 @@ export async function routeMessage(text: string, ctx: IntentContext, callModel: 
     if (!res.ok) return null;
     const raw = (res.data?.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("");
     const json = JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim());
-    return normalizeIntent(json, ctx);
+    return normalizeIntent(json, ctx, text);
   } catch (error) {
     console.error("[intent] routing failed:", error);
     return null;
