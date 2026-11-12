@@ -1,5 +1,22 @@
 import { createDb } from "../_shared/db.ts";
-import { background, getConfig, headerMatchesConfig, israelParts, telegramCall, toTelegramHtml } from "../_shared/util.ts";
+import { TZ, background, getConfig, headerMatchesConfig, israelParts, telegramCall } from "../_shared/util.ts";
+import {
+  DONEREPLIES, GREETINGS, PERSONALITIES, SNOOZEREPLIES,
+  genderKeyboard, personalityKeyboard, pickPersonalized, pickReminderCreated, resolveActivePersonality,
+} from "./personas.ts";
+import {
+  REMINDERTRIGGER, detectReminderIntent, israelTime, looksActionable, parseReminder, reminderLabel, reminderScheduleLabel,
+  type ActiveReminder,
+} from "./schedule.ts";
+import { routeMessage, type Action } from "./intent.ts";
+import {
+  answerCallback, editMessageReplyMarkup, getTelegramFile, pinChatMessage, sendChatAction, sendMessage, sendPhoto,
+  sendTelegramAnimation, type MediaPart,
+} from "./tg.ts";
+import {
+  activeModel, callGeminiRaw, callGoogleGeminiModel, candidateModels, extractionModel, generateAiReply, listAvailableModels,
+  transcribeAudio, type HistoryMessage,
+} from "./gemini.ts";
 import {
   anchorMemoryKeyFor,
   anchorQuestion,
@@ -71,185 +88,10 @@ import {
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
-const TZ = Deno.env.get("BOT_TIMEZONE") ?? "Asia/Jerusalem";
 
-const HISTORY_LIMIT = 10;
+const HISTORY_LIMIT = 14;
 // Direct Postgres connection (see _shared/db.ts for why we no longer use the REST API key).
 const supabase = createDb();
-
-type HistoryMessage = { role: string; content: string; created_at?: string };
-type ParsedReminder = { dueAt: Date; task: string; type: "once" | "daily" | "weekly" };
-type ActiveReminder = { id: string; text: string; type: string; time: string };
-
-const PERSONALITIES: Record<string, { name: string; emoji: string; prompt: string }> = {
-  coach: {
-    name: "המאמן",
-    emoji: "🧠",
-    prompt:
-      "אתה מאמן קשוח, ממוקד הישגים ותכל'סי ברמות מוגזמות. לא קונה שום תירוץ, חותך מריחות באכזריות, ודוחף לעשייה כאן ועכשיו. מדבר באנרגיות שיא של חדר כושר ('יאללה חיה!', 'אין מוותרים!'), דורש יעדים, זמנים ותוצאות. המטרה שלך היא שהמשתמש ינצח את היום, ולא אכפת לך לצעוק עליו קצת בדרך.",
-  },
-  cynic: {
-    name: "הציני",
-    emoji: "😈",
-    prompt:
-      "אתה סופר שנון, חריף, סרקסטי וחוצפן בלי פילטרים. חסר סבלנות לדחיינות ויורד על המשתמש (בהומור) עם עקיצות מבריקות, סלנג ישראלי בועט, ואסוציאציות מתרבות הפופ המקומית. אף פעם לא מלטף או מרחם, נותן קונטרה חזקה וקורע מצחוק, אבל דוחף אותו לסגור פינות בעיקר כדי שתרד לו מהווריד.",
-  },
-  friend: {
-    name: "החבר",
-    emoji: "🤗",
-    prompt:
-      "אתה ה'אחי' הקלאסי או ה'בסטי' בוואטסאפ. מדבר בסלנג הכי יומיומי ועדכני (כפרה, נשמה, יואו, מת), סופר זורם, מרים בטירוף על כל הישג קטן, ומשתף פעולה בצורה עיוורת עם כל שטות או סטיקר שהמשתמש שולח. כשצריך להתאפס, אתה דוחף לעשייה נטו מתוך אכפתיות וחיבוק וירטואלי.",
-  },
-  sergeant: {
-    name: "הרס\"ר",
-    emoji: "🪖",
-    prompt:
-      "אתה רס\"ר צה\"לי נוקשה, קצר, תמציתי ומאיים (בהומור). בלי רגשות, בלי חפירות, בלי יחס אישי - פקודות נטו. מדבר בשפה צבאית מתומצתת: 'כן המפקד', 'בצע', 'זוז', 'יש לך 2 דקות'. מתייחס לכל משימה קטנה כמבצע חסר פשרות ויש לך אפס סובלנות ליללות.",
-  },
-  therapist: {
-    name: "המטפל",
-    emoji: "🛋️",
-    prompt:
-      "אתה מטפל תל-אביבי רגיש ומכיל בצורה קיצונית. מתחבר לרגש ונוטה לשאול שאלות חופרות על הילדות או על 'איפה זה פוגש אותך בגוף'. מדבר בטון של פסיכולוג רגוע עד כדי עייפות וניתוק, תמיד מנתח את הדחיינות של המשתמש ברמה הנפשית והקיומית במקום לדרוש ממנו לעבוד.",
-  },
-  hype: {
-    name: "המעודד",
-    emoji: "🔥",
-    prompt:
-      "אתה ההייפ-מן הכי מוגזם בעולם! אנרגיות של פסטיבל 24/7. מדבר בסימני קריאה, התלהבות היסטרית, המון אימוג'ים ואש. כל צעד או משימה קטנה של המשתמש הם מבחינתך אירוע היסטורי ששווה מסיבה. אתה לא מאפשר שנייה של מרמור — מיד מרים למעלה בטירוף.",
-  },
-  grandma: {
-    name: "הסבתא",
-    emoji: "👵",
-    prompt:
-      "את סבתא פולנייה/מרוקאית דאגנית, קורעת מצחוק, ומוגזמת בטירוף. את תמיד מוצאת על מה להתלונן בהומור (שהוא לא נח מספיק, לא מתקשר, או עושה שטויות). קוראת לו 'כפרה עליך', 'חיים של סבתא' או 'אוי ואבוי'. דוחפת אותו לסיים את המשימות שלו בצורה מצחיקה וקשורה להקשר של מה שהוא עושה, כדי שיהיה לך קצת נחת.",
-  },
-  philosopher: {
-    name: "הפילוסוף",
-    emoji: "🧐",
-    prompt:
-      "אתה הוגה דעות פלצני ודרמטי, מתפייט על כל שטות, ועונה בחידות או במשפטים הרי גורל. קושר כל משימה פשוטה (כמו שטיפת כלים) למשמעות החיים, חלוף הזמן וקיומנו הזמני ביקום. מדבר בשפה גבוהה, מליצית ותיאטרלית מאוד.",
-  },
-  frayer: {
-    name: "הפראייר",
-    emoji: "😏",
-    prompt:
-      "אתה הישראלי השבוז מהחיים שמרגיש שהוא תמיד עושה הכל בשביל כולם. מדבר בייאוש קל, מגלגל עיניים ('יאללה תעשה את זה כדי שאני לא אצטרך לעשות במקומך'). עונה בגישה של 'אין לי כוח לשטויות האלה, אבל נזרום'. תכל'סי וקצר.",
-  },
-  neighbor: {
-    name: "השכן",
-    emoji: "🏠",
-    prompt:
-      "אתה השכן הנודניק והחטטן שנדחף לכל עניין. תמיד משווה את המשתמש לאחרים (למשל לילד המוצלח מהקומה מעל או לוועד הבית), עוקצני בקטע עממי, תחרותי מאוד, אבל מקפיד לשמור על מסכה של חיוך צבוע ושכנות טובה ומזויפת.",
-  },
-};
-
-const GREETINGS: Record<string, string> = {
-  coach: "🧠 כאן. מה עובר עליך היום?",
-  cynic: "😈 אה, שוב אתה. מה קורה?",
-  friend: "🤗 שמח שכתבת. מה קורה אצלך?",
-  sergeant: "🪖 דווח. מה הסטטוס?",
-  therapist: "🛋️ שלום. במה תרצה להתחיל?",
-  hype: "🔥 הגעת! מה קורה?",
-  grandma: "👵 אוי, מה נשמע? אכלת?",
-  philosopher: "🧐 מה הביא אותך לכאן דווקא עכשיו?",
-  frayer: "😏 תכל'ס, מה על השולחן?",
-  neighbor: "🏠 היי שכן, מה נשמע?",
-};
-
-const DONEREPLIES: Record<string, string[]> = {
-  coach: ["יפה, סימנת. עוד ניצחון קטן על הרשימה 💪", "זהו, ירד מהראש. קדימה לדבר הבא."],
-  cynic: ["יופי, המצפון שלי שקט. בלעת כבר או שאתה עדיין במופע סטנדאפ? 😏", "טוב, אז בסוף כן. מי היה מאמין."],
-  friend: ["יש! כל הכבוד 🤗", "סימנת, אלוף. אחת פחות בראש."],
-  sergeant: ["בוצע. תודה על הדיווח.", "אישור התקבל. הבא בתור."],
-  therapist: ["יפה שסימנת. איך זה הרגיש?", "כל הכבוד שסגרת את זה."],
-  hype: ["כן!! עשית את זה 🔥", "יאללה, עוד ניצחון!"],
-  grandma: ["יופי מותק, כל הכבוד.", "נו סוף סוף, יפה שלך."],
-  philosopher: ["פעולה קטנה, אבל היא נספרת.", "סימנת. זה כל מה שנדרש."],
-  frayer: ["תכל'ס, סגרת. יאללה.", "פינה סגורה, ממשיכים."],
-  neighbor: ["כל הכבוד שכן, הקדמת אותי הפעם 😏", "סימנת! נקודה לזכותך."],
-};
-
-const SNOOZEREPLIES: Record<string, string[]> = {
-  coach: ["בסדר, עוד 15 דק' ואז יאללה.", "קיבלתי, נדבר עוד רגע."],
-  cynic: ["כן כן, עוד 15 דקות. דחיינות רשמית.", "אוקיי, נותן לך רבע שעה ואני חוזר לטרטר."],
-  friend: ["סבבה, מזכיר לך עוד רבע שעה 🤗", "אין בעיה, עוד 15 דק' ונדבר."],
-  sergeant: ["אישור. 15 דקות ואז שוב.", "נדחה ב-15. לא יותר."],
-  therapist: ["בטח, קח את הזמן. אזכיר עוד רבע שעה.", "בסדר, נחזור לזה."],
-  hype: ["יאללה, עוד 15 דק' וחוזרים לענייננו 🔥", "סבבה, נדבר עוד רגע!"],
-  grandma: ["בסדר מותק, עוד קצת ונזכיר לך.", "טוב טוב, עוד רבע שעה."],
-  philosopher: ["הזמן ימשיך לזרום, ניפגש בו עוד 15 דק'.", "נעצור וניפגש שוב בקרוב."],
-  frayer: ["סבבה, עוד רבע שעה וממשיכים.", "אין קטע, 15 דק' ונדבר."],
-  neighbor: ["טוב שכן, עוד רבע שעה ואני שוב כאן 😏", "בסדר, נראה אותך עוד 15 דק'."],
-};
-
-const REMINDERCREATEDREPLIES: Record<string, Array<(task: string, label: string) => string>> = {
-  coach: [
-    (t, l) => `סגרנו. ${l} אני מזכיר לך ${t}.`,
-    (t, l) => `רשום. ${l}, ${t}. קדימה 💪`,
-  ],
-  cynic: [
-    (t, l) => `קבעתי לך ${l}, ${t}. נראה אותך עומד בזה 😏`,
-    (t, l) => `רשמתי. ${l} נבדוק אם יש לך מילה לגבי ${t}.`,
-  ],
-  friend: [
-    (t, l) => `סבבה, ${l} אני מזכיר לך ${t} 🤗`,
-    (t, l) => `רשמתי אחי. ${l} תשמע ממני על ${t}.`,
-  ],
-  sergeant: [
-    (t, l) => `נרשם. ${l}, משימה: ${t}.`,
-    (t, l) => `אישור. ${l} אני מזכיר לך ${t}.`,
-  ],
-  therapist: [
-    (t, l) => `רשמתי לי את זה. ${l} אזכיר לך ${t}, בלי לחץ.`,
-    (t, l) => `בסדר, שמרתי. ${l} נחזור ל${t}.`,
-  ],
-  hype: [
-    (t, l) => `יאללה, רשמתי! ${l} מזכיר לך ${t} 🔥`,
-    (t, l) => `זהו, נרשם! ${l} נעשה את ${t}.`,
-  ],
-  grandma: [
-    (t, l) => `רשמתי מותק. ${l} אני אזכיר לך ${t}.`,
-    (t, l) => `טוב טוב, שמרתי. ${l} תזכור לעשות ${t}, אל תעשה לי התקף לב.`,
-  ],
-  philosopher: [
-    (t, l) => `נרשם. ${l} נחזור ל${t}.`,
-    (t, l) => `שמרתי את זה. ${l}, ${t}.`,
-  ],
-  frayer: [
-    (t, l) => `סגור. ${l} אני מזכיר לך ${t}.`,
-    (t, l) => `רשמתי. ${l} זה אצלך — ${t}.`,
-  ],
-  neighbor: [
-    (t, l) => `רשמתי שכן. ${l} אני על ${t} 😏`,
-    (t, l) => `סגור. ${l} אני מזכיר לך על ${t}.`,
-  ],
-};
-
-function pickPersonalized(map: Record<string, string[]>, personality: string): string {
-  const options = map[personality] ?? map.friend;
-  return options[Math.floor(Math.random() * options.length)];
-}
-
-function pickReminderCreated(personality: string, task: string, label: string): string {
-  const options = REMINDERCREATEDREPLIES[personality] ?? REMINDERCREATEDREPLIES.friend;
-  return options[Math.floor(Math.random() * options.length)](task, label);
-}
-
-function resolveActivePersonality(user: Record<string, unknown>): string {
-  const temporary = user.temp_personality && user.temp_personality_until && new Date(user.temp_personality_until as string).getTime() > Date.now();
-  return ((temporary ? user.temp_personality : user.personality) as string) || "cynic";
-}
-
-const STRONGREMINDERTRIGGER = /תזכיר\s*לי|תזכירי\s*לי|אל תשכח(?:\s*לי)?|אל תשכחי(?:\s*לי)?|תדע\s*להזכיר|תדעי\s*להזכיר|צריך תזכורת|צריכה תזכורת|רוצה תזכורת|אשמח לתזכורת|תתזכר(?:\s*אותי)?|תתזכרי(?:\s*אותי)?|תזכר(?:\s*אותי)?|לתזכר|להזכיר/;
-const REMINDERTRIGGER = /תזכיר\s*לי|תזכירי\s*לי|תזכורת|אל תשכח(?:\s*לי)?|אל תשכחי(?:\s*לי)?|תדע\s*להזכיר|תזכיר|תזכירי|תתזכר|תתזכרי|תזכר|לתזכר|להזכיר|כל\s*(?:יום|בוקר|ערב|לילה|שבוע|שני|שלישי|רביעי|חמישי|שישי|שבת)/;
-const TIMEORANCHORSIGNAL = /(עוד\s*(?:כ\-?)?\d*\s*(דקות|דקה|שעות|שעה|ימים|יום)|מחר|מחרתיים|ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|בשעה\s*\d|ב\s*-?\s*\d{1,2}[:.]\d{2}|כל\s*(?:יום|בוקר|ערב|לילה|שבוע|שני|שלישי|רביעי|חמישי|שישי|שבת)|לפני שאני|כשאני מגיע|כשאני חוזר|כשאני יוצא|לפני השינה|כשאני קם)/i;
-const WEEKDAYS: Record<string, number> = { ראשון: 0, שני: 1, שלישי: 2, רביעי: 3, חמישי: 4, שישי: 5, שבת: 6 };
-
-function detectReminderIntent(text: string): boolean {
-  const lower = text.toLowerCase();
-  return STRONGREMINDERTRIGGER.test(lower) || (REMINDERTRIGGER.test(lower) && TIMEORANCHORSIGNAL.test(lower));
-}
 
 
 async function markReminderDone(chatId: number, reminderId: string): Promise<string | null> {
@@ -306,332 +148,6 @@ async function markReminderDone(chatId: number, reminderId: string): Promise<str
   return `\n+10 נק' (סה"כ ${points})${streakMsg}${badgeMsg}`;
 }
 
-export type MediaPart = { mimeType: string, data: string };
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-    const chunk = 32768;
-    let result = '';
-    for (let i = 0; i < bytes.length; i += chunk) {
-        result += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
-    }
-    return btoa(result);
-}
-
-async function getTelegramFile(fileId: string): Promise<MediaPart | null> {
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
-    const json = await res.json();
-    if (!json.ok) return null;
-
-    const filePath = json.result.file_path;
-    const ext = filePath.split('.').pop()?.toLowerCase();
-    
-    // tgs is lottie animation (json), Gemini doesn't support it visually. Skip download entirely.
-    if (ext === "tgs") return null;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8_000);
-    let fileRes: Response;
-    try {
-      fileRes = await fetch(`https://api.telegram.org/file/bot${TG_TOKEN}/${filePath}`, { signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-    const buffer = await fileRes.arrayBuffer();
-    
-    // Skip files larger than 1MB to avoid timeouts
-    if (buffer.byteLength > 1_048_576) return null;
-    
-    const base64 = arrayBufferToBase64(buffer);
-    
-    // Only types Gemini accepts inline. Anything else is dropped (sending it would make
-    // Gemini return 400 for every model).
-    const MIME: Record<string, string> = {
-      ogg: "audio/ogg", oga: "audio/ogg", mp3: "audio/mp3", m4a: "audio/mp4", wav: "audio/wav",
-      jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", heic: "image/heic",
-      mp4: "video/mp4", webm: "video/webm", pdf: "application/pdf", txt: "text/plain", vcf: "text/vcard",
-    };
-    const mimeType = MIME[ext ?? ""];
-    if (!mimeType) return null;
-
-    return { mimeType, data: base64 };
-  } catch (error) {
-    console.error("[telegram] failed to fetch media:", error);
-    return null;
-  }
-}
-
-async function sendChatAction(chatId: number, action = "typing") {
-  try {
-    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendChatAction`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, action }),
-    });
-  } catch (error) {
-    console.error("[telegram] sendChatAction failed:", error);
-  }
-}
-
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 12_000): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try { return await fetch(url, { ...init, signal: controller.signal }); }
-  finally { clearTimeout(timer); }
-}
-
-function buildGeminiContents(history: HistoryMessage[], text: string, media?: MediaPart | null) {
-  const contents = [];
-  for (const msg of history) {
-    contents.push({
-      role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: msg.content || "(media only)" }],
-    });
-  }
-  const userParts: any[] = [];
-  if (media) {
-    userParts.push({ inlineData: { mimeType: media.mimeType, data: media.data } });
-  }
-  if (text) {
-    userParts.push({ text });
-  }
-  if (userParts.length === 0) {
-    userParts.push({ text: "." });
-  }
-  contents.push({
-    role: "user",
-    parts: userParts,
-  });
-  return contents;
-}
-
-// Direct official Google Gemini API call (Standard REST Endpoint)
-async function callGoogleGeminiModel(
-  apiKey: string,
-  model: string,
-  prompt: string,
-  history: HistoryMessage[],
-  text: string,
-  timeoutMs = 12_000,
-  media?: MediaPart | null,
-  thinkingLevel?: "minimal" | "low",
-): Promise<{ ok: true; content: string } | { ok: false; status: number; error: string }> {
-  try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-    const contents = buildGeminiContents(history, text, media);
-
-    const res = await fetchWithTimeout(
-      url,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: prompt }] },
-          contents,
-          generationConfig: {
-            temperature: 0.88,
-            topP: 0.9,
-            maxOutputTokens: 2048,
-            // Default "thinking" added ~4.5s per reply (measured 5.7s -> 1.1s with "minimal").
-            ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
-          },
-        }),
-      },
-      timeoutMs,
-    );
-
-    if (res.ok) {
-      const data = await res.json();
-      const candidate = data?.candidates?.[0];
-      const finishReason = candidate?.finishReason ?? "UNKNOWN";
-      const content = candidate?.content?.parts?.map((p: any) => p.text ?? "").join("").trim();
-      if (finishReason !== "STOP") {
-        console.warn(`[gemini-warn:${model}] finishReason=${finishReason} content_len=${content?.length ?? 0}`);
-      }
-      if (content) return { ok: true, content };
-    }
-
-    const errText = await res.text();
-    if (res.status === 400 && thinkingLevel) {
-      // A model that doesn't accept thinkingConfig: retry once without it.
-      return callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, media, undefined);
-    }
-    console.error(`[gemini-error:${model}] HTTP ${res.status}: ${errText.slice(0, 300)}`);
-    return { ok: false, status: res.status, error: errText };
-  } catch (err) {
-    console.error(`[gemini-exception:${model}] error:`, err);
-    return { ok: false, status: 0, error: String(err) };
-  }
-}
-
-async function callModelWithFailover(apiKey: string, prompt: string, history: HistoryMessage[], text: string, timeoutMs: number, media?: MediaPart | null) {
-  // Don't block the reply on model discovery: start with the preferred list, refresh in background.
-  const available = availableModels;
-  if (!available) background(listAvailableModels(apiKey), "list_models");
-  for (const model of candidateModels(available)) {
-    const res = await callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, media, "minimal");
-    if (res.ok) {
-      goodModel = model;
-      modelHealth.set(model, 0);
-      return { content: res.content, debug: model };
-    }
-    const status = (res as { status: number }).status;
-    if (status === 404) {
-      // Model does not exist for this key: skip it for an hour.
-      modelHealth.set(model, Date.now() + 3_600_000);
-      if (goodModel === model) goodModel = null;
-      availableCheckedAt = 0;
-    } else if (status === 400 && media) {
-      // Bad input (usually the attachment). Retrying other models with the same media is pointless;
-      // retry once without it so the user still gets an answer.
-      const retry = await callGoogleGeminiModel(apiKey, model, prompt, history, text, timeoutMs, null, "minimal");
-      if (retry.ok) return { content: retry.content, debug: model };
-      break;
-    }
-  }
-  throw new Error("All candidate models failed API requests");
-}
-
-// Raw call that sends a full generateContent body (systemInstruction, generationConfig...).
-async function callGeminiRaw(model: string, payload: Record<string, unknown>, timeoutMs = 10_000, allowThinkingConfig = true): Promise<{ ok: boolean; data?: any }> {
-  if (allowThinkingConfig) {
-    const gen = (payload.generationConfig ?? {}) as Record<string, unknown>;
-    if (!gen.thinkingConfig) payload = { ...payload, generationConfig: { ...gen, thinkingConfig: { thinkingLevel: "minimal" } } };
-  }
-  try {
-    const res = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY }, body: JSON.stringify(payload) },
-      timeoutMs,
-    );
-    if (!res.ok) {
-      const errText = (await res.text()).slice(0, 200);
-      if (res.status === 400 && allowThinkingConfig) {
-        const gen = { ...((payload.generationConfig ?? {}) as Record<string, unknown>) };
-        delete gen.thinkingConfig;
-        return callGeminiRaw(model, { ...payload, generationConfig: gen }, timeoutMs, false);
-      }
-      console.error(`[gemini-raw:${model}] HTTP ${res.status}: ${errText}`);
-      return { ok: false };
-    }
-    return { ok: true, data: await res.json() };
-  } catch (error) {
-    console.error(`[gemini-raw:${model}] exception:`, error);
-    return { ok: false };
-  }
-}
-
-// Current active generation models in Google AI Studio
-const MODEL_PREFERENCE = [
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
-];
-
-const modelHealth = new Map<string, number>();
-let goodModel: string | null = null;
-let availableModels: string[] | null = null;
-let availableCheckedAt = 0;
-
-async function listAvailableModels(apiKey: string): Promise<string[] | null> {
-  if (availableModels && Date.now() - availableCheckedAt < 6 * 3_600_000) return availableModels;
-  try {
-    const res = await fetchWithTimeout(
-      `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200`,
-      { method: "GET", headers: { "x-goog-api-key": apiKey } },
-      5_000,
-    );
-    if (!res.ok) return availableModels;
-    const data = await res.json();
-    const names = (data?.models ?? [])
-      .filter((m: any) => (m?.supportedGenerationMethods ?? []).includes("generateContent"))
-      .map((m: any) => String(m?.name ?? "").replace(/^models\//, ""));
-    if (names.length) {
-      availableModels = names;
-      availableCheckedAt = Date.now();
-      console.log(`[gemini] available models: ${names.slice(0, 12).join(", ")}`);
-    }
-    return availableModels;
-  } catch (err) {
-    console.error("[gemini] model discovery failed:", err);
-    return availableModels;
-  }
-}
-
-function candidateModels(available: string[] | null): string[] {
-  const now = Date.now();
-  const preferred = MODEL_PREFERENCE.filter((model) => {
-    const deadUntil = modelHealth.get(model) ?? 0;
-    if (deadUntil > now) return false;
-    return !available || available.includes(model);
-  });
-  if (!preferred.length && available?.length) {
-    const flash = available.filter((m) => /flash/i.test(m) && !/8b|thinking|image|tts|embedding/i.test(m));
-    if (flash.length) return flash.slice(0, 3);
-    return available.slice(0, 3);
-  }
-  const ordered = goodModel && preferred.includes(goodModel)
-    ? [goodModel, ...preferred.filter((m) => m !== goodModel)]
-    : preferred;
-  return ordered.length ? ordered : ["gemini-3.6-flash"];
-}
-
-// Generate AI reply, trying current generation Gemini models in order
-async function generateAiReply(
-  prompt: string,
-  history: HistoryMessage[],
-  text: string,
-  media?: MediaPart | null,
-): Promise<{ content: string; debug?: string } | null> {
-  const apiKey = GEMINI_API_KEY;
-  if (!apiKey) return null;
-  try {
-    return await callModelWithFailover(apiKey, prompt, history, text, 10_000, media);
-  } catch (e) {
-    return null;
-  }
-}
-
-async function extractionModel(apiKey: string): Promise<string> {
-  const available = availableModels;
-  if (!available) background(listAvailableModels(apiKey), "list_models");
-  for (const model of candidateModels(available)) {
-    if (modelHealth.get(model) && modelHealth.get(model)! > Date.now()) continue;
-    return model;
-  }
-  return MODEL_PREFERENCE[MODEL_PREFERENCE.length - 1];
-}
-
-// All bot text goes through toTelegramHtml: user/AI text is escaped (a "<3" used to make Telegram
-// reject the whole message) and **bold** becomes <b>bold</b>.
-async function sendMessage(chatId: number, text: string, keyboard?: object): Promise<number | null> {
-  const body: Record<string, unknown> = { chat_id: chatId, text: toTelegramHtml(text), parse_mode: "HTML" };
-  if (keyboard) body.reply_markup = keyboard;
-  const result = await telegramCall(TG_TOKEN, "sendMessage", body);
-  return result?.result?.message_id ?? null;
-}
-
-async function sendTelegramAnimation(chatId: number, animationUrl: string, caption: string, keyboard?: object): Promise<boolean> {
-  const body: Record<string, unknown> = { chat_id: chatId, animation: animationUrl, caption: toTelegramHtml(caption), parse_mode: "HTML" };
-  if (keyboard) body.reply_markup = keyboard;
-  return Boolean(await telegramCall(TG_TOKEN, "sendAnimation", body, "caption"));
-}
-
-async function sendPhoto(chatId: number, photo: string, caption?: string): Promise<boolean> {
-  const body: Record<string, unknown> = { chat_id: chatId, photo };
-  if (caption) { body.caption = toTelegramHtml(caption); body.parse_mode = "HTML"; }
-  return Boolean(await telegramCall(TG_TOKEN, "sendPhoto", body, "caption"));
-}
-
-async function pinChatMessage(chatId: number, messageId: number) {
-  const body: Record<string, unknown> = { chat_id: chatId, message_id: messageId, disable_notification: false };
-  const response = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/pinChatMessage`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  });
-  if (!response.ok) console.error(`[telegram] pin failed ${response.status}: ${(await response.text()).slice(0, 300)}`);
-}
-
 async function updateUser(chatId: number, changes: Record<string, unknown>) {
   const { error } = await supabase.from("users").update(changes).eq("chat_id", chatId);
   if (error) console.error("[users] update failed:", error.message);
@@ -671,40 +187,6 @@ async function saveMessage(chatId: number, role: string, content: string) {
   await supabase.from("messages").insert({ chat_id: chatId, role, content });
 }
 
-function israelDateParts(base: Date) {
-  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
-  return formatter.formatToParts(base).reduce((out, part) => { out[part.type] = part.value; return out; }, {} as Record<string, string>);
-}
-
-function timezoneOffset(date: Date): number {
-  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const parts = formatter.formatToParts(date).reduce((out, part) => { out[part.type] = part.value; return out; }, {} as Record<string, string>);
-  return (Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) - date.getTime()) / 60_000;
-}
-
-function israelTime(hour: number, minute: number, base = new Date(), addDays = 0): Date {
-  const date = israelDateParts(base);
-  const naive = Date.UTC(+date.year, +date.month - 1, +date.day + addDays, hour, minute, 0);
-  return new Date(naive - timezoneOffset(new Date(naive)) * 60_000);
-}
-
-function reminderScheduleLabel(dueAt: Date, type: ParsedReminder["type"]): string {
-  const time = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(dueAt);
-  if (type === "daily") return `כל יום ב־${time}`;
-  if (type === "weekly") return `כל שבוע ב־${time}`;
-  const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
-  const dueDay = dayKey.format(dueAt);
-  if (dueDay === dayKey.format(new Date())) return `היום ב־${time}`;
-  if (dueDay === dayKey.format(new Date(Date.now() + 86_400_000))) return `מחר ב־${time}`;
-  const date = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, day: "numeric", month: "numeric" }).format(dueAt);
-  return `ב־${date} ב־${time}`;
-}
-
-function reminderLabel(r: ActiveReminder): string {
-  const time = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(r.time));
-  return r.type === "daily" ? `כל יום ב־${time}` : r.type === "weekly" ? `כל שבוע ב־${time}` : `ב־${time}`;
-}
-
 async function showReminders(chatId: number) {
   const { data } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true).order("time");
   const reminders = (data ?? []) as ActiveReminder[];
@@ -734,135 +216,6 @@ async function findReminderForDeletion(chatId: number, text: string): Promise<Ac
   return reminders.find((r) => query.split(/\s+/).some((w) => w.length > 2 && r.text.toLowerCase().includes(w))) ?? null;
 }
 
-function extractHour(timeMatch: RegExpMatchArray): number {
-  let hour = +timeMatch[1];
-  const ampm = timeMatch[3];
-  if (ampm && /(בערב|בלילה|אחה|אחר הצה|צהריים)/.test(ampm) && hour < 12) {
-    hour += 12;
-  }
-  return hour;
-}
-
-function parseReminder(text: string): ParsedReminder | null {
-  const input = text.trim();
-  if (/\b\d{1,2}[\/.]\d{1,2}\b/.test(input)) {
-    return null; // Explicit dates should be handled by Gemini smart scheduling
-  }
-  const now = new Date();
-  let type: ParsedReminder["type"] = "once";
-  let dueAt: Date | null = null;
-  let span = "";
-
-  const daily = input.match(/כל\s*(?:יום|בוקר|ערב|לילה)\s*(?:ב\s*-?\s*|בשעה\s*)?(\d{1,2})(?::(\d{2})|\s*וחצי|\s*ורבע)?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
-  if (daily) {
-    const hour = extractHour(daily);
-    const minute = daily[2] ? +daily[2] : /וחצי/.test(daily[0]) ? 30 : /ורבע/.test(daily[0]) ? 15 : 0;
-    dueAt = israelTime(hour, minute, now);
-    if (dueAt <= now) dueAt = israelTime(hour, minute, now, 1);
-    type = "daily";
-    span = daily[0];
-  }
-
-  if (!dueAt) {
-    const relative = input.match(/(?:עוד|בעוד)\s*(\d+)\s*(דקות|דקה|שעות|שעה|ימים|יום)/);
-    if (relative) {
-      const amount = +relative[1];
-      const unit = relative[2];
-      const multiplier = /דק/.test(unit) ? 60_000 : /שע/.test(unit) ? 3_600_000 : 86_400_000;
-      dueAt = new Date(now.getTime() + amount * multiplier);
-      span = relative[0];
-    }
-  }
-
-  if (!dueAt) {
-    const day = input.match(/מחרתיים|מחר|היום/);
-    if (day) {
-      const add = day[0] === "מחר" ? 1 : day[0] === "מחרתיים" ? 2 : 0;
-      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
-      const hour = time ? extractHour(time) : 9;
-      const minute = time?.[2] ? +time[2] : 0;
-      dueAt = israelTime(hour, minute, now, add);
-      if (add === 0 && dueAt <= now) {
-        // "היום ב-8" at 10:00 most likely means 20:00. Otherwise let the AI scheduler decide.
-        const pm = time && !time[3] && hour < 12 ? israelTime(hour + 12, minute, now) : null;
-        if (!pm || pm <= now) return null;
-        dueAt = pm;
-      }
-      span = day[0] + (time ? time[0] : "");
-    }
-  }
-
-  if (!dueAt) {
-    const weekday = input.match(/ביום\s+(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/);
-    if (weekday) {
-      const target = WEEKDAYS[weekday[1]];
-      let add = (target - israelParts(now).weekday + 7) % 7;
-      if (!add) add = 7;
-      const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
-      const hour = time ? extractHour(time) : 9;
-      dueAt = israelTime(hour, time?.[2] ? +time[2] : 0, now, add);
-      span = weekday[0] + (time ? time[0] : "");
-    }
-  }
-
-  if (!dueAt) {
-    const time = input.match(/(?:ב\s*-?\s*|בשעה\s*)(\d{1,2})(?::(\d{2}))?\s*(בערב|בלילה|אחהצ|אחר הצהריים|בצהריים|בבוקר|לפנות בוקר)?/);
-    if (time) {
-      const hour = extractHour(time);
-      const minute = time[2] ? +time[2] : 0;
-      dueAt = israelTime(hour, minute, now);
-      if (dueAt <= now) {
-        // "ב-8" said at 10:00 → 20:00 today (when no בבוקר/בערב was given), else tomorrow.
-        const pm = !time[3] && hour < 12 ? israelTime(hour + 12, minute, now) : null;
-        dueAt = pm && pm > now ? pm : israelTime(hour, minute, now, 1);
-      }
-      span = time[0];
-    }
-  }
-
-  if (!dueAt || !span) return null;
-  const task = input.replace(REMINDERTRIGGER, "").replace(span, "").replace(/^[\s,־-]+|[\s,־-]+$/g, "").trim() || "תזכורת";
-  return { dueAt, task, type };
-}
-
-function genderKeyboard() {
-  return {
-    inline_keyboard: [
-      [
-        { text: "🙋‍♂️ בלשון זכר", callback_data: "gender_male" },
-        { text: "🙋‍♀️ בלשון נקבה", callback_data: "gender_female" },
-      ],
-    ],
-  };
-}
-
-function personalityKeyboard() {
-  return { inline_keyboard: [
-    [{ text: "🧠 המאמן", callback_data: "personality_coach" }, { text: "😈 הציני", callback_data: "personality_cynic" }],
-    [{ text: "🤗 החבר", callback_data: "personality_friend" }, { text: "🪖 הרס\"ר", callback_data: "personality_sergeant" }],
-    [{ text: "🛋️ המטפל", callback_data: "personality_therapist" }, { text: "🔥 המעודד", callback_data: "personality_hype" }],
-    [{ text: "👵 הסבתא", callback_data: "personality_grandma" }, { text: "🧐 הפילוסוף", callback_data: "personality_philosopher" }],
-    [{ text: "😏 הפראייר", callback_data: "personality_frayer" }, { text: "🏠 השכן", callback_data: "personality_neighbor" }],
-  ] };
-}
-
-async function answerCallback(id: string) {
-  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: id }) });
-}
-
-async function editMessageReplyMarkup(chatId: number, messageId: number, replyMarkup: object = { inline_keyboard: [] }) {
-  try {
-    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/editMessageReplyMarkup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: replyMarkup }),
-    });
-  } catch (error) {
-    console.error("[telegram] editMessageReplyMarkup exception:", error);
-  }
-}
-
-// Master conversational AI prompt: deep comprehension, culture, quick wit & natural flow
 async function askGemini(text: string, personalityKey: string, history: HistoryMessage[], context: string, layers: string[], media?: MediaPart | null): Promise<string> {
   const personality = PERSONALITIES[personalityKey] ?? PERSONALITIES.cynic;
 
@@ -937,6 +290,284 @@ async function runBackgroundPipelines(chatId: number, text: string, reply: strin
   } catch (error) {
     console.error("[background] pipeline failed:", error);
   }
+}
+
+// ============================================================== actions
+// Shared by the AI router (intent.ts) and the legacy regex fallback, so both behave the same.
+
+type NewReminder = { task: string; dueAt: Date; type: string; weather?: string | null; confirmNeeded?: boolean; guessed?: boolean; reason?: string | null };
+const REPEAT_WORDS = /^(תזכורת|שוב|מעולה שוב|עוד פעם|אותו דבר)$/u;
+const WEATHER_HE: Record<string, string> = { rain: "יורד גשם", clear: "לא יורד גשם", hot: "חם", cold: "קר" };
+
+function nowIsraelString(): string {
+  return new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" }).format(new Date());
+}
+
+async function saveReminder(chatId: number, personality: string, userText: string, r: NewReminder): Promise<void> {
+  let task = r.task.trim();
+  if (REPEAT_WORDS.test(task)) {
+    const { data: last } = await supabase.from("reminders").select("text").eq("chat_id", chatId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (last?.text && last.text !== "תזכורת") task = last.text;
+  }
+  const { data: existing } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
+  const duplicate = (existing ?? []).find((item: any) =>
+    item.text.trim().toLowerCase() === task.toLowerCase() && item.type === r.type && Math.abs(new Date(item.time).getTime() - r.dueAt.getTime()) < 60_000
+  );
+  let reply: string;
+  if (duplicate) {
+    reply = `כבר יש לך תזכורת כזאת ל"${task}". לא הוספתי עוד אחת.`;
+  } else {
+    const { error } = await supabase.from("reminders").insert({
+      chat_id: chatId, text: task.slice(0, 200), type: r.type, time: r.dueAt.toISOString(),
+      weather_condition: r.weather ?? null, active: true, confirm_needed: r.confirmNeeded === true,
+    });
+    if (error) {
+      reply = "משהו השתבש בשמירת התזכורת. נסה שוב עוד רגע.";
+    } else {
+      reply = pickReminderCreated(personality, task, reminderScheduleLabel(r.dueAt, r.type));
+      if (r.weather) reply += `\n(רק אם ${WEATHER_HE[r.weather] ?? "מזג האוויר מתאים"})`;
+      if (r.guessed && r.reason) reply += `\n(נקבע אוטומטית: ${r.reason}) אם בא לך זמן אחר, פשוט תכתוב "תשנה למחר ב-10".`;
+    }
+  }
+  await sendMessage(chatId, reply);
+  background(saveMessage(chatId, "user", userText), "save_user");
+  background(saveMessage(chatId, "assistant", reply), "save_reply");
+}
+
+/** Slower scheduler with full model reasoning — for Hebrew-calendar/holiday dates and as a fallback. */
+async function smartSchedule(text: string): Promise<NewReminder | null> {
+  try {
+    const prompt = `המשתמש ביקש תזכורת: "${text}".
+הזמן המקומי כרגע בישראל הוא: ${nowIsraelString()}.
+אם המשתמש ציין במפורש תאריך ושעה (למשל "ב-25/11 בשעה 14:00" או "בעוד שעתיים"), חלץ אותם במדויק.
+אתה מכיר את כל חגי ישראל ומועדי הלוח העברי. אם המשתמש מבקש תזכורת הקשורה לחג (למשל "יום לפני ערב פסח", "אחרי סוכות"), חשב במדויק מתי זה קורה והחזר את התאריך הלועזי המדויק.
+שים לב לשנה הנוכחית. אם התאריך המבוקש כבר עבר השנה, קבע אותו לשנה הבאה. לעולם אל תחזיר תאריך בעבר!
+אם המשתמש התנה את התזכורת במזג האוויר (למשל "אלא אם יורד גשם" או "רק אם שמש"), חלץ את התנאי.
+החזר אך ורק אובייקט JSON תקני עם:
+"task": ניסוח קצר של המשימה נטו ללא מילות התנאי (למשל "לקחת מטריה").
+"time": תאריך ושעה בפורמט ISO 8601 עם אזור זמן. דוגמה: "2026-11-25T14:00:00+02:00". חייב להיות בעתיד!
+"type": "once" / "daily" / "weekly" / "yearly".
+"is_smart_guess": boolean (true אם המשתמש לא ציין זמן והיית צריך להסיק לבד).
+"reason": הסבר קצר לזמן שנבחר.
+"weather_condition": "rain" / "clear" / "hot" / "cold" או null.
+אל תחזיר טקסט מחוץ ל-JSON.`;
+    const model = await extractionModel(GEMINI_API_KEY);
+    const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 20_000);
+    if (!res.ok) return null;
+    const jsonMatch = res.content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    const smart = JSON.parse(jsonMatch[0]);
+    if (!smart.time || !smart.task) return null;
+    const dueAt = new Date(smart.time);
+    if (Number.isNaN(dueAt.getTime()) || dueAt.getTime() <= Date.now()) return null;
+    const type = ["daily", "weekly", "yearly"].includes(smart.type) ? smart.type : "once";
+    return { task: String(smart.task), dueAt, type, weather: smart.weather_condition || null, guessed: smart.is_smart_guess === true, reason: smart.reason ?? null };
+  } catch (error) {
+    console.error("[smart-scheduling] failed:", error);
+    return null;
+  }
+}
+
+async function askWhen(chatId: number, task: string, recurrence: string) {
+  const state = recurrence === "daily" || recurrence === "weekly" ? `awaiting_reminder_time_${recurrence}` : "awaiting_reminder_time_once";
+  await updateUser(chatId, { state, pending_reminder_text: task.slice(0, 200) });
+  await sendMessage(chatId, `מתי להזכיר לך ${task}? למשל: מחר ב-8, עוד שעה, או 08:30.`);
+}
+
+async function showStatus(chatId: number) {
+  const { data: userData } = await supabase.from("users").select("points, streak_days, badges").eq("chat_id", chatId).single();
+  const badges: string[] = userData?.badges || [];
+  const badgeStr = badges.length > 0 ? badges.map((b) => `🏆 ${b.replace(/_/g, " ")}`).join("\n") : "אין עדיין תגים";
+  await sendMessage(chatId, `📊 **הסטטוס שלך:**\n\n⭐️ נקודות: ${userData?.points || 0}\n🔥 רצף פעילות: ${userData?.streak_days || 0} ימים ברצף\n\n🏅 **תגים:**\n${badgeStr}`);
+}
+
+async function showNotes(chatId: number) {
+  const { data: notes } = await supabase.from("quick_notes").select("id, text").eq("chat_id", chatId).eq("active", true);
+  if (!notes || notes.length === 0) {
+    await sendMessage(chatId, "המגירה ריקה. אין לך רעיונות פתוחים כרגע.");
+    return;
+  }
+  const list = notes.map((n: any, i: number) => `${i + 1}. ${n.text}`).join("\n");
+  await sendMessage(chatId, `הנה הרעיונות ששמרת במגירת "מתישהו":\n\n${list}\n\n(כדי להפוך רעיון למשימה, פשוט תבקש ממני לקבוע לו תזכורת)`);
+}
+
+async function addNote(chatId: number, text: string) {
+  await supabase.from("quick_notes").insert({ chat_id: chatId, text: text.slice(0, 500), active: true });
+  await sendMessage(chatId, `שמרתי את זה במגירת הרעיונות ("מתישהו").\nאזכיר לך לבדוק את זה באחת מביקורות סוף השבוע שלנו! 💡`);
+}
+
+async function addHabit(chatId: number, title: string) {
+  await supabase.from("habits").insert({ chat_id: chatId, title: title.slice(0, 80) });
+  await sendMessage(chatId, `הוספתי את ההרגל "${title}". כל פעם שתעשה את זה, פשוט תספר לי (למשל "עשיתי ${title}"), ו"הרגלים" יראה לך את הגרף.`);
+}
+
+/** Returns false when no matching habit exists. */
+async function logHabit(chatId: number, habitId: string | null, title: string | null): Promise<boolean> {
+  let habit: { id: number; title: string } | null = null;
+  if (habitId) {
+    const { data } = await supabase.from("habits").select("id, title").eq("id", habitId).eq("chat_id", chatId).maybeSingle();
+    habit = data;
+  } else if (title) {
+    const { data } = await supabase.from("habits").select("id, title").eq("chat_id", chatId).eq("active", true);
+    const t = title.toLowerCase();
+    habit = (data ?? []).find((h: any) => t.includes(h.title.toLowerCase()) || h.title.toLowerCase().includes(t)) ?? null;
+  }
+  if (!habit) return false;
+  await supabase.from("habit_logs").upsert({ habit_id: habit.id, chat_id: chatId, date_logged: israelParts().date }, { onConflict: "habit_id, date_logged" });
+  await sendMessage(chatId, `כל הכבוד! סימנתי שעשית "${habit.title}" היום. 💪`);
+  return true;
+}
+
+async function showHabits(chatId: number) {
+  const { data: habits } = await supabase.from("habits").select("id, title").eq("chat_id", chatId).eq("active", true);
+  if (!habits || habits.length === 0) {
+    await sendMessage(chatId, 'אין לך הרגלים במעקב. כתוב "הוסף הרגל [שם ההרגל]" כדי להתחיל.');
+    return;
+  }
+  const { data: logs } = await supabase.from("habit_logs").select("habit_id, date_logged").eq("chat_id", chatId).order("date_logged", { ascending: false }).limit(300);
+  let msg = "ההרגלים שלך:\n\n";
+  for (const h of habits) {
+    let grid = "";
+    for (let i = 6; i >= 0; i--) {
+      const dateStr = israelParts(new Date(Date.now() - i * 86_400_000)).date;
+      grid += logs?.some((l: any) => l.habit_id === h.id && l.date_logged === dateStr) ? "🟩" : "⬜";
+    }
+    msg += `**${h.title}**\n${grid}\n\n`;
+  }
+  const labels = habits.map((h: any) => h.title);
+  const data = habits.map((h: any) => logs?.filter((l: any) => l.habit_id === h.id).length || 0);
+  const chartJson = { type: "bar", data: { labels, datasets: [{ label: "ביצועים", data, backgroundColor: "rgba(54, 162, 235, 0.5)" }] } };
+  const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartJson))}&w=500&h=300`;
+  if (!(await sendPhoto(chatId, chartUrl, msg))) await sendMessage(chatId, msg);
+}
+
+async function startCountdown(chatId: number, title: string, targetAt: Date) {
+  const diffMs = targetAt.getTime() - Date.now();
+  const days = Math.floor(diffMs / 86_400_000);
+  const hours = Math.floor((diffMs / 3_600_000) % 24);
+  const minutes = Math.floor((diffMs / 60_000) % 60);
+  const msgId = await sendMessage(chatId, `⏳ **ספירה לאחור: ${title}**\nנותרו: ${days} ימים, ${hours} שעות, ו-${minutes} דקות.`);
+  if (msgId) {
+    await pinChatMessage(chatId, msgId);
+    await supabase.from("countdowns").insert({ chat_id: chatId, title, target_date: targetAt.toISOString(), message_id: msgId, active: true });
+    await sendMessage(chatId, "נעצתי את ההודעה! היא תתעדכן אוטומטית ככל שנתקרב ליעד.");
+  }
+}
+
+async function applyPersonality(chatId: number, key: string, permanent: boolean) {
+  const changes = permanent
+    ? { personality: key, temp_personality: null, temp_personality_until: null }
+    : { temp_personality: key, temp_personality_until: new Date(Date.now() + 2 * 3_600_000).toISOString() };
+  await updateUser(chatId, changes);
+  const p = PERSONALITIES[key];
+  await sendMessage(chatId, permanent ? `${p?.emoji ?? "💬"} סגור, מעכשיו אני ${p?.name ?? ""}.` : `${p?.emoji ?? "💬"} סגור, ${p?.name ?? ""} לשעתיים הקרובות.`);
+}
+
+async function applyGender(chatId: number, gender: "male" | "female") {
+  const isFemale = gender === "female";
+  await Promise.all([updateUser(chatId, { gender }), saveProfile(supabase, chatId, { address_style: isFemale ? "לשון נקבה" : "לשון זכר" })]);
+  await sendMessage(chatId, isFemale ? "סגור, מעכשיו אני פונה אלייך בלשון נקבה! ✨" : "סגור, מעכשיו אני פונה אליך בלשון זכר! 👍");
+}
+
+/** Executes a routed action. Returns true when the message was fully handled. */
+async function handleAction(a: Action, chatId: number, personality: string, text: string): Promise<boolean> {
+  switch (a.kind) {
+    case "create_reminder": {
+      let dueAt = a.dueAt;
+      let extra: Partial<NewReminder> = {};
+      if (!dueAt && a.complexDate) {
+        const smart = await smartSchedule(text);
+        if (smart) { dueAt = smart.dueAt; extra = { guessed: smart.guessed, reason: smart.reason }; }
+      }
+      if (!dueAt) { await askWhen(chatId, a.task, a.recurrence); return true; }
+      await saveReminder(chatId, personality, text, {
+        task: a.task, dueAt, type: a.recurrence, weather: a.weather, confirmNeeded: a.confirmNeeded,
+        guessed: extra.guessed ?? a.guessed, reason: extra.reason ?? a.reason,
+      });
+      return true;
+    }
+    case "reschedule_reminder": {
+      const { data: active } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
+      const list = (active ?? []) as ActiveReminder[];
+      const target = list.find((r) => r.id === a.reminderId) ?? (list.length === 1 ? list[0] : null);
+      if (!target) {
+        if (!list.length) await sendMessage(chatId, "אין לך כרגע תזכורות פעילות להזיז.");
+        else { await sendMessage(chatId, "איזו תזכורת להזיז? הנה הרשימה:"); await showReminders(chatId); }
+        return true;
+      }
+      let dueAt = a.dueAt;
+      if (!dueAt && a.complexDate) dueAt = (await smartSchedule(text))?.dueAt ?? null;
+      if (!dueAt) { await sendMessage(chatId, `לאיזה זמן להזיז את "${target.text}"? למשל: "תשנה למחר ב-10".`); return true; }
+      await supabase.from("reminders").update({ time: dueAt.toISOString(), nudge_sent_at: null, active: true }).eq("id", target.id).eq("chat_id", chatId);
+      const reply = `סגור, הזזתי את "${target.text}" ל${reminderScheduleLabel(dueAt, target.type)}.`;
+      await sendMessage(chatId, reply);
+      background(saveMessage(chatId, "user", text), "save_user");
+      background(saveMessage(chatId, "assistant", reply), "save_reply");
+      return true;
+    }
+    case "delete_reminder": {
+      const { data: active } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
+      const list = (active ?? []) as ActiveReminder[];
+      const target = list.find((r) => r.id === a.reminderId) ?? (list.length === 1 ? list[0] : null);
+      if (target) await askDeleteReminder(chatId, target);
+      else if (!list.length) await sendMessage(chatId, "אין לך כרגע תזכורות פעילות.");
+      else { await sendMessage(chatId, "איזו תזכורת למחוק? בחר בכפתור:"); await showReminders(chatId); }
+      return true;
+    }
+    case "list_reminders":
+      await showReminders(chatId);
+      return true;
+    case "mark_done": {
+      if (!a.reminderId) return false;
+      const points = await markReminderDone(chatId, a.reminderId);
+      const reply = points ? `${pickPersonalized(DONEREPLIES, personality)}${points}` : "כבר סימנתי את זה היום 👍";
+      await sendMessage(chatId, reply);
+      background(saveMessage(chatId, "user", text), "save_user");
+      background(saveMessage(chatId, "assistant", reply), "save_reply");
+      return true;
+    }
+    case "add_habit":
+      await addHabit(chatId, a.title);
+      return true;
+    case "log_habit":
+      return await logHabit(chatId, a.habitId, a.title); // no match -> continue as normal chat
+    case "list_habits":
+      await showHabits(chatId);
+      return true;
+    case "add_note":
+      await addNote(chatId, a.text);
+      return true;
+    case "list_notes":
+      await showNotes(chatId);
+      return true;
+    case "countdown":
+      if (!a.targetAt) {
+        await sendMessage(chatId, "לא הבנתי למתי הספירה לאחור. תפרט קצת יותר (למשל: ספירה לאחור לטיסה ב-20 באוקטובר שעה 10:00).");
+        return true;
+      }
+      await startCountdown(chatId, a.title, a.targetAt);
+      return true;
+    case "status":
+      await showStatus(chatId);
+      return true;
+    case "set_name":
+      await updateUser(chatId, { first_name: a.name });
+      await sendMessage(chatId, `סגור, מעכשיו אני קורא לך ${a.name}! 👍`);
+      return true;
+    case "set_gender":
+      await applyGender(chatId, a.gender);
+      return true;
+    case "set_personality":
+      await applyPersonality(chatId, a.personality, a.permanent);
+      return true;
+    case "set_tone":
+      await updateUser(chatId, { tone_override: a.tone });
+      await sendMessage(chatId, a.tone === "serious" ? "סגור, בלי שטויות מעכשיו." : a.tone === "softer" ? "סבבה, יותר בעדינות." : "יאללה, נעלה הילוך 😏");
+      return true;
+    case "chat":
+      return false;
+  }
+  return false;
 }
 
 const OK = () => new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -1210,6 +841,17 @@ Deno.serve(async (req: Request) => {
     if (fileId) {
       media = await getTelegramFile(fileId);
     }
+
+    // Voice notes: transcribe first, so reminders/commands said out loud are understood like text
+    // and the history/memory stores what was actually said instead of "(הודעה קולית)".
+    if (message.voice && media?.mimeType.startsWith("audio/")) {
+      background(sendChatAction(chatId, "typing"), "voice_typing");
+      const transcript = await transcribeAudio(media);
+      if (transcript) {
+        text = message.caption ? `${transcript}\n${message.caption}` : transcript;
+        media = null;
+      }
+    }
     
     if (!text && !media) return new Response(JSON.stringify({ ok: true }), { status: 200 });
 
@@ -1321,7 +963,7 @@ Deno.serve(async (req: Request) => {
     if (nameChangeMatch && nameChangeMatch[1]) {
       const newName = nameChangeMatch[1].trim();
       if (newName.length > 0 && newName.length <= 40) {
-        background(updateUser(chatId, { first_name: newName }), "update_name");
+        await updateUser(chatId, { first_name: newName });
         await sendMessage(chatId, `סגור, מעכשיו אני קורא לך ${newName}! 👍`);
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
@@ -1329,18 +971,7 @@ Deno.serve(async (req: Request) => {
 
     // Gender change intent in normal conversation
     if (/^(?:תפנה|תפני)\s+אליי\s+בלשון\s+(זכר|נקבה)/i.test(text.trim())) {
-      const isFemale = /נקבה/i.test(text);
-      const gender = isFemale ? "female" : "male";
-      const addressStyle = isFemale ? "לשון נקבה" : "לשון זכר";
-      background(
-        Promise.all([
-          updateUser(chatId, { gender }),
-          saveProfile(supabase, chatId, { address_style: addressStyle }),
-        ]),
-        "update_gender",
-      );
-      const reply = isFemale ? "סגור, מעכשיו אני פונה אלייך בלשון נקבה! ✨" : "סגור, מעכשיו אני פונה אליך בלשון זכר! 👍";
-      await sendMessage(chatId, reply);
+      await applyGender(chatId, /נקבה/i.test(text) ? "female" : "male");
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (text === "/menu") {
@@ -1351,7 +982,7 @@ Deno.serve(async (req: Request) => {
       const available = await listAvailableModels(GEMINI_API_KEY);
       const lines = [
         `מפתח Gemini: ${GEMINI_API_KEY ? "מוגדר ✅" : "חסר ❌"}`,
-        `מודל פעיל: ${goodModel ?? "עוד לא נבחר"}`,
+        `מודל פעיל: ${activeModel() ?? "עוד לא נבחר"}`,
         `מועמדים: ${candidateModels(available).join(", ")}`,
         `זמינים למפתח: ${available ? available.filter((m) => /gemini/.test(m)).slice(0, 10).join(", ") : "לא נבדק"}`,
       ];
@@ -1361,13 +992,8 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    if (/^(סטטוס|הסטטוס שלי|נקודות|הישגים)/ui.test(text.trim())) {
-      const { data: userData } = await supabase.from("users").select("points, streak_days, badges").eq("chat_id", chatId).single();
-      const points = userData?.points || 0;
-      const streak = userData?.streak_days || 0;
-      const badges: string[] = userData?.badges || [];
-      const badgeStr = badges.length > 0 ? badges.map(b => `🏆 ${b.replace(/_/g, " ")}`).join("\n") : "אין עדיין תגים";
-      await sendMessage(chatId, `📊 **הסטטוס שלך:**\n\n⭐️ נקודות: ${points}\n🔥 רצף פעילות: ${streak} ימים ברצף\n\n🏅 **תגים:**\n${badgeStr}`);
+    if (/^(סטטוס|הסטטוס שלי|הישגים)$/ui.test(text.trim())) {
+      await showStatus(chatId);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
@@ -1388,34 +1014,59 @@ Deno.serve(async (req: Request) => {
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         }
       } else {
+      const type = String(user.state).replace("awaiting_reminder_time_", "") as "once" | "daily" | "weekly";
       const time = text.trim().match(/^(?:ב\s*-?\s*|בשעה\s*)?([0-1]?\d|2[0-3])(?::([0-5]\d))?$/);
-      if (!time) {
-        await sendMessage(chatId, "תכתוב שעה, למשל 8, 14, או 08:30.");
+      let due: Date | null = null;
+      if (time) {
+        due = israelTime(+time[1], time[2] ? +time[2] : 0);
+        if (due.getTime() <= Date.now()) due = israelTime(+time[1], time[2] ? +time[2] : 0, new Date(), 1);
+      } else {
+        // Natural answers: "מחר ב-8", "עוד שעה", "ביום שלישי ב-10"...
+        due = parseReminder(`תזכיר לי ${text}`)?.dueAt ?? null;
+      }
+      if (!due) {
+        await sendMessage(chatId, "לא הבנתי מתי. תכתוב למשל: 8, 14:30, מחר ב-9 או עוד שעה (או \"ביטול\").");
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      const type = String(user.state).replace("awaiting_reminder_time_", "") as "once" | "daily" | "weekly";
-      let due = israelTime(+time[1], time[2] ? +time[2] : 0);
-      if (due.getTime() <= Date.now() && type !== "daily") {
-        due = israelTime(+time[1], time[2] ? +time[2] : 0, new Date(), 1);
-      }
-      await supabase.from("reminders").insert({ chat_id: chatId, text: user.pending_reminder_text, type, time: due.toISOString(), active: true });
-      background(updateUser(chatId, { state: "idle", pending_reminder_text: null }), "reminder_time_state_reset");
-      const manualLabel = reminderScheduleLabel(due, type);
-      await sendMessage(chatId, pickReminderCreated(resolveActivePersonality(user), String(user.pending_reminder_text ?? "זה"), manualLabel));
+      await updateUser(chatId, { state: "idle", pending_reminder_text: null });
+      await saveReminder(chatId, resolveActivePersonality(user), text, { task: String(user.pending_reminder_text ?? "תזכורת"), dueAt: due, type });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
     }
 
-    const switchRequest = detectSwitchRequest(text);
+    // ---- AI intent router ------------------------------------------------------------
+    // Understands free-form requests ("תזיז את התזכורת של אמא למחר ב-10", "רצתי הבוקר"),
+    // validated against the user's real reminders/habits. On any failure (null) we fall back
+    // to the legacy regex pipeline below, so the bot keeps working if Gemini is down.
+    const historyPromise = getHistory(chatId);
+    let route: Action | null = null;
+    const isImage = Boolean(media?.mimeType.startsWith("image/"));
+    if (!isImage && text && !isLaugh(text)) {
+      const recentHistory = await historyPromise;
+      const lastBotMessage = [...recentHistory].reverse().find((m) => m.role === "assistant")?.content ?? "";
+      if (looksActionable(text, lastBotMessage)) {
+        const [{ data: routerReminders }, { data: routerHabits }] = await Promise.all([
+          supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true).order("time").limit(30),
+          supabase.from("habits").select("id, title").eq("chat_id", chatId).eq("active", true).limit(30),
+        ]);
+        route = await routeMessage(text, {
+          now: new Date(),
+          reminders: routerReminders ?? [],
+          habits: routerHabits ?? [],
+          recent: recentHistory.slice(-6),
+        }, async (payload) => callGeminiRaw(await extractionModel(GEMINI_API_KEY), payload, 8_000));
+        if (route && route.kind !== "chat" && await handleAction(route, chatId, personality, text)) {
+          return OK();
+        }
+      } else {
+        route = { kind: "chat" }; // small talk: skip the router and the legacy command regexes
+      }
+    }
+    const legacy = route === null;
+
+    const switchRequest = legacy ? detectSwitchRequest(text) : null;
     if (switchRequest?.type === "personality") {
-      const changes = switchRequest.scope === "permanent"
-        ? { personality: switchRequest.key, temp_personality: null, temp_personality_until: null }
-        : { temp_personality: switchRequest.key, temp_personality_until: new Date(Date.now() + 2 * 3_600_000).toISOString() };
-      background(updateUser(chatId, changes), "switch_personality");
-      const switchedName = PERSONALITIES[switchRequest.key]?.name ?? "";
-      await sendMessage(chatId, switchRequest.scope === "permanent"
-        ? `${PERSONALITIES[switchRequest.key]?.emoji ?? "💬"} סגור, מעכשיו אני ${switchedName}.`
-        : `${PERSONALITIES[switchRequest.key]?.emoji ?? "💬"} סגור, ${switchedName} לשעתיים הקרובות.`);
+      await applyPersonality(chatId, switchRequest.key, switchRequest.scope === "permanent");
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (switchRequest?.type === "tone") {
@@ -1434,7 +1085,7 @@ Deno.serve(async (req: Request) => {
     // "תמחק אותה" right after the bot talked about one.
     const deleteVerb = /(מחק|תמחק|תמחקי|לבטל|תבטל|תבטלי|הסר|תסיר|תסירי)/u.test(text);
     const aboutReminder = /(תזכורת|התזכורת|תזכורות|ההתראה)/u.test(text) || (/^\S+\s+(אותה|אותו)[.!]?$/u.test(text.trim()));
-    if (deleteVerb && aboutReminder) {
+    if (legacy && deleteVerb && aboutReminder) {
       const reminder = await findReminderForDeletion(chatId, text);
       if (reminder) {
         await askDeleteReminder(chatId, reminder);
@@ -1454,7 +1105,7 @@ Deno.serve(async (req: Request) => {
     const completionInstruction = (activeRemindersDue && activeRemindersDue.length > 0) ? 
       `חוק קריטי: אם המשתמש מדווח בבירור שביצע או סיים את אחת מהמטלות שלו (במיוחד מהרשימה הבאה:\n${activeRemindersDue.map((r: any) => `- ${r.text} (ID: ${r.id})`).join("\n")}), עליך להוסיף בסוף התשובה שלך את הפקודה: [CMD_COMPLETE:ID] (כאשר ID הוא ה-ID של המטלה). דוגמה: "כל הכבוד שסיימת! [CMD_COMPLETE:1234]". הוסף את הפקודה הזו אך ורק בהודעה המדויקת שבה המשתמש מודיע לראשונה שסיים אותה עכשיו! אם המשתמש או אתה רק ממשיכים לדבר על זה בהודעות עוקבות (כמו "זה לא אקמול" או "על מה אתה מדבר"), אל תוסיף את הפקודה הזו שוב בשום פנים ואופן! אם אתה לא בטוח לאיזו מטלה הוא התכוון, פשוט תן עידוד מבלי לשאול "זה קשור ל...?". פרגן לו! **אזהרה חמורה**: אל תדבר על המטלות שברשימה ביוזמתך ואל תציק לו לבצע אותן, הרשימה נועדה אך ורק כדי לזהות אם הוא הודיע שהוא סיים אותן!` : "";
       
-    if (/ספירה לאחור|כמה זמן נשאר/ui.test(text.trim())) {
+    if (legacy && /ספירה לאחור|כמה זמן נשאר/ui.test(text.trim())) {
       try {
         const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
         const nowStr = timeFormatter.format(new Date());
@@ -1473,18 +1124,8 @@ Deno.serve(async (req: Request) => {
           if (smart.target_date && smart.title) {
             const targetAt = new Date(smart.target_date);
             if (targetAt.getTime() > Date.now()) {
-               const diffMs = targetAt.getTime() - Date.now();
-               const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-               const hours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
-               const minutes = Math.floor((diffMs / (1000 * 60)) % 60);
-               
-               const msgId = await sendMessage(chatId, `⏳ **ספירה לאחור: ${smart.title}**\nנותרו: ${days} ימים, ${hours} שעות, ו-${minutes} דקות.`);
-               if (msgId) {
-                 await pinChatMessage(chatId, msgId);
-                 await supabase.from("countdowns").insert({ chat_id: chatId, title: smart.title, target_date: targetAt.toISOString(), message_id: msgId, active: true });
-                 await sendMessage(chatId, "נעצתי את ההודעה! היא תתעדכן אוטומטית ככל שנתקרב ליעד.");
-               }
-               return new Response(JSON.stringify({ ok: true }), { status: 200 });
+              await startCountdown(chatId, String(smart.title).slice(0, 80), targetAt);
+              return new Response(JSON.stringify({ ok: true }), { status: 200 });
             }
           }
         }
@@ -1495,76 +1136,31 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    if (/^(הרעיונות שלי|הפתקים שלי|מתישהו)/ui.test(text.trim())) {
-      const { data: notes } = await supabase.from("quick_notes").select("id, text").eq("chat_id", chatId).eq("active", true);
-      if (!notes || notes.length === 0) {
-        await sendMessage(chatId, "המגירה ריקה. אין לך רעיונות פתוחים כרגע.");
-      } else {
-        const list = notes.map((n: any, i: number) => `${i + 1}. ${n.text}`).join("\n");
-        await sendMessage(chatId, `הנה הרעיונות ששמרת במגירת "מתישהו":\n\n${list}\n\n(כדי להפוך רעיון למשימה, פשוט תבקש ממני לקבוע לו תזכורת)`);
-      }
+    if (/^(הרעיונות שלי|הפתקים שלי|מתישהו)$/ui.test(text.trim())) {
+      await showNotes(chatId);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    if (/^(הוסף הרגל|הרגל חדש)\s*(.+)/ui.test(text)) {
-      const match = text.match(/^(הוסף הרגל|הרגל חדש)\s*(.+)/ui);
-      if (match && match[2]) {
-        const title = match[2].trim();
-        await supabase.from("habits").insert({ chat_id: chatId, title });
-        await sendMessage(chatId, `הוספתי את ההרגל "${title}". כל פעם שתעשה את זה, פשוט תכתוב "עשיתי ${title}" או תשתמש בפקודה "הרגלים" כדי לראות את הגרף.`);
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
+    const addHabitMatch = text.match(/^(?:הוסף הרגל|הרגל חדש)\s*(.+)/u);
+    if (legacy && addHabitMatch?.[1]) {
+      await addHabit(chatId, addHabitMatch[1].trim());
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    if (/^(עשיתי|ביצעתי)\s*(.+)/ui.test(text)) {
-      const match = text.match(/^(עשיתי|ביצעתי)\s*(.+)/ui);
-      if (match && match[2]) {
-        const title = match[2].trim();
-        const { data: habits } = await supabase.from("habits").select("id").eq("chat_id", chatId).ilike("title", `%${title}%`);
-        if (habits && habits.length > 0) {
-          const today = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
-          await supabase.from("habit_logs").upsert({ habit_id: habits[0].id, chat_id: chatId, date_logged: today }, { onConflict: "habit_id, date_logged" });
-          await sendMessage(chatId, `כל הכבוד! סימנתי שעשית "${title}" היום. 💪`);
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        }
-      }
+    const didMatch = text.match(/^(?:עשיתי|ביצעתי)\s*(.+)/u);
+    if (legacy && didMatch?.[1] && await logHabit(chatId, null, didMatch[1].trim())) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
     if (/^(הרגלים|ההרגלים שלי|גרף הרגלים)$/ui.test(text.trim())) {
-      const { data: habits } = await supabase.from("habits").select("id, title").eq("chat_id", chatId).eq("active", true);
-      if (!habits || habits.length === 0) {
-        await sendMessage(chatId, 'אין לך הרגלים במעקב. כתוב "הוסף הרגל [שם ההרגל]" כדי להתחיל.');
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
-      const { data: logs } = await supabase.from("habit_logs").select("habit_id, date_logged").eq("chat_id", chatId).order("date_logged", { ascending: false }).limit(300);
-      let msg = "ההרגלים שלך:\n\n";
-      for (const h of habits) {
-        msg += `**${h.title}**\n`;
-        let grid = "";
-        for (let i = 6; i >= 0; i--) {
-          const d = new Date();
-          d.setDate(d.getDate() - i);
-          const dateStr = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(d);
-          grid += logs?.some(l => l.habit_id === h.id && l.date_logged === dateStr) ? "🟩" : "⬜";
-        }
-        msg += grid + "\n\n";
-      }
-      const labels = habits.map(h => h.title);
-      const data = habits.map(h => logs?.filter(l => l.habit_id === h.id).length || 0);
-      const chartJson = { type: 'bar', data: { labels, datasets: [{ label: 'ביצועים', data, backgroundColor: 'rgba(54, 162, 235, 0.5)' }] } };
-      const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartJson))}&w=500&h=300`;
-      await sendPhoto(chatId, chartUrl, msg + `\n(כדי לסמן ביצוע, כתוב "עשיתי [שם ההרגל]")`);
+      await showHabits(chatId);
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
-    if (/^(רעיון|פתק|מתישהו|לזכור):\s*(.+)/ui.test(text)) {
-      const match = text.match(/^(רעיון|פתק|מתישהו|לזכור):\s*(.+)/ui);
-      if (match && match[2]) {
-        const noteText = match[2].trim();
-        await supabase.from("quick_notes").insert({ chat_id: chatId, text: noteText, active: true });
-        await sendMessage(chatId, `שמרתי את זה במגירת הרעיונות ("מתישהו"). \nאזכיר לך לבדוק את זה באחת מביקורות סוף השבוע שלנו! 💡`);
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
+    const noteMatch = text.match(/^(?:רעיון|פתק|מתישהו|לזכור):\s*(.+)/u);
+    if (legacy && noteMatch?.[1]) {
+      await addNote(chatId, noteMatch[1].trim());
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
     if (media && media.mimeType.startsWith("image/")) {
@@ -1608,118 +1204,22 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    if (detectReminderIntent(text)) {
+    if (legacy && detectReminderIntent(text)) {
       const isWeatherDependent = /גשם|מטריה|גשום|שמש|חם|קר|מזג אוויר|סערה|שלג/ui.test(text);
-      const parsed = parseReminder(text);
-      if (parsed && !isWeatherDependent) {
-        let taskTitle = parsed.task;
-        if (!taskTitle || /^(תזכורת|שוב|מעולה שוב|עוד פעם|אותו דבר)$/ui.test(taskTitle.trim())) {
-          const { data: lastRem } = await supabase
-            .from("reminders")
-            .select("text")
-            .eq("chat_id", chatId)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (lastRem && lastRem.text && lastRem.text !== "תזכורת") {
-            taskTitle = lastRem.text;
-          }
-        }
-        const { data: duplicates } = await supabase.from("reminders").select("id, text, type, time").eq("chat_id", chatId).eq("active", true);
-        const duplicate = (duplicates ?? []).find((item: any) => item.text.trim().toLowerCase() === taskTitle.trim().toLowerCase() && item.type === parsed.type && Math.abs(new Date(item.time).getTime() - parsed.dueAt.getTime()) < 60_000);
-        if (duplicate) {
-          const r = `כבר יש לך תזכורת כזאת ל"${taskTitle}". לא הוספתי עוד אחת.`;
-          await sendMessage(chatId, r);
-          background(saveMessage(chatId, "user", text), "save_user");
-          background(saveMessage(chatId, "assistant", r), "save_reply");
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        }
-        await supabase.from("reminders").insert({ chat_id: chatId, text: taskTitle, type: parsed.type, time: parsed.dueAt.toISOString(), active: true, confirm_needed: parseSmartHints(text).confirmNeeded === true });
-        const label = reminderScheduleLabel(parsed.dueAt, parsed.type);
-        const replyText = pickReminderCreated(personality, taskTitle, label);
-        await sendMessage(chatId, replyText);
-        background(saveMessage(chatId, "user", text), "save_user");
-        background(saveMessage(chatId, "assistant", replyText), "save_reply");
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      const parsed = isWeatherDependent ? null : parseReminder(text);
+      const scheduled: NewReminder | null = parsed
+        ? { task: parsed.task, dueAt: parsed.dueAt, type: parsed.type }
+        : await smartSchedule(text);
+      if (scheduled) {
+        await saveReminder(chatId, personality, text, { ...scheduled, confirmNeeded: parseSmartHints(text).confirmNeeded === true });
+      } else {
+        await askWhen(chatId, text.replace(REMINDERTRIGGER, "").trim() || "את זה", "once");
       }
-      
-      // Smart Scheduling & Weather Parsing fallback
-      try {
-        const timeFormatter = new Intl.DateTimeFormat("he-IL", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "long" });
-        const nowStr = timeFormatter.format(new Date());
-        const model = await extractionModel(GEMINI_API_KEY);
-        const prompt = `המשתמש ביקש תזכורת: "${text}".
-הזמן המקומי כרגע בישראל הוא: ${nowStr}.
-אם המשתמש ציין במפורש תאריך ושעה (למשל "ב-25/11 בשעה 14:00" או "בעוד שעתיים"), חלץ אותם במדויק. 
-אתה מכיר את כל חגי ישראל ומועדי הלוח העברי. אם המשתמש מבקש תזכורת הקשורה לחג (למשל "יום לפני ערב פסח", "אחרי סוכות"), חשב במדויק מתי זה קורה והחזר את התאריך הלועזי המדויק.
-שים לב לשנה הנוכחית. אם התאריך המבוקש כבר עבר השנה, קבע אותו לשנה הבאה. לעולם אל תחזיר תאריך בעבר!
-בנוסף, אם המשתמש התנה את התזכורת במזג האוויר (למשל "אלא אם יורד גשם" או "רק אם שמש"), חלץ את התנאי הזה.
-החזר אך ורק אובייקט JSON תקני עם:
-"task": ניסוח קצר של המשימה נטו ללא מילות התנאי (למשל "לקחת מטריה").
-"time": תאריך ושעה בפורמט ISO 8601 מדויק ותקני לחלוטין. דוגמה: "2026-11-25T14:00:00+02:00". אל תשתמש בפורמט אחר. חייב להיות בעתיד!
-"type": סוג התזכורת - "once" (חד פעמי), "daily" (אם המשתמש ביקש "כל יום"), או "weekly" (אם ביקש "כל שבוע" או "כל יום שלישי" וכד').
-"is_smart_guess": boolean (true אם המשתמש לא ציין זמן והיית צריך להסיק לבד, false אם הוא ציין זמן במפורש).
-"reason": הסבר קצר לזמן שנבחר.
-"weather_condition": מילת מפתח באנגלית לתנאי ("rain", "clear", "hot", "cold") או null אם אין תנאי.
-אל תחזיר טקסט מחוץ ל-JSON.`;
-        
-        const res = await callGoogleGeminiModel(GEMINI_API_KEY, model, "החזר JSON בלבד", [], prompt, 20_000);
-        if (res.ok) {
-          const jsonMatch = res.content.match(/\{[\s\S]*\}/);
-          if (!jsonMatch) throw new Error("No JSON object found in response: " + res.content);
-          const smart = JSON.parse(jsonMatch[0]);
-          if (smart.time && smart.task) {
-            let taskTitle = smart.task;
-            if (!taskTitle || /^(תזכורת|שוב|מעולה שוב|עוד פעם|אותו דבר)$/ui.test(taskTitle.trim())) {
-              const { data: lastRem } = await supabase
-                .from("reminders")
-                .select("text")
-                .eq("chat_id", chatId)
-                .order("created_at", { ascending: false })
-                .limit(1)
-                .maybeSingle();
-              if (lastRem && lastRem.text && lastRem.text !== "תזכורת") {
-                taskTitle = lastRem.text;
-              }
-            }
-            const dueAt = new Date(smart.time);
-            if (dueAt.getTime() > Date.now()) {
-              const reminderType = (smart.type === "daily" || smart.type === "weekly") ? smart.type : "once";
-              await supabase.from("reminders").insert({ chat_id: chatId, text: taskTitle, type: reminderType, time: dueAt.toISOString(), weather_condition: smart.weather_condition || null, active: true, confirm_needed: parseSmartHints(text).confirmNeeded === true });
-              const label = reminderScheduleLabel(dueAt, reminderType);
-              const personality = resolveActivePersonality(user);
-              const customMessage = pickReminderCreated(personality, taskTitle, label);
-              
-              let replyText = "";
-              if (smart.is_smart_guess) {
-                replyText = `${customMessage}\n(נקבע אוטומטית כי: ${smart.reason}).\nאם בא לך שעה אחרת, פשוט תכתוב "תשנה למחר ב-10".`;
-              } else {
-                replyText = customMessage;
-              }
-              await sendMessage(chatId, replyText);
-              background(saveMessage(chatId, "user", text), "save_user");
-              background(saveMessage(chatId, "assistant", replyText), "save_reply");
-              return new Response(JSON.stringify({ ok: true }), { status: 200 });
-            } else {
-              throw new Error(`Parsed time is not in the future. dueAt: ${dueAt.toISOString()}, now: ${new Date().toISOString()}`);
-            }
-          } else {
-             throw new Error("Missing time or task in JSON: " + JSON.stringify(smart));
-          }
-        } else {
-           throw new Error(`API Error: ${res.status} - ${res.error}`);
-        }
-      } catch (e) {
-        console.error("[smart-scheduling] failed:", (e as Error).message);
-        // Fallback to conversational request for time
-        background(updateUser(chatId, { state: "awaiting_reminder_time_once", pending_reminder_text: text }), "reminder_time_state");
-        await sendMessage(chatId, "מתי להזכיר לך? למשל: מחר ב-8 או עוד שעה.");
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
 
     const [histData, memRaw, profData, goalsData, eventsData, jokesData, phrasesData, remData] = await Promise.all([
-      getHistory(chatId),
+      historyPromise,
       fetchMemories(supabase, chatId),
       fetchProfile(supabase, chatId),
       fetchGoals(supabase, chatId),
@@ -1754,8 +1254,9 @@ Deno.serve(async (req: Request) => {
     
     let timeGapLayer = "";
     if (gapMinutes > 20) { // 20 minutes is enough to break context on WhatsApp
-      timeGapLayer = `שים לב: זו חזרה לשיחה אחרי הפסקה של ${Math.round(gapMinutes)} דקות. התייחס **אך ורק להודעה החדשה** של המשתמש. תהיה קצר ולעניין.`;
-      history.length = 0; // Completely hide old messages from the LLM context so it doesn't hallucinate
+      timeGapLayer = `שים לב: זו חזרה לשיחה אחרי הפסקה של ${Math.round(gapMinutes)} דקות. התייחס בעיקר להודעה החדשה של המשתמש (ההודעות הקודמות הן רק רקע). תהיה קצר ולעניין.`;
+      // Keep only the last few messages: enough to resolve "זה"/"אותו", not enough to drag up stale topics.
+      history.splice(0, Math.max(0, history.length - 4));
     }
 
     const mode = /אין לי כוח|קשה לי|עייף|שרוף|נמאס|מבאס/.test(text) ? "frustration" : /סיימתי|עשיתי|הצלחתי|שלחתי|סגרתי|קבעתי|השלמתי|בוצע|סגור|סידרתי|ניקיתי|הלכתי|כתבתי/.test(text) ? "success" : "casual";

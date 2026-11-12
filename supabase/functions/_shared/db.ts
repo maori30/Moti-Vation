@@ -8,7 +8,7 @@
 //
 // Supported surface (exactly what this codebase uses):
 //   from(t).select(cols?, { count: "exact", head?: true })
-//          .insert(row|rows) .update(obj) .upsert(row|rows, { onConflict }) .delete()
+//          .insert(row|rows) .update(obj) .upsert(row|rows, { onConflict, ignoreDuplicates }) .delete()
 //          .eq .neq .gt .gte .lt .lte .ilike .is .in .not(col, "is", null)
 //          .order(col, { ascending }) .limit(n) .single() .maybeSingle()
 //   Result: { data, error, count, status } — never throws, like supabase-js.
@@ -101,6 +101,7 @@ class Query implements PromiseLike<Result> {
   private rows: Row[] = [];
   private patch: Row = {};
   private conflict: string[] = [];
+  private ignoreDuplicates = false;
   private singleMode: "single" | "maybe" | null = null;
 
   constructor(private table: string) {}
@@ -116,8 +117,9 @@ class Query implements PromiseLike<Result> {
     return this;
   }
   insert(values: Row | Row[]) { this.mode = "insert"; this.rows = Array.isArray(values) ? values : [values]; return this; }
-  upsert(values: Row | Row[], opts?: { onConflict?: string }) {
+  upsert(values: Row | Row[], opts?: { onConflict?: string; ignoreDuplicates?: boolean }) {
     this.mode = "upsert";
+    this.ignoreDuplicates = opts?.ignoreDuplicates === true;
     this.rows = Array.isArray(values) ? values : [values];
     this.conflict = (opts?.onConflict ?? "id").split(",").map((c) => c.trim()).filter(Boolean);
     return this;
@@ -197,11 +199,16 @@ class Query implements PromiseLike<Result> {
     if (this.mode === "upsert") {
       const updatable = keys.filter((k) => !this.conflict.includes(k));
       text += ` ON CONFLICT (${this.conflict.map(ident).join(", ")}) `;
-      text += updatable.length
+      text += updatable.length && !this.ignoreDuplicates
         ? `DO UPDATE SET ${updatable.map((k) => `${ident(k)} = EXCLUDED.${ident(k)}`).join(", ")}`
         : "DO NOTHING";
     }
     return { text: text + ret, params };
+  }
+
+  /** The SQL that would run (no connection needed) — used by unit tests. */
+  toSQL(): { text: string; params: unknown[] } {
+    return this.build();
   }
 
   async execute(): Promise<Result> {

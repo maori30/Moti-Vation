@@ -166,7 +166,7 @@ export async function upsertGoals(supabase: Supa, chatId: number, goals: Goal[])
 
 export type Pacing = { kind: "micro" | "short" | "normal"; instantReply?: string; instruction: string };
 const LAUGH = /^(ח{3,}|חח|😂+|🤣+|לול|lol|haha+)[!\s.]*$/i;
-const ACK = /^(סבבה|אוקיי|אוקי|ok|okay|כן|יאללה|טוב|בסדר|מגניב|יופי|תודה|אחלה|סגור|👍+|🙏+|❤️+|💪+)[!\s.]*$/i;
+const ACK = /^(סבבה|אוקיי|אוקי|ok|okay|כן|יאללה|טוב|בסדר|מגניב|יופי|תודה|אחלה|סגור|(?:👍)+|(?:🙏)+|(?:❤️?)+|(?:💪)+)[!\s.]*$/iu;
 
 export function isLaugh(text: string) { return LAUGH.test(text.trim()); }
 export function isShortReply(text: string) { return text.trim().length <= 12; }

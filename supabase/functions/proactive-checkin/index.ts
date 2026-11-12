@@ -136,7 +136,7 @@ async function findTopicPrompt(chatId: number): Promise<string | null> {
     .select("text")
     .eq("chat_id", chatId)
     .eq("active", true);
-  const activeText = (activeReminders ?? []).map((reminder) => reminder.text).join(" ");
+  const activeText = (activeReminders ?? []).map((reminder: { text: string }) => reminder.text).join(" ");
 
   for (const message of messages) {
     for (const topic of TOPICS) {
