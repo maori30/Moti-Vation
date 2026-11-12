@@ -4,10 +4,42 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "supabase/functions/**"
+      - ".github/workflows/deploy-supabase-functions.yml"
+  pull_request:
+    paths:
+      - "supabase/functions/**"
+      - ".github/workflows/deploy-supabase-functions.yml"
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # The repo root has a package.json (the Lovable web app); the functions don't use it.
+      DENO_NO_PACKAGE_JSON: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Type-check functions
+        working-directory: supabase/functions
+        run: deno check --no-lock --node-modules-dir=none */index.ts
+
+      - name: Unit tests
+        working-directory: supabase/functions
+        run: deno test --no-lock --node-modules-dir=none --allow-env tests/
+
   deploy:
+    needs: test
+    # Deploy only from main or a manual run, never from a pull request.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -18,12 +50,12 @@ jobs:
           - proactive-checkin
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: 2.15.5
+          version: 3.1.0
 
       - name: Deploy ${{ matrix.function }}
         run: |

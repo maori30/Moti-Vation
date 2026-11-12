@@ -204,6 +204,11 @@ class Query implements PromiseLike<Result> {
     return { text: text + ret, params };
   }
 
+  /** The SQL that would run (no connection needed) — used by unit tests. */
+  toSQL(): { text: string; params: unknown[] } {
+    return this.build();
+  }
+
   async execute(): Promise<Result> {
     try {
       const { text, params } = this.build();
